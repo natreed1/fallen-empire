@@ -1,0 +1,15 @@
+{
+  "asset_name": "road",
+  "description": "Tileable dirt/gravel road texture for hex overlay or UI icon",
+  "width": 64,
+  "height": 64,
+  "anchor_x": 32,
+  "anchor_y": 32,
+  "usage": ["hex_tile_overlay", "ui_icon"],
+  "colors": {
+    "warm_brown": "#6b5b4a",
+    "tan": "#8a7a60"
+  },
+  "tileable": true,
+  "path": "/sprites/overlays/road.png"
+}

@@ -1,0 +1,31 @@
+---
+description: Update the project workflow (ideas, backlog, notes) when the user asks to add or document something
+alwaysApply: true
+---
+
+# Workflow system
+
+This project has a **workflow doc** at `docs/WORKFLOW.md` for organized notes, ideas, and backlog.
+
+## When the user asks to add or note something
+
+1. **Ideas** — Use when they say: "add to ideas", "I have an idea", "would be cool if", "maybe we could", or describe a rough feature/concept.
+   - Add a new bullet under **## Ideas** in `docs/WORKFLOW.md`.
+   - Keep each item one line (or a short list) unless they give more detail.
+
+2. **Backlog** — Use when they say: "add to backlog", "we should build", "come back to this", "remember to", "todo for later", or describe something to implement.
+   - Add a new bullet under **## Backlog** in `docs/WORKFLOW.md`.
+
+3. **Notes** — Use when they say: "note this", "document this", "add to notes", "write down", or share a decision/context that isn’t a design doc.
+   - Add a new bullet (or short paragraph) under **## Notes** in `docs/WORKFLOW.md`.
+
+## How to update
+
+- Open `docs/WORKFLOW.md` and insert the new item in the right section.
+- Preserve the existing structure (headers, table, "Related docs", last updated).
+- If they don’t specify section, prefer: **Backlog** for build tasks, **Ideas** for vague/cool ideas, **Notes** for decisions or context.
+- Optionally refresh the "Last updated" date at the bottom.
+
+## Showing the workflow
+
+If they ask "what’s in the workflow?", "show workflow", or "what did we note?", read and summarize `docs/WORKFLOW.md` (or point them to it).
