@@ -33,6 +33,7 @@ const SPRITE_PATHS: Record<string, string> = {
   cavalry:  '/sprites/units/cavalry.png',
   archer:   '/sprites/units/archer.png',
   builder:  '/sprites/units/builder.png',
+  trebuchet: '/sprites/units/trebuchet.png',
   // Buildings
   farm:        '/sprites/buildings/farm.png',
   factory:     '/sprites/buildings/factory.png',
@@ -43,6 +44,7 @@ const SPRITE_PATHS: Record<string, string> = {
   quarry:   '/sprites/buildings/quarry.png',
   mine:     '/sprites/buildings/mine.png',
   gold_mine: '/sprites/buildings/mine.png', // reuse mine sprite for now
+  wall:     '/sprites/buildings/wall.png',
   // Entities
   city:     '/sprites/entities/city.png',
   village:  '/sprites/entities/village.png',
@@ -200,6 +202,26 @@ function OverlayLayer({ tiles, color, yOffset, radiusScale = 0.5, height = 0.07 
 function RoadOverlay({ tiles }: { tiles: Tile[] }) {
   return (
     <OverlayLayer tiles={tiles} color={ROAD_COLOR} yOffset={0.05} radiusScale={0.58} height={0.07} />
+  );
+}
+
+// Wall sections — one overlay per player color (intact sections only)
+function WallOverlay({ wallSections, tiles, players }: { wallSections: WallSection[]; tiles: Map<string, Tile>; players: { id: string; color: string }[] }) {
+  const intact = useMemo(() => wallSections.filter(w => (w.hp ?? 1) > 0), [wallSections]);
+  const byPlayer = useMemo(() => {
+    const out: { playerId: string; color: string; tileList: Tile[] }[] = [];
+    for (const p of players) {
+      const list = intact.filter(w => w.ownerId === p.id).map(w => tiles.get(tileKey(w.q, w.r))).filter((t): t is Tile => !!t);
+      if (list.length) out.push({ playerId: p.id, color: p.color, tileList: list });
+    }
+    return out;
+  }, [intact, players, tiles]);
+  return (
+    <>
+      {byPlayer.map(({ playerId, color, tileList }) => (
+        <OverlayLayer key={playerId} tiles={tileList} color={color} yOffset={0.06} radiusScale={0.48} height={0.14} />
+      ))}
+    </>
   );
 }
 
@@ -548,7 +570,7 @@ const UNIT_SPRITE_KEY: Record<string, string> = {
   ranged: 'archer',
   archer: 'archer',
   builder: 'builder',
-  trebuchet: 'archer',      // placeholder until siege sprite exists
+  trebuchet: 'trebuchet',
   battering_ram: 'infantry', // placeholder until siege sprite exists
 };
 
@@ -563,7 +585,7 @@ const UNIT_SPRITE_SCALE: Record<string, [number, number]> = {
 };
 
 function UnitMarkers({ units, tiles }: { units: Unit[]; tiles: Map<string, Tile> }) {
-  const textures = useGameTextures(['infantry', 'cavalry', 'archer', 'builder']);
+  const textures = useGameTextures(['infantry', 'cavalry', 'archer', 'builder', 'trebuchet']);
 
   const positioned = useMemo(() => {
     const hexCount = new Map<string, number>();
@@ -1134,6 +1156,7 @@ export default function HexGrid() {
   const pendingCityHex = useGameStore(s => s.pendingCityHex);
   const activeWeather = useGameStore(s => s.activeWeather);
   const roadPathSelection = useGameStore(s => s.roadPathSelection);
+  const wallSections = useGameStore(s => s.wallSections);
   const supplyViewTab = useGameStore(s => s.supplyViewTab);
   const getSupplyClustersWithHealth = useGameStore(s => s.getSupplyClustersWithHealth);
 
@@ -1200,6 +1223,7 @@ export default function HexGrid() {
       {/* Map features */}
       <RoadOverlay tiles={biomeGroups.roadTiles} />
       <RoadConstructionOverlay sites={roadConstructions} tiles={tiles} />
+      <WallOverlay wallSections={wallSections} tiles={tiles} players={players} />
       <OverlayLayer tiles={biomeGroups.ruinTiles} color={RUINS_COLOR} yOffset={0.1} radiusScale={0.28} height={0.18} />
       <VillageLayer tiles={biomeGroups.villageTiles} />
 

@@ -10,6 +10,7 @@
 
 import * as path from 'path';
 import * as fs from 'fs';
+import * as os from 'os';
 import { Worker } from 'worker_threads';
 import {
   runSimulation,
@@ -25,10 +26,19 @@ const GENERATIONS = parseInt(process.env.TRAIN_GENERATIONS || '20', 10) || 20;
 const MATCHES_PER_PAIR = parseInt(process.env.TRAIN_MATCHES_PER_PAIR || '8', 10) || 8;
 const MAX_CYCLES = parseInt(process.env.TRAIN_MAX_CYCLES || '250', 10) || 250;
 const MAP_SIZE = parseInt(process.env.TRAIN_MAP_SIZE || '56', 10) || 56;
-const NUM_WORKERS = parseInt(process.env.NUM_WORKERS || '0', 10) || 0;
+const NUM_WORKERS_ENV = process.env.NUM_WORKERS;
+const NUM_WORKERS =
+  NUM_WORKERS_ENV !== undefined
+    ? Math.max(0, parseInt(NUM_WORKERS_ENV, 10) || 0)
+    : Math.min(8, Math.max(1, (os.cpus?.()?.length ?? 1) - 1));
 const ELITE_COUNT = 4;
 const MUTATION_STRENGTH = 0.15;
+const VARIANCE_PENALTY = 0.5; // rank by mean - VARIANCE_PENALTY * std
 const SHOW_BATTLES = 4;
+
+const DRAW_PENALTY = 10;
+const WON_QUICKLY_BONUS_PER_CYCLE = 0.05; // bonus for finishing under maxCycles when winning
+const LOST_SLOWLY_BONUS_PER_CYCLE = 0.03; // small bonus for lasting longer when losing
 
 const TRAIN_MAP = { width: MAP_SIZE, height: MAP_SIZE };
 const SIM_OPTS: RunSimulationOptions = { maxCycles: MAX_CYCLES, mapConfigOverride: TRAIN_MAP };
@@ -61,10 +71,21 @@ function mutateParams(p: AiParams): AiParams {
   };
 }
 
-function scoreResult(result: SimResult, playedAs: 'ai1' | 'ai2'): number {
+function scoreResult(
+  result: SimResult,
+  playedAs: 'ai1' | 'ai2',
+  maxCycles: number = MAX_CYCLES,
+): number {
   let sc = 0;
-  if (result.winner === playedAs) sc += 100;
-  else if (result.winner !== null) sc -= 30;
+  if (result.winner === playedAs) {
+    sc += 100;
+    sc += (maxCycles - result.cycle) * WON_QUICKLY_BONUS_PER_CYCLE;
+  } else if (result.winner !== null) {
+    sc -= 30;
+    sc += result.cycle * LOST_SLOWLY_BONUS_PER_CYCLE;
+  } else {
+    sc -= DRAW_PENALTY;
+  }
   sc += result.cycle * 0.1;
   const myCities = playedAs === 'ai1' ? result.ai1Cities : result.ai2Cities;
   const myPop = playedAs === 'ai1' ? result.ai1Pop : result.ai2Pop;
@@ -79,34 +100,51 @@ function runMatch(paramsA: AiParams, paramsB: AiParams, seed: number): SimResult
   return runSimulation(paramsA, paramsB, seed, MAX_CYCLES, SIM_OPTS);
 }
 
-function evaluateCandidateMain(candidate: AiParams, baseline: AiParams): number {
-  let total = 0;
+function mean(arr: number[]): number {
+  return arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
+}
+
+function std(arr: number[]): number {
+  if (arr.length <= 1) return 0;
+  const m = mean(arr);
+  const variance = arr.reduce((s, x) => s + (x - m) ** 2, 0) / arr.length;
+  return Math.sqrt(variance);
+}
+
+function effectiveScore(matchScores: number[]): number {
+  return mean(matchScores) - VARIANCE_PENALTY * std(matchScores);
+}
+
+function evaluateCandidateMain(candidate: AiParams, baseline: AiParams): number[] {
+  const matchScores: number[] = [];
   for (let i = 0; i < MATCHES_PER_PAIR; i++) {
     const seed = (Date.now() + i * 1000) % 1_000_000;
     const asAi1 = runMatch(candidate, baseline, seed);
     const asAi2 = runMatch(baseline, candidate, seed + 1);
-    total += scoreResult(asAi1, 'ai1') + scoreResult(asAi2, 'ai2');
+    matchScores.push(
+      scoreResult(asAi1, 'ai1') + scoreResult(asAi2, 'ai2'),
+    );
   }
-  return total / MATCHES_PER_PAIR;
+  return matchScores;
 }
 
 async function evaluatePopulationParallel(
   population: AiParams[],
   baseline: AiParams,
   workerPath: string,
-): Promise<number[]> {
-  const scores = new Array<number>(population.length);
+): Promise<number[][]> {
+  const scores = new Array<number[] | undefined>(population.length);
   let nextIdx = 0;
   let resolved = 0;
   const nw = Math.max(1, NUM_WORKERS);
   return new Promise((resolve, reject) => {
-    const onResult = (id: number, score: number, workerId: number) => {
-      scores[id] = score;
+    const onResult = (id: number, matchScores: number[], workerId: number) => {
+      scores[id] = matchScores;
       workerFree[workerId] = true;
       resolved++;
       if (resolved === population.length) {
         workers.forEach(w => w.terminate());
-        resolve(scores);
+        resolve(scores as number[][]);
       } else scheduleNext();
     };
     const workers: Worker[] = [];
@@ -136,8 +174,8 @@ async function evaluatePopulationParallel(
         execArgv: ['-r', 'ts-node/register', '-r', 'tsconfig-paths/register'],
       });
       workerFree[w] = true;
-      worker.on('message', (msg: { id: number; score: number; workerId: number }) =>
-        onResult(msg.id, msg.score, msg.workerId));
+      worker.on('message', (msg: { id: number; scores: number[]; workerId: number }) =>
+        onResult(msg.id, msg.scores, msg.workerId));
       worker.on('error', reject);
       worker.on('exit', (code) => { if (code !== 0) reject(new Error(`Worker exit ${code}`)); });
       workers.push(worker);
@@ -160,47 +198,57 @@ async function main() {
     population.push(mutateParams(population[population.length - 1]));
   }
 
-  const workerPath = path.join(process.cwd(), 'scripts', 'train-ai-worker.ts');
+  const workerDir = path.join(process.cwd(), 'scripts');
+  const workerPathJs = path.join(workerDir, 'train-ai-worker.js');
+  const workerPathTs = path.join(workerDir, 'train-ai-worker.ts');
+  const workerPath = fs.existsSync(workerPathJs) ? workerPathJs : workerPathTs;
 
   for (let gen = 0; gen < GENERATIONS; gen++) {
     console.log('');
     console.log(`═══════════════════════════════════════════  Gen ${gen + 1}/${GENERATIONS}  ═══════════════════════════════════════════`);
     console.log('Baseline: ' + formatParamsShort(baseline));
 
-    let scores: number[];
+    let matchScoresPerCandidate: number[][];
     if (NUM_WORKERS > 1) {
       process.stdout.write(`  Evaluating ${population.length} candidates (${NUM_WORKERS} workers)...`);
       const start = Date.now();
       try {
-        scores = await evaluatePopulationParallel(population, baseline, workerPath);
+        matchScoresPerCandidate = await evaluatePopulationParallel(population, baseline, workerPath);
         console.log(` ${((Date.now() - start) / 1000).toFixed(1)}s`);
       } catch (workerErr) {
         console.log('');
         console.warn('  Workers failed, falling back to main thread:', (workerErr as Error).message);
-        scores = population.map((p, idx) => {
+        matchScoresPerCandidate = [];
+        for (let idx = 0; idx < population.length; idx++) {
           process.stdout.write(`  Candidate ${idx + 1}/${population.length}...`);
-          const s = evaluateCandidateMain(p, baseline);
-          console.log(` ${s.toFixed(1)}`);
-          return s;
-        });
+          const ms = evaluateCandidateMain(population[idx], baseline);
+          matchScoresPerCandidate.push(ms);
+          console.log(` ${effectiveScore(ms).toFixed(1)} (μ=${mean(ms).toFixed(1)} σ=${std(ms).toFixed(1)})`);
+        }
       }
     } else {
-      scores = [];
+      matchScoresPerCandidate = [];
       for (let idx = 0; idx < population.length; idx++) {
         process.stdout.write(`  Candidate ${idx + 1}/${population.length}...`);
-        scores.push(evaluateCandidateMain(population[idx], baseline));
-        console.log(` ${scores[idx].toFixed(1)}`);
+        const ms = evaluateCandidateMain(population[idx], baseline);
+        matchScoresPerCandidate.push(ms);
+        console.log(` ${effectiveScore(ms).toFixed(1)} (μ=${mean(ms).toFixed(1)} σ=${std(ms).toFixed(1)})`);
       }
     }
 
-    const scored = population.map((p, i) => ({ params: p, score: scores[i] }));
+    const scored = population.map((p, i) => ({
+      params: p,
+      score: effectiveScore(matchScoresPerCandidate[i]),
+      mean: mean(matchScoresPerCandidate[i]),
+      std: std(matchScoresPerCandidate[i]),
+    }));
     scored.sort((a, b) => b.score - a.score);
     const best = scored[0];
     const prevBaseline = baseline;
     baseline = best.params;
 
     console.log('');
-    console.log(`  ► Best: score ${best.score.toFixed(1)}  ` + formatParamsShort(best.params));
+    console.log(`  ► Best: score ${best.score.toFixed(1)} (μ=${best.mean.toFixed(1)} σ=${best.std.toFixed(1)})  ` + formatParamsShort(best.params));
 
     if (SHOW_BATTLES > 0) {
       console.log('');

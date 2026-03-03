@@ -46,6 +46,8 @@ npx ts-node -r tsconfig-paths/register --project tsconfig.train.json scripts/tra
 
 The game loads this file on startup (see `GameScene` fetch of `/ai-params.json`), so after training you can refresh and play against the evolved AI.
 
+For **improvements to the optimization model** (fitness, diversity, CPU throughput, and when/where **GPU** can help), see **`docs/OPTIMIZATION.md`** — section "Suggested improvements to the optimization model" and "Where GPU fits (and doesn't)".
+
 ### Tuning the script
 
 In `scripts/train-ai.ts`:

@@ -391,11 +391,11 @@ function deductFromPlayerCities(cities: City[], resource: 'food' | 'goods' | 'gu
 
 // ─── Population Growth (Logistic Model + Expected K) ──────────────
 //
-// Carrying capacity K is "expected" (smoothed over ~2–4 cycles), so people have kids
-// based on how things have been going, not instant production — neglect of grain
-// can cause overshoot then starvation.
+// Carrying capacity K is "expected" (smoothed over ~2–4 cycles). Births are gated:
+// when storage.food <= 0 (starving) we set births = 0 so population never grows
+// while starving; otherwise births = floor(r * P * (1 - P/K)).
 //
-//   births = floor(r * P * (1 - P/K))  with K = expectedCarryingCapacity
+//   births = 0 if storage.food <= 0, else floor(r * P * (1 - P/K))
 //   deaths = natural deaths + starvation deaths (when storage.food <= 0)
 //   netGrowth = births - deaths
 //
@@ -437,9 +437,9 @@ function populationGrowthPhase(
     const starvationDeaths = city.storage.food <= 0 ? STARVATION_DEATHS : 0;
     const deaths = naturalDeaths + starvationDeaths;
 
-    // Births use expected K only (no storage gate — people have kids based on expectations)
+    // Births use expected K; when starving (no grain in storage) births = 0 so pop never grows into starvation
     let births = 0;
-    if (P > 0 && K > 0) {
+    if (P > 0 && K > 0 && city.storage.food > 0) {
       births = Math.max(0, Math.floor(POP_BIRTH_RATE * P * (1 - P / K)));
     }
 

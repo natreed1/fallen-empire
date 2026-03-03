@@ -79,6 +79,8 @@ export type GamePhase = 'setup' | 'place_city' | 'playing' | 'victory';
 export type UIMode = 'normal' | 'move' | 'build' | 'build_mine' | 'build_quarry' | 'build_gold_mine' | 'build_road' | 'defend' | 'intercept';
 export type FoodPriority = 'civilian' | 'military';
 export type BuildingType = 'city_center' | 'farm' | 'factory' | 'barracks' | 'academy' | 'market' | 'quarry' | 'mine' | 'gold_mine';
+/** Construction site type: buildings (in city) or field-built siege (builder on hex). */
+export type ConstructionSiteType = BuildingType | 'trebuchet';
 export type UnitType = 'infantry' | 'cavalry' | 'ranged' | 'builder' | 'trebuchet' | 'battering_ram';
 export type UnitStatus = 'idle' | 'moving' | 'fighting' | 'starving';
 export type ArmyStance = 'aggressive' | 'defensive' | 'passive';
@@ -183,9 +185,10 @@ export const ROAD_BP_COST = 25; // ~75s with 1 builder so construction progress 
 
 export interface ConstructionSite {
   id: string;
-  type: BuildingType;
+  type: ConstructionSiteType;
   q: number;
   r: number;
+  /** City that owns the build (for buildings). Empty for field-built trebuchet. */
   cityId: string;
   ownerId: string;
   bpRequired: number;
@@ -221,6 +224,11 @@ export const SCOUT_MISSION_DURATION_SEC = 30;
 export const BUILDING_BP_COST: Record<BuildingType, number> = {
   city_center: 0, farm: 50, factory: 50, barracks: 100, academy: 75, market: 30, quarry: 50, mine: 50, gold_mine: 60,
 };
+
+/** BP required for builder to build a trebuchet in the field (on the hex). */
+export const TREBUCHET_FIELD_BP_COST = 60;
+/** Gold cost to start field trebuchet construction (same as barracks recruit). */
+export const TREBUCHET_FIELD_GOLD_COST = 8;
 
 export const CITY_BUILDING_POWER = 100;
 export const BUILDER_POWER = 10;
@@ -404,7 +412,7 @@ export const TERRAIN_FOOD_YIELD: Record<Biome, number> = {
 };
 
 // ─── Population Growth Constants ─────────────────────────────────
-export const POP_BIRTH_RATE = 0.25;           // per-capita logistic birth rate coefficient
+export const POP_BIRTH_RATE = 0.12;           // per-capita logistic birth rate (was 0.25; lower so AFK doesn't overshoot into starvation)
 export const POP_NATURAL_DEATHS = 1;          // flat natural deaths per city per cycle
 export const POP_CARRYING_CAPACITY_PER_FOOD = 4;  // K = foodProduced * this
 /** Smoothing for expected K (0.25 ≈ 2–4 cycle adjustment); births use expected K, not instant production */
@@ -522,6 +530,20 @@ export function hexNeighbors(q: number, r: number): [number, number][] {
 
 export function hexDistance(q1: number, r1: number, q2: number, r2: number): number {
   return (Math.abs(q1 - q2) + Math.abs(q1 + r1 - q2 - r2) + Math.abs(r1 - r2)) / 2;
+}
+
+/** All hexes at exactly distance `ring` from center (cx, cy). Ring 1 = 6 hexes, ring 2 = 12, etc. */
+export function getHexRing(cx: number, cy: number, ring: number): { q: number; r: number }[] {
+  if (ring <= 0) return [];
+  const out: { q: number; r: number }[] = [];
+  for (let dq = -ring; dq <= ring; dq++) {
+    for (let dr = -ring; dr <= ring; dr++) {
+      if (hexDistance(cx, cy, cx + dq, cy + dr) === ring) {
+        out.push({ q: cx + dq, r: cy + dr });
+      }
+    }
+  }
+  return out;
 }
 
 export function tileKey(q: number, r: number): string {

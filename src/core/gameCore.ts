@@ -174,9 +174,7 @@ export function runSimulation(
     if (ai1Cities.length === 0) winner = 'ai2';
     else if (ai2Cities.length === 0) winner = 'ai1';
   }
-  if (winner === null && state.cycle >= maxC) {
-    winner = ai1Pop > ai2Pop ? 'ai1' : ai2Pop > ai1Pop ? 'ai2' : null;
-  }
+  // No winner on timeout: only conquest (one side loses all cities) counts.
 
   return {
     winner,

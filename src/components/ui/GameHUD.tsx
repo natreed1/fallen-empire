@@ -5,7 +5,7 @@ import { useGameStore } from '@/store/useGameStore';
 import { computeTradeClusters, getCapitalCluster, getSupplyingClusterKey } from '@/lib/logistics';
 import { computeCityProductionRate } from '@/lib/gameLoop';
 import { getWeatherHarvestMultiplier } from '@/lib/weather';
-import { BUILDING_COSTS, BUILDING_PRODUCTION, BUILDING_BP_COST, BUILDING_JOBS, CITY_BUILDING_POWER, BUILDER_POWER, BP_RATE_BASE, TERRAIN_FOOD_YIELD, UNIT_COSTS, UNIT_BASE_STATS, UNIT_L2_STATS, UNIT_DISPLAY_NAMES, HERO_BUFFS, VILLAGE_INCORPORATE_COST, MARKET_GOLD_PER_CYCLE, SCOUT_MISSION_COST, WEATHER_DISPLAY, BARACKS_UPGRADE_COST, FACTORY_UPGRADE_COST, FARM_UPGRADE_COST, FARM_L2_FOOD_PER_CYCLE, WALL_SECTION_STONE_COST, WORKERS_PER_LEVEL, MIN_STAFFING_RATIO, ROAD_BP_COST, getBuildingJobs, BuildingType, UnitType, ArmyStance, Biome, hexDistance, tileKey, POP_BIRTH_RATE, POP_NATURAL_DEATHS, POP_CARRYING_CAPACITY_PER_FOOD, POP_EXPECTED_K_ALPHA, STARVATION_DEATHS } from '@/types/game';
+import { BUILDING_COSTS, BUILDING_PRODUCTION, BUILDING_BP_COST, BUILDING_JOBS, CITY_BUILDING_POWER, BUILDER_POWER, BP_RATE_BASE, TERRAIN_FOOD_YIELD, UNIT_COSTS, UNIT_BASE_STATS, UNIT_L2_STATS, UNIT_DISPLAY_NAMES, HERO_BUFFS, VILLAGE_INCORPORATE_COST, MARKET_GOLD_PER_CYCLE, SCOUT_MISSION_COST, WEATHER_DISPLAY, BARACKS_UPGRADE_COST, FACTORY_UPGRADE_COST, FARM_UPGRADE_COST, FARM_L2_FOOD_PER_CYCLE, WALL_SECTION_STONE_COST, WORKERS_PER_LEVEL, MIN_STAFFING_RATIO, ROAD_BP_COST, TREBUCHET_FIELD_BP_COST, TREBUCHET_FIELD_GOLD_COST, getBuildingJobs, BuildingType, UnitType, ArmyStance, Biome, hexDistance, tileKey, POP_BIRTH_RATE, POP_NATURAL_DEATHS, POP_CARRYING_CAPACITY_PER_FOOD, POP_EXPECTED_K_ALPHA, STARVATION_DEATHS } from '@/types/game';
 import Image from 'next/image';
 import Link from 'next/link';
 
@@ -781,6 +781,7 @@ function SidePanel() {
   const allUnits = useGameStore(s => s.units);
   const players = useGameStore(s => s.players);
   const territory = useGameStore(s => s.territory);
+  const cities = useGameStore(s => s.cities);
   const getSelectedCity = useGameStore(s => s.getSelectedCity);
   const getSelectedUnits = useGameStore(s => s.getSelectedUnits);
   const getEnemyCityAt = useGameStore(s => s.getEnemyCityAt);
@@ -798,6 +799,7 @@ function SidePanel() {
   const getConstructionAt = useGameStore(s => s.getConstructionAt);
   const hasRoadConstructionAt = useGameStore(s => s.hasRoadConstructionAt);
   const buildRoad = useGameStore(s => s.buildRoad);
+  const buildTrebuchetInField = useGameStore(s => s.buildTrebuchetInField);
   const startBuilderBuild = useGameStore(s => s.startBuilderBuild);
   const cancelBuilderBuild = useGameStore(s => s.cancelBuilderBuild);
   const confirmRoadPath = useGameStore(s => s.confirmRoadPath);
@@ -856,6 +858,16 @@ function SidePanel() {
   const hexScouted = isHexScouted(selectedHex.q, selectedHex.r);
   const activeScoutMission = getScoutMissionAt(selectedHex.q, selectedHex.r);
   const canSeeEnemyInfo = hexVisible || hexScouted;
+
+  // City that owns this hex (for wall ring build) — only when in own territory
+  const human = players.find(p => p.isHuman);
+  const canBuildTrebuchetHere = buildersHere > 0 && !cityAtHex && !construction && tile?.biome !== 'water' && tile?.biome !== 'mountain';
+  const canAffordTrebuchet = (human?.gold ?? 0) >= TREBUCHET_FIELD_GOLD_COST;
+  const cityForWall = inTerritory && human ? (() => {
+    const info = territory.get(tileKey(selectedHex.q, selectedHex.r));
+    if (!info || info.playerId !== human.id) return null;
+    return cities.find(c => c.id === info.cityId) ?? null;
+  })() : null;
 
   return (
     <div className="absolute top-14 right-2 w-72 pointer-events-auto max-h-[85vh] overflow-y-auto">
@@ -972,6 +984,9 @@ function SidePanel() {
             cancelBuilderBuild={cancelBuilderBuild}
             confirmRoadPath={confirmRoadPath}
             roadPathSelection={roadPathSelection}
+            buildTrebuchetHere={() => buildTrebuchetInField(selectedHex.q, selectedHex.r)}
+            canBuildTrebuchetHere={canBuildTrebuchetHere}
+            canAffordTrebuchet={canAffordTrebuchet}
           />
         )}
 
@@ -1039,7 +1054,10 @@ function SidePanel() {
             unitsHere={allUnitsAtHex.filter(u => u.ownerId === 'player_human').length}
             tile={tile}
             hasRoadConstructionAt={hasRoadConstructionAt}
+            hasConstructionAt={(q, r) => !!getConstructionAt(q, r)}
+            hasCityAt={(q, r) => !!getCityAt(q, r)}
             buildRoad={buildRoad}
+            cityForWall={cityForWall ?? null}
           />
         )}
 
@@ -2083,19 +2101,41 @@ function BuilderBuildMenu({
   cancelBuilderBuild,
   confirmRoadPath,
   roadPathSelection,
+  buildTrebuchetHere,
+  canBuildTrebuchetHere,
+  canAffordTrebuchet,
 }: {
   uiMode: string;
   startBuilderBuild: (mode: 'mine' | 'quarry' | 'gold_mine' | 'road') => void;
   cancelBuilderBuild: () => void;
   confirmRoadPath: () => void;
   roadPathSelection: { q: number; r: number }[];
+  buildTrebuchetHere: () => void;
+  canBuildTrebuchetHere: boolean;
+  canAffordTrebuchet: boolean;
 }) {
   if (uiMode === 'normal' || uiMode === 'move') {
     return (
       <div className="space-y-2">
         <h3 className="text-amber-400/90 text-xs font-semibold uppercase tracking-wide">Builder</h3>
-        <p className="text-empire-parchment/50 text-[10px]">Select build type — deposits will highlight on map</p>
+        <p className="text-empire-parchment/50 text-[10px]">Build here or select type — deposits will highlight on map</p>
         <div className="flex flex-col gap-1.5">
+          {canBuildTrebuchetHere && (
+            <button
+              onClick={buildTrebuchetHere}
+              disabled={!canAffordTrebuchet}
+              className={`w-full text-left px-3 py-2 rounded border text-xs transition-colors ${
+                canAffordTrebuchet
+                  ? 'border-amber-600/40 bg-amber-900/20 text-amber-300 hover:bg-amber-900/30'
+                  : 'border-empire-stone/20 bg-transparent text-empire-parchment/30 cursor-not-allowed'
+              }`}
+            >
+              <span className="font-medium">Build Trebuchet (this hex)</span>
+              <span className={canAffordTrebuchet ? 'text-amber-400/70 ml-1' : 'text-red-400/50 ml-1'}>
+                — {TREBUCHET_FIELD_GOLD_COST}g, {TREBUCHET_FIELD_BP_COST} BP (siege)
+              </span>
+            </button>
+          )}
           <button
             onClick={() => startBuilderBuild('mine')}
             className="w-full text-left px-3 py-2 rounded border border-amber-600/40 bg-amber-900/20 text-amber-300 hover:bg-amber-900/30 text-xs"
@@ -2181,20 +2221,28 @@ function BuilderBuildMenu({
 
 // ─── Build Menu ────────────────────────────────────────────────────
 
-function BuildMenu({ q, r, inTerritory, buildersHere, unitsHere, tile, hasRoadConstructionAt, buildRoad }: {
+function BuildMenu({ q, r, inTerritory, buildersHere, unitsHere, tile, hasRoadConstructionAt, hasConstructionAt, hasCityAt, buildRoad, cityForWall }: {
   q: number; r: number; inTerritory: boolean; buildersHere: number; unitsHere: number;
-  tile?: { hasRoad?: boolean; hasQuarryDeposit?: boolean; hasMineDeposit?: boolean } | undefined;
+  tile?: { hasRoad?: boolean; hasQuarryDeposit?: boolean; hasMineDeposit?: boolean; biome?: string } | undefined;
   hasRoadConstructionAt: (q: number, r: number) => boolean;
+  hasConstructionAt: (q: number, r: number) => boolean;
+  hasCityAt: (q: number, r: number) => boolean;
   buildRoad: (q: number, r: number) => void;
+  cityForWall: import('@/types/game').City | null;
 }) {
   const buildStructure = useGameStore(s => s.buildStructure);
+  const buildTrebuchetInField = useGameStore(s => s.buildTrebuchetInField);
+  const buildWallRing = useGameStore(s => s.buildWallRing);
   const human = useGameStore(s => s.getHumanPlayer)();
+  const humanCities = useGameStore(s => s.cities).filter(c => c.ownerId === human?.id);
+  const totalStone = humanCities.reduce((s, c) => s + (c.storage.stone ?? 0), 0);
 
   let availBP = 0;
   if (inTerritory) availBP += CITY_BUILDING_POWER;
   availBP += buildersHere * BUILDER_POWER;
 
   const hasUnitsForDeposit = unitsHere > 0;
+  const canBuildTrebuchetHere = buildersHere > 0 && !hasCityAt(q, r) && !hasConstructionAt(q, r) && tile?.biome !== 'water' && tile?.biome !== 'mountain';
 
   const buildings: { type: BuildingType; label: string; desc: string; show?: boolean; needsUnits?: boolean }[] = [
     { type: 'farm' as BuildingType, label: 'Farm', desc: `L1: +25 grain/cycle (2 jobs); L2: +60 (3 jobs)  (${BUILDING_BP_COST.farm} BP)` },
@@ -2207,21 +2255,73 @@ function BuildMenu({ q, r, inTerritory, buildersHere, unitsHere, tile, hasRoadCo
   ].filter(b => b.show !== false);
 
   const canBuildRoad = buildersHere > 0 && !tile?.hasRoad && !hasRoadConstructionAt(q, r);
+  const trebuchetCanAfford = (human?.gold ?? 0) >= TREBUCHET_FIELD_GOLD_COST;
 
   return (
     <div className="space-y-2">
       <h3 className="text-empire-parchment/60 text-xs font-semibold">BUILD</h3>
-      {canBuildRoad && (
+      {canBuildTrebuchetHere && (
         <button
-          onClick={() => buildRoad(q, r)}
-          className="w-full text-left px-3 py-2 rounded border border-amber-600/40 bg-amber-900/20 text-amber-300 hover:bg-amber-900/30 text-xs"
+          onClick={() => buildTrebuchetInField(q, r)}
+          disabled={!trebuchetCanAfford}
+          className={`w-full text-left px-3 py-2 rounded border text-xs transition-colors ${
+            trebuchetCanAfford
+              ? 'border-amber-600/40 bg-amber-900/20 text-amber-300 hover:bg-amber-900/30'
+              : 'border-empire-stone/20 bg-transparent text-empire-parchment/30 cursor-not-allowed'
+          }`}
         >
           <div className="flex justify-between">
-            <span className="font-medium">Build Road</span>
-            <span className="text-amber-400/80">Free</span>
+            <span className="font-medium">Build Trebuchet (field)</span>
+            <span className={trebuchetCanAfford ? 'text-yellow-400' : 'text-red-400/50'}>{TREBUCHET_FIELD_GOLD_COST}g</span>
           </div>
-          <div className="text-empire-parchment/40 text-[10px]">+50% speed; mountain pass ({ROAD_BP_COST} BP)</div>
+          <div className="text-empire-parchment/40 text-[10px]">Siege. Builder builds on this hex ({TREBUCHET_FIELD_BP_COST} BP)</div>
         </button>
+      )}
+{canBuildRoad && (
+        <button
+            onClick={() => buildRoad(q, r)}
+            className="w-full text-left px-3 py-2 rounded border border-amber-600/40 bg-amber-900/20 text-amber-300 hover:bg-amber-900/30 text-xs"
+          >
+            <div className="flex justify-between">
+              <span className="font-medium">Build Road</span>
+              <span className="text-amber-400/80">Free</span>
+            </div>
+            <div className="text-empire-parchment/40 text-[10px]">+50% speed; mountain pass ({ROAD_BP_COST} BP)</div>
+          </button>
+      )}
+      {cityForWall && (
+        <>
+          <button
+            onClick={() => buildWallRing(cityForWall.id, 1)}
+            disabled={totalStone < 6 * WALL_SECTION_STONE_COST}
+            className={`w-full text-left px-3 py-2 rounded border text-xs transition-colors ${
+              totalStone >= 6 * WALL_SECTION_STONE_COST
+                ? 'border-amber-600/40 bg-amber-900/20 text-amber-300 hover:bg-amber-900/30'
+                : 'border-empire-stone/20 bg-transparent text-empire-parchment/30 cursor-not-allowed'
+            }`}
+          >
+            <div className="flex justify-between">
+              <span className="font-medium">Build full wall ring 1</span>
+              <span className={totalStone >= 30 ? 'text-amber-400/80' : 'text-red-400/50'}>30 stone</span>
+            </div>
+            <div className="text-empire-parchment/40 text-[10px]">Builds entire ring (6 sections) around {cityForWall.name} at once</div>
+          </button>
+          <button
+            onClick={() => buildWallRing(cityForWall.id, 2)}
+            disabled={totalStone < 12 * WALL_SECTION_STONE_COST}
+            className={`w-full text-left px-3 py-2 rounded border text-xs transition-colors ${
+              totalStone >= 12 * WALL_SECTION_STONE_COST
+                ? 'border-amber-600/40 bg-amber-900/20 text-amber-300 hover:bg-amber-900/30'
+                : 'border-empire-stone/20 bg-transparent text-empire-parchment/30 cursor-not-allowed'
+            }`}
+          >
+            <div className="flex justify-between">
+              <span className="font-medium">Build full wall ring 2</span>
+              <span className={totalStone >= 60 ? 'text-amber-400/80' : 'text-red-400/50'}>60 stone</span>
+            </div>
+            <div className="text-empire-parchment/40 text-[10px]">Builds entire ring (12 sections) around {cityForWall.name} at once</div>
+          </button>
+        </>
       )}
       <p className="text-empire-parchment/40 text-[10px]">
         {inTerritory ? `City territory (${CITY_BUILDING_POWER} BP)` : `Outside territory`}

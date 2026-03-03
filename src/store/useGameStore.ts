@@ -4,12 +4,13 @@ import {
   GameNotification, TerritoryInfo, GamePhase, UIMode, FoodPriority,
   BuildingType, UnitType, ArmyStance, CityBuilding,   ConstructionSite, ScoutMission,
   WeatherEvent, WallSection, RoadConstructionSite, ROAD_BP_COST,
-  tileKey, generateId, hexDistance,
+  tileKey, generateId, hexDistance, getHexRing,
   STARTING_GOLD, STARTING_CITY_TEMPLATE, VILLAGE_CITY_TEMPLATE, VILLAGE_INCORPORATE_COST,
   CITY_CENTER_STORAGE, FRONTIER_CYCLES,
   PLAYER_COLORS, CITY_NAMES,
   BUILDING_COSTS, UNIT_COSTS, UNIT_BASE_STATS, UNIT_L2_STATS, UNIT_DISPLAY_NAMES, HERO_NAMES,
   BUILDING_BP_COST, BUILDING_JOBS, getBuildingJobs,   CITY_BUILDING_POWER, BUILDER_POWER, BP_RATE_BASE,
+  TREBUCHET_FIELD_BP_COST, TREBUCHET_FIELD_GOLD_COST,
   SCOUT_MISSION_COST, SCOUT_MISSION_DURATION_SEC,
   GAME_DURATION_SEC, CYCLE_INTERVAL_SEC,
   BARACKS_UPGRADE_COST, FACTORY_UPGRADE_COST, FARM_UPGRADE_COST, WALL_SECTION_STONE_COST,
@@ -80,8 +81,6 @@ interface GameState {
   selectedHex: { q: number; r: number } | null;
   uiMode: UIMode;
   pendingMove: { toQ: number; toR: number } | null;
-  wallSelection: { q: number; r: number }[];  // multi-hex wall placement queue
-  wallBuilderHex: { q: number; r: number } | null;  // hex where the builder is
   wallSections: WallSection[];
   roadPathSelection: { q: number; r: number }[];  // hexes selected for road drag
   supplyViewTab: 'normal' | 'supply';
@@ -113,6 +112,7 @@ interface GameState {
 
   // City
   buildStructure: (type: BuildingType, q: number, r: number) => void;
+  buildTrebuchetInField: (q: number, r: number) => void;
   buildRoad: (q: number, r: number) => void;
   upgradeBarracks: (cityId: string, buildingQ: number, buildingR: number) => void;
   upgradeFactory: (cityId: string, buildingQ: number, buildingR: number) => void;
@@ -123,7 +123,8 @@ interface GameState {
   setFoodPriority: (priority: FoodPriority) => void;
   setTaxRate: (rate: number) => void;
 
-  // Wall building
+  // Wall building (ring around city, from build menu; stone cost)
+  buildWallRing: (cityId: string, ring: number) => void;
 
   // Builder build (Mine, Quarry, Road, Scout Tower outside territory)
   startBuilderBuild: (mode: 'mine' | 'quarry' | 'gold_mine' | 'road') => void;
@@ -207,7 +208,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   activeWeather: null, lastWeatherEndCycle: -10,
   gameEndTime: 0, nextCycleTime: 0, gameTimeRemaining: GAME_DURATION_SEC, cycleTimeRemaining: CYCLE_INTERVAL_SEC,
   visibleHexes: new Set(), pendingCityHex: null,
-  selectedHex: null, uiMode: 'normal', pendingMove: null, wallSelection: [], wallBuilderHex: null, wallSections: [], roadPathSelection: [],
+  selectedHex: null, uiMode: 'normal', pendingMove: null, wallSections: [], roadPathSelection: [],
   supplyViewTab: 'normal',
   selectedClusterKey: null,
   lastClickHex: null,
@@ -551,15 +552,18 @@ export const useGameStore = create<GameState>((set, get) => ({
           const remaining: ConstructionSite[] = [];
           const completedNotifs: GameNotification[] = [];
           const updatedCities = st.cities.map(c => ({ ...c, buildings: [...c.buildings] }));
+          const newUnitsFromField: Unit[] = [];
 
           for (const site of st.constructions) {
             // Calculate available BP at this hex
             let availBP = 0;
 
-            // If in territory of owning player, city provides CITY_BUILDING_POWER
-            const terr = st.territory.get(tileKey(site.q, site.r));
-            if (terr && terr.playerId === site.ownerId) {
-              availBP += CITY_BUILDING_POWER;
+            // If in territory of owning player, city provides CITY_BUILDING_POWER (buildings only; trebuchet is builder-only)
+            if (site.type !== 'trebuchet') {
+              const terr = st.territory.get(tileKey(site.q, site.r));
+              if (terr && terr.playerId === site.ownerId) {
+                availBP += CITY_BUILDING_POWER;
+              }
             }
 
             // Count builder units at the hex
@@ -578,24 +582,50 @@ export const useGameStore = create<GameState>((set, get) => ({
             const newAccum = site.bpAccumulated + bpPerSec;
 
             if (newAccum >= site.bpRequired) {
-              // Construction complete — add building to city and auto-assign workers
-              const city = updatedCities.find(c => c.id === site.cityId);
-              if (city) {
-                const b: CityBuilding = { type: site.type, q: site.q, r: site.r };
-                if (['quarry', 'mine', 'gold_mine', 'barracks', 'factory', 'academy', 'farm'].includes(site.type)) b.level = 1;
-                const jobs = BUILDING_JOBS[site.type] ?? 0;
-                if (jobs > 0) {
-                  const totalEmployed = city.buildings.reduce((s, x) => s + ((x as CityBuilding).assignedWorkers ?? 0), 0);
-                  const available = city.population - totalEmployed;
-                  b.assignedWorkers = Math.min(jobs, Math.max(0, available));
+              if (site.type === 'trebuchet') {
+                // Field-built trebuchet: spawn unit at (q, r)
+                const stats = UNIT_BASE_STATS.trebuchet;
+                const ownerCities = st.cities.filter(c => c.ownerId === site.ownerId);
+                let originCityId = '';
+                if (ownerCities.length > 0) {
+                  const nearest = ownerCities.reduce((best, c) =>
+                    hexDistance(c.q, c.r, site.q, site.r) < hexDistance(best.q, best.r, site.q, site.r) ? c : best
+                  );
+                  originCityId = nearest.id;
                 }
-                city.buildings.push(b);
+                newUnitsFromField.push({
+                  id: generateId('unit'), type: 'trebuchet', q: site.q, r: site.r, ownerId: site.ownerId,
+                  hp: stats.maxHp, maxHp: stats.maxHp,
+                  xp: 0, level: 0,
+                  status: 'idle' as const, stance: 'aggressive' as const,
+                  nextMoveAt: 0,
+                  originCityId,
+                });
+                completedNotifs.push({
+                  id: generateId('n'), turn: st.cycle,
+                  message: `Trebuchet completed at (${site.q}, ${site.r})!`,
+                  type: 'success',
+                });
+              } else {
+                // Building: add to city and auto-assign workers
+                const city = updatedCities.find(c => c.id === site.cityId);
+                if (city) {
+                  const b: CityBuilding = { type: site.type as BuildingType, q: site.q, r: site.r };
+                  if (['quarry', 'mine', 'gold_mine', 'barracks', 'factory', 'academy', 'farm'].includes(site.type)) b.level = 1;
+                  const jobs = BUILDING_JOBS[site.type as BuildingType] ?? 0;
+                  if (jobs > 0) {
+                    const totalEmployed = city.buildings.reduce((s, x) => s + ((x as CityBuilding).assignedWorkers ?? 0), 0);
+                    const available = city.population - totalEmployed;
+                    b.assignedWorkers = Math.min(jobs, Math.max(0, available));
+                  }
+                  city.buildings.push(b);
+                }
+                completedNotifs.push({
+                  id: generateId('n'), turn: st.cycle,
+                  message: `${site.type.charAt(0).toUpperCase() + site.type.slice(1)} completed at (${site.q}, ${site.r})!`,
+                  type: 'success',
+                });
               }
-              completedNotifs.push({
-                id: generateId('n'), turn: st.cycle,
-                message: `${site.type.charAt(0).toUpperCase() + site.type.slice(1)} completed at (${site.q}, ${site.r})!`,
-                type: 'success',
-              });
             } else {
               remaining.push({ ...site, bpAccumulated: newAccum });
             }
@@ -605,7 +635,12 @@ export const useGameStore = create<GameState>((set, get) => ({
           const allNotifs = completedNotifs.length > 0
             ? [...st.notifications.slice(-8), ...completedNotifs]
             : st.notifications;
-          set({ constructions: remaining, cities: updatedCities, notifications: allNotifs });
+          set({
+            constructions: remaining,
+            cities: updatedCities,
+            units: newUnitsFromField.length > 0 ? [...st.units, ...newUnitsFromField] : st.units,
+            notifications: allNotifs,
+          });
         }
       }
 
@@ -1152,6 +1187,47 @@ export const useGameStore = create<GameState>((set, get) => ({
     get().addNotification(`Construction started: ${type} (${BUILDING_COSTS[type]}g)${inTerr}`, 'info');
   },
 
+  buildTrebuchetInField: (q, r) => {
+    const s = get();
+    const player = s.players.find(p => p.id === HUMAN_ID);
+    if (!player || player.gold < TREBUCHET_FIELD_GOLD_COST) {
+      get().addNotification(`Need ${TREBUCHET_FIELD_GOLD_COST} gold to build trebuchet!`, 'warning');
+      return;
+    }
+    const tile = s.tiles.get(tileKey(q, r));
+    if (!tile || tile.biome === 'water' || tile.biome === 'mountain') return;
+    if (s.cities.some(c => c.q === q && c.r === r)) {
+      get().addNotification('Cannot build trebuchet on a city!', 'warning');
+      return;
+    }
+    if (s.constructions.some(cs => cs.q === q && cs.r === r)) {
+      get().addNotification('Already under construction here!', 'warning');
+      return;
+    }
+    const buildersAtHex = s.units.filter(
+      u => u.q === q && u.r === r && u.ownerId === HUMAN_ID && u.type === 'builder' && u.hp > 0
+    );
+    if (buildersAtHex.length === 0) {
+      get().addNotification('Need a Builder on this hex to build trebuchet!', 'warning');
+      return;
+    }
+    const site: ConstructionSite = {
+      id: generateId('con'),
+      type: 'trebuchet',
+      q,
+      r,
+      cityId: '',
+      ownerId: HUMAN_ID,
+      bpRequired: TREBUCHET_FIELD_BP_COST,
+      bpAccumulated: 0,
+    };
+    set({
+      players: s.players.map(p => p.id === HUMAN_ID ? { ...p, gold: p.gold - TREBUCHET_FIELD_GOLD_COST } : p),
+      constructions: [...s.constructions, site],
+    });
+    get().addNotification(`Trebuchet construction started (${TREBUCHET_FIELD_GOLD_COST}g, ${TREBUCHET_FIELD_BP_COST} BP). Builder builds on this hex.`, 'info');
+  },
+
   buildRoad: (q, r) => {
     const s = get();
     const tile = s.tiles.get(tileKey(q, r));
@@ -1438,6 +1514,44 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   cancelBuilderBuild: () => {
     set({ uiMode: 'normal', roadPathSelection: [] });
+  },
+
+  buildWallRing: (cityId, ring) => {
+    const s = get();
+    const city = s.cities.find(c => c.id === cityId);
+    if (!city || city.ownerId !== HUMAN_ID) return;
+    const ringHexes = getHexRing(city.q, city.r, ring);
+    const validHexes: { q: number; r: number }[] = [];
+    for (const { q, r } of ringHexes) {
+      const tile = s.tiles.get(tileKey(q, r));
+      if (!tile || tile.biome === 'water') continue;
+      if (s.wallSections.some(w => tileKey(w.q, w.r) === tileKey(q, r) && w.ownerId === HUMAN_ID)) continue;
+      validHexes.push({ q, r });
+    }
+    if (validHexes.length === 0) {
+      get().addNotification(`No valid hexes for wall ring ${ring} around ${city.name}.`, 'warning');
+      return;
+    }
+    const totalCost = validHexes.length * WALL_SECTION_STONE_COST;
+    const humanCities = s.cities.filter(c => c.ownerId === HUMAN_ID);
+    const totalStone = humanCities.reduce((sum, c) => sum + (c.storage.stone ?? 0), 0);
+    if (totalStone < totalCost) {
+      get().addNotification(`Need ${totalCost - totalStone} more stone (${totalCost} for ${validHexes.length} sections).`, 'warning');
+      return;
+    }
+    const newSections: WallSection[] = validHexes.map(({ q, r }) => ({
+      q, r, ownerId: HUMAN_ID, hp: WALL_SECTION_HP, maxHp: WALL_SECTION_HP,
+    }));
+    let toDeduct = totalCost;
+    const updatedCities = s.cities.map(c => {
+      if (c.ownerId !== HUMAN_ID || toDeduct <= 0) return c;
+      const have = c.storage.stone ?? 0;
+      const take = Math.min(have, toDeduct);
+      toDeduct -= take;
+      return { ...c, storage: { ...c.storage, stone: Math.max(0, have - take) } };
+    });
+    set({ wallSections: [...s.wallSections, ...newSections], cities: updatedCities });
+    get().addNotification(`Built wall ring ${ring} around ${city.name} (${newSections.length} sections).`, 'success');
   },
 
   builderSelectDeposit: (q, r, type) => {
