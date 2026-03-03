@@ -4,6 +4,8 @@
  * Used by scripts/train-ai.ts to run many bot-vs-bot matches and evolve AI params.
  */
 
+import * as path from 'path';
+import * as fs from 'fs';
 import {
   MapConfig, DEFAULT_MAP_CONFIG, GamePhase, tileKey, generateId, hexDistance,
   City, Unit, Player, Hero, Tile, TerritoryInfo,
@@ -19,7 +21,7 @@ import {
 import { generateMap, placeAncientCity } from '../lib/mapGenerator';
 import { calculateTerritory } from '../lib/territory';
 import { processEconomyTurn } from '../lib/gameLoop';
-import { planAiTurn, placeAiStartingCityAt, createAiHero, AiParams, DEFAULT_AI_PARAMS } from '../lib/ai';
+import { planAiTurn, placeAiStartingCityAt, createAiHero, AiParams, DEFAULT_AI_PARAMS, estimateAiFoodSurplus } from '../lib/ai';
 import { movementTick, combatTick, upkeepTick, siegeTick, type SupplyCacheEntry } from '../lib/military';
 import { rollForWeatherEvent, tickWeatherEvent, getWeatherHarvestMultiplier } from '../lib/weather';
 
@@ -145,10 +147,31 @@ export type SimResult = {
   ai2Pop: number;
 };
 
+/** Per-cycle trace snapshot for starvation/debug instrumentation. */
+export type CycleTrace = {
+  cycle: number;
+  ai1Pop: number;
+  ai2Pop: number;
+  ai1FoodStorage: number;
+  ai2FoodStorage: number;
+  ai1FoodIncome: number;
+  ai2FoodIncome: number;
+  civDemandAi1: number;
+  civDemandAi2: number;
+  militaryDemandAi1: number;
+  militaryDemandAi2: number;
+  recruitsAi1: number;
+  recruitsAi2: number;
+  unitStatusAi1: { idle: number; moving: number; fighting: number; starving: number };
+  unitStatusAi2: { idle: number; moving: number; fighting: number; starving: number };
+};
+
 /** Options for faster training (smaller map, shorter games). */
 export type RunSimulationOptions = {
   maxCycles?: number;
   mapConfigOverride?: Partial<MapConfig>;
+  /** If set, per-cycle trace is written to this path (JSON array of CycleTrace). */
+  tracePath?: string;
 };
 
 /** Run one full simulation until victory or maxCycles. Returns result. */
@@ -203,14 +226,30 @@ export function runSimulationWithDiagnostics(
   const diag: SimDiagnostics = { totalKills: 0, killsByAi1: 0, killsByAi2: 0, hadOwnerFlip: false };
   const maxC = options?.maxCycles ?? maxCycles;
   const mapOverride = options?.mapConfigOverride;
+  const tracePath = options?.tracePath;
+  const trace: CycleTrace[] = [];
+  const traceCallback = tracePath
+    ? (data: CycleTrace) => trace.push(data)
+    : undefined;
+
   let state = initBotVsBotGame(seed, paramsA, paramsB, mapOverride);
   while (state.phase === 'playing' && state.cycle < maxC) {
-    state = stepSimulation(state, paramsA, paramsB, diag);
+    state = stepSimulation(state, paramsA, paramsB, diag, traceCallback);
   }
+
   const ai1Cities = state.cities.filter(c => c.ownerId === AI_ID);
   const ai2Cities = state.cities.filter(c => c.ownerId === AI_ID_2);
   const ai1Pop = ai1Cities.reduce((a, c) => a + c.population, 0);
   const ai2Pop = ai2Cities.reduce((a, c) => a + c.population, 0);
+  diag.finalAi1Pop = ai1Pop;
+  diag.finalAi2Pop = ai2Pop;
+
+  if (tracePath && trace.length > 0) {
+    const outPath = path.isAbsolute(tracePath) ? tracePath : path.join(process.cwd(), tracePath);
+    fs.mkdirSync(path.dirname(outPath), { recursive: true });
+    fs.writeFileSync(outPath, JSON.stringify(trace, null, 0), 'utf8');
+  }
+
   let winner: 'ai1' | 'ai2' | null = null;
   if (state.phase === 'victory') {
     if (ai1Cities.length === 0) winner = 'ai2';
@@ -248,6 +287,12 @@ export type SimDiagnostics = {
   firstCycleFoodZeroAi1?: number;
   /** First cycle when AI2 had zero total food in cities. */
   firstCycleFoodZeroAi2?: number;
+  /** Unit status counts (last cycle) for instrumentation. */
+  unitStatusCountsAi1?: { idle: number; moving: number; fighting: number; starving: number };
+  unitStatusCountsAi2?: { idle: number; moving: number; fighting: number; starving: number };
+  /** Final-cycle population per side (for collapse metrics). */
+  finalAi1Pop?: number;
+  finalAi2Pop?: number;
 };
 
 /** Single step: economy + AI actions + one movement/combat/siege/capture tick. */
@@ -256,6 +301,7 @@ export function stepSimulation(
   paramsA: AiParams,
   paramsB: AiParams,
   diagnostics?: SimDiagnostics,
+  traceCallback?: (data: CycleTrace) => void,
 ): SimState {
   if (state.phase !== 'playing') return state;
 
@@ -293,6 +339,17 @@ export function stepSimulation(
   );
   units = units.filter(u => u.hp > 0);
 
+  const countStatus = (list: Unit[]) => {
+    let idle = 0, moving = 0, fighting = 0, starving = 0;
+    for (const u of list) {
+      if (u.status === 'idle') idle++;
+      else if (u.status === 'moving') moving++;
+      else if (u.status === 'fighting') fighting++;
+      else if (u.status === 'starving') starving++;
+    }
+    return { idle, moving, fighting, starving };
+  };
+
   if (diagnostics) {
     const anyStarving = units.some(u => u.status === 'starving');
     if (anyStarving && diagnostics.firstCycleAnyStarvation == null) diagnostics.firstCycleAnyStarvation = newCycle;
@@ -305,9 +362,13 @@ export function stepSimulation(
     const foodAi2 = cities.filter(c => c.ownerId === AI_ID_2).reduce((s, c) => s + c.storage.food, 0);
     if (foodAi1 <= 0 && diagnostics.firstCycleFoodZeroAi1 == null) diagnostics.firstCycleFoodZeroAi1 = newCycle;
     if (foodAi2 <= 0 && diagnostics.firstCycleFoodZeroAi2 == null) diagnostics.firstCycleFoodZeroAi2 = newCycle;
+    const ai1Units = units.filter(u => u.ownerId === AI_ID);
+    const ai2Units = units.filter(u => u.ownerId === AI_ID_2);
+    diagnostics.unitStatusCountsAi1 = countStatus(ai1Units);
+    diagnostics.unitStatusCountsAi2 = countStatus(ai2Units);
   }
 
-  // ── AI turns (apply plans with per-player params) ──
+  // ── AI turns: compute both plans first (for trace), then apply ──
   let scoutMissions = [...state.scoutMissions];
   let scoutedHexes = new Set(state.scoutedHexes);
   let tilesMut = state.tiles;
@@ -317,8 +378,41 @@ export function stepSimulation(
     { id: AI_ID_2, params: paramsB },
   ];
 
-  for (const { id: aiPlayerId, params } of aiConfigs) {
-    const aiPlan = planAiTurn(aiPlayerId, cities, units, players, state.tiles, state.territory, params);
+  const plans = aiConfigs.map(({ id, params }) => planAiTurn(id, cities, units, players, state.tiles, state.territory, params));
+
+  if (traceCallback) {
+    const ai1CitiesFiltered = cities.filter(c => c.ownerId === AI_ID);
+    const ai2CitiesFiltered = cities.filter(c => c.ownerId === AI_ID_2);
+    const ai1Pop = ai1CitiesFiltered.reduce((s, c) => s + c.population, 0);
+    const ai2Pop = ai2CitiesFiltered.reduce((s, c) => s + c.population, 0);
+    const ai1FoodStorage = ai1CitiesFiltered.reduce((s, c) => s + c.storage.food, 0);
+    const ai2FoodStorage = ai2CitiesFiltered.reduce((s, c) => s + c.storage.food, 0);
+    const food1 = estimateAiFoodSurplus(AI_ID, cities, units, state.tiles, state.territory, harvestMultiplier);
+    const food2 = estimateAiFoodSurplus(AI_ID_2, cities, units, state.tiles, state.territory, harvestMultiplier);
+    const ai1Units = units.filter(u => u.ownerId === AI_ID);
+    const ai2Units = units.filter(u => u.ownerId === AI_ID_2);
+    traceCallback({
+      cycle: newCycle,
+      ai1Pop,
+      ai2Pop,
+      ai1FoodStorage,
+      ai2FoodStorage,
+      ai1FoodIncome: food1.foodIncome,
+      ai2FoodIncome: food2.foodIncome,
+      civDemandAi1: food1.civDemand,
+      civDemandAi2: food2.civDemand,
+      militaryDemandAi1: food1.militaryDemand,
+      militaryDemandAi2: food2.militaryDemand,
+      recruitsAi1: plans[0].recruits.length,
+      recruitsAi2: plans[1].recruits.length,
+      unitStatusAi1: countStatus(ai1Units),
+      unitStatusAi2: countStatus(ai2Units),
+    });
+  }
+
+  for (let cfgIdx = 0; cfgIdx < aiConfigs.length; cfgIdx++) {
+    const { id: aiPlayerId } = aiConfigs[cfgIdx];
+    const aiPlan = plans[cfgIdx];
     const aiPlayer = players.find(p => p.id === aiPlayerId);
     if (!aiPlayer) continue;
 

@@ -1,0 +1,238 @@
+{
+  "meta": {
+    "version": "v1",
+    "strategy": "Stabilize food first; barracks → farm(2+) → factory/market → academy; small standing army; push when food buffer stable",
+    "archetypes": ["Sustain/Tempo", "Pressure/Timing", "Logistics/Expansion"],
+    "countPerArchetype": 4
+  },
+  "candidates": [
+    {
+      "archetype": "Sustain/Tempo",
+      "params": {
+        "siegeChance": 0.12,
+        "recruitGoldThreshold": 520,
+        "maxRecruitsWhenRich": 2,
+        "maxRecruitsWhenPoor": 1,
+        "targetDefenderWeight": 3.4,
+        "nearestTargetDistanceRatio": 0.78,
+        "builderRecruitChance": 0.22,
+        "foodBufferThreshold": 14,
+        "sustainableMilitaryMultiplier": 0.9,
+        "farmFirstBias": 0,
+        "factoryUpgradePriority": 0.6,
+        "scoutChance": 1,
+        "incorporateVillageChance": 1,
+        "targetPopWeight": 1
+      }
+    },
+    {
+      "archetype": "Sustain/Tempo",
+      "params": {
+        "siegeChance": 0.14,
+        "recruitGoldThreshold": 560,
+        "maxRecruitsWhenRich": 2,
+        "maxRecruitsWhenPoor": 1,
+        "targetDefenderWeight": 3.8,
+        "nearestTargetDistanceRatio": 0.76,
+        "builderRecruitChance": 0.24,
+        "foodBufferThreshold": 14,
+        "sustainableMilitaryMultiplier": 0.9,
+        "farmFirstBias": 0,
+        "factoryUpgradePriority": 0.6,
+        "scoutChance": 1,
+        "incorporateVillageChance": 1,
+        "targetPopWeight": 1
+      }
+    },
+    {
+      "archetype": "Sustain/Tempo",
+      "params": {
+        "siegeChance": 0.1,
+        "recruitGoldThreshold": 500,
+        "maxRecruitsWhenRich": 3,
+        "maxRecruitsWhenPoor": 1,
+        "targetDefenderWeight": 3.2,
+        "nearestTargetDistanceRatio": 0.8,
+        "builderRecruitChance": 0.2,
+        "foodBufferThreshold": 14,
+        "sustainableMilitaryMultiplier": 0.9,
+        "farmFirstBias": 0,
+        "factoryUpgradePriority": 0.6,
+        "scoutChance": 1,
+        "incorporateVillageChance": 1,
+        "targetPopWeight": 1
+      }
+    },
+    {
+      "archetype": "Sustain/Tempo",
+      "params": {
+        "siegeChance": 0.16,
+        "recruitGoldThreshold": 540,
+        "maxRecruitsWhenRich": 2,
+        "maxRecruitsWhenPoor": 1,
+        "targetDefenderWeight": 4,
+        "nearestTargetDistanceRatio": 0.74,
+        "builderRecruitChance": 0.26,
+        "foodBufferThreshold": 14,
+        "sustainableMilitaryMultiplier": 0.9,
+        "farmFirstBias": 0,
+        "factoryUpgradePriority": 0.6,
+        "scoutChance": 1,
+        "incorporateVillageChance": 1,
+        "targetPopWeight": 1
+      }
+    },
+    {
+      "archetype": "Pressure/Timing",
+      "params": {
+        "siegeChance": 0.18,
+        "recruitGoldThreshold": 500,
+        "maxRecruitsWhenRich": 3,
+        "maxRecruitsWhenPoor": 1,
+        "targetDefenderWeight": 4.5,
+        "nearestTargetDistanceRatio": 0.72,
+        "builderRecruitChance": 0.18,
+        "foodBufferThreshold": 12,
+        "sustainableMilitaryMultiplier": 0.92,
+        "farmFirstBias": 0,
+        "factoryUpgradePriority": 0.6,
+        "scoutChance": 1,
+        "incorporateVillageChance": 1,
+        "targetPopWeight": 1
+      }
+    },
+    {
+      "archetype": "Pressure/Timing",
+      "params": {
+        "siegeChance": 0.2,
+        "recruitGoldThreshold": 520,
+        "maxRecruitsWhenRich": 3,
+        "maxRecruitsWhenPoor": 1,
+        "targetDefenderWeight": 4.2,
+        "nearestTargetDistanceRatio": 0.7,
+        "builderRecruitChance": 0.16,
+        "foodBufferThreshold": 12,
+        "sustainableMilitaryMultiplier": 0.92,
+        "farmFirstBias": 0,
+        "factoryUpgradePriority": 0.6,
+        "scoutChance": 1,
+        "incorporateVillageChance": 1,
+        "targetPopWeight": 1
+      }
+    },
+    {
+      "archetype": "Pressure/Timing",
+      "params": {
+        "siegeChance": 0.17,
+        "recruitGoldThreshold": 480,
+        "maxRecruitsWhenRich": 3,
+        "maxRecruitsWhenPoor": 2,
+        "targetDefenderWeight": 4,
+        "nearestTargetDistanceRatio": 0.75,
+        "builderRecruitChance": 0.18,
+        "foodBufferThreshold": 12,
+        "sustainableMilitaryMultiplier": 0.92,
+        "farmFirstBias": 0,
+        "factoryUpgradePriority": 0.6,
+        "scoutChance": 1,
+        "incorporateVillageChance": 1,
+        "targetPopWeight": 1
+      }
+    },
+    {
+      "archetype": "Pressure/Timing",
+      "params": {
+        "siegeChance": 0.22,
+        "recruitGoldThreshold": 540,
+        "maxRecruitsWhenRich": 3,
+        "maxRecruitsWhenPoor": 1,
+        "targetDefenderWeight": 4.8,
+        "nearestTargetDistanceRatio": 0.68,
+        "builderRecruitChance": 0.14,
+        "foodBufferThreshold": 12,
+        "sustainableMilitaryMultiplier": 0.92,
+        "farmFirstBias": 0,
+        "factoryUpgradePriority": 0.6,
+        "scoutChance": 1,
+        "incorporateVillageChance": 1,
+        "targetPopWeight": 1
+      }
+    },
+    {
+      "archetype": "Logistics/Expansion",
+      "params": {
+        "siegeChance": 0.1,
+        "recruitGoldThreshold": 600,
+        "maxRecruitsWhenRich": 2,
+        "maxRecruitsWhenPoor": 1,
+        "targetDefenderWeight": 3,
+        "nearestTargetDistanceRatio": 0.82,
+        "builderRecruitChance": 0.3,
+        "foodBufferThreshold": 16,
+        "sustainableMilitaryMultiplier": 0.88,
+        "farmFirstBias": 0,
+        "factoryUpgradePriority": 0.6,
+        "scoutChance": 1,
+        "incorporateVillageChance": 1,
+        "targetPopWeight": 1
+      }
+    },
+    {
+      "archetype": "Logistics/Expansion",
+      "params": {
+        "siegeChance": 0.08,
+        "recruitGoldThreshold": 620,
+        "maxRecruitsWhenRich": 2,
+        "maxRecruitsWhenPoor": 1,
+        "targetDefenderWeight": 2.8,
+        "nearestTargetDistanceRatio": 0.85,
+        "builderRecruitChance": 0.32,
+        "foodBufferThreshold": 16,
+        "sustainableMilitaryMultiplier": 0.88,
+        "farmFirstBias": 0,
+        "factoryUpgradePriority": 0.6,
+        "scoutChance": 1,
+        "incorporateVillageChance": 1,
+        "targetPopWeight": 1
+      }
+    },
+    {
+      "archetype": "Logistics/Expansion",
+      "params": {
+        "siegeChance": 0.12,
+        "recruitGoldThreshold": 580,
+        "maxRecruitsWhenRich": 2,
+        "maxRecruitsWhenPoor": 1,
+        "targetDefenderWeight": 3.2,
+        "nearestTargetDistanceRatio": 0.8,
+        "builderRecruitChance": 0.28,
+        "foodBufferThreshold": 16,
+        "sustainableMilitaryMultiplier": 0.88,
+        "farmFirstBias": 0,
+        "factoryUpgradePriority": 0.6,
+        "scoutChance": 1,
+        "incorporateVillageChance": 1,
+        "targetPopWeight": 1
+      }
+    },
+    {
+      "archetype": "Logistics/Expansion",
+      "params": {
+        "siegeChance": 0.14,
+        "recruitGoldThreshold": 640,
+        "maxRecruitsWhenRich": 2,
+        "maxRecruitsWhenPoor": 1,
+        "targetDefenderWeight": 3,
+        "nearestTargetDistanceRatio": 0.83,
+        "builderRecruitChance": 0.34,
+        "foodBufferThreshold": 16,
+        "sustainableMilitaryMultiplier": 0.88,
+        "farmFirstBias": 0,
+        "factoryUpgradePriority": 0.6,
+        "scoutChance": 1,
+        "incorporateVillageChance": 1,
+        "targetPopWeight": 1
+      }
+    }
+  ]
+}

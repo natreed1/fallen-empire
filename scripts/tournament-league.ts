@@ -4,6 +4,8 @@
  * configurable scoring (no-combat penalty, all-starving lock penalty).
  *
  * Run: LEAGUE_SEASONS=12 LEAGUE_DIV_SIZE=8 npm run tournament-league
+ * Seed pool (strong archetypes, avoid starvation lock):
+ *   LEAGUE_SEED_POOL=artifacts/seed_pool_v1.json LEAGUE_MAX_CYCLES=300 npm run tournament-league
  */
 
 import * as path from 'path';
@@ -23,11 +25,13 @@ const LEAGUE_DIV_SIZE = parseInt(process.env.LEAGUE_DIV_SIZE || '8', 10) || 8;
 const LEAGUE_MAX_CYCLES = parseInt(process.env.LEAGUE_MAX_CYCLES || '500', 10) || 500;
 const LEAGUE_MAP_SIZE = parseInt(process.env.LEAGUE_MAP_SIZE || '56', 10) || 56;
 const LEAGUE_WORKERS = parseInt(process.env.LEAGUE_WORKERS || '0', 10) || 0; // 0 = main thread only
+const LEAGUE_SEED_POOL = process.env.LEAGUE_SEED_POOL || ''; // e.g. artifacts/seed_pool_v1.json → 12 candidates, 6/3/3 divisions
 
-const POPULATION_SIZE = LEAGUE_DIV_SIZE * 3; // 24 = 8 per division
-const TOP_K = 2;
-const BOT_K = 2;
+const POPULATION_SIZE = LEAGUE_DIV_SIZE * 3; // 24 = 8 per division (ignored when seed pool)
+const TOP_K = LEAGUE_SEED_POOL ? 1 : 2;
+const BOT_K = LEAGUE_SEED_POOL ? 1 : 2;
 const ELITES_UNCHANGED = 1;
+const SEED_POOL_LIGHT_MUTATION = 0.08; // for B/C when using seed pool
 
 // Scoring weights (configurable at top-level)
 const WIN_POINTS = 100;
@@ -204,6 +208,15 @@ function compareCandidates(a: Candidate, b: Candidate): number {
   return b.seasonStats.popDiff - a.seasonStats.popDiff;
 }
 
+/** For promotion: prefer candidates with non-zero kills / lower noCombatGames (stronger signal). */
+function compareForPromotion(a: Candidate, b: Candidate): number {
+  const aCombat = a.seasonStats.killsFor > 0 ? 1 : 0;
+  const bCombat = b.seasonStats.killsFor > 0 ? 1 : 0;
+  if (bCombat !== aCombat) return bCombat - aCombat;
+  if (a.seasonStats.noCombatGames !== b.seasonStats.noCombatGames) return a.seasonStats.noCombatGames - b.seasonStats.noCombatGames;
+  return compareCandidates(a, b);
+}
+
 /** Bounded random perturbation; clamp to valid ranges. */
 function mutateParams(parent: AiParams, strength: number = 0.15): AiParams {
   const m = (x: number, lo: number, hi: number) =>
@@ -230,6 +243,67 @@ function cloneParams(p: AiParams): AiParams {
   return { ...DEFAULT_AI_PARAMS, ...p };
 }
 
+/** Light mutation for seed-pool B/C variants. */
+function mutateParamsLight(parent: AiParams, strength: number = SEED_POOL_LIGHT_MUTATION): AiParams {
+  return mutateParams(parent, strength);
+}
+
+type SeedPoolEntry = { archetype?: string; params: Partial<AiParams> };
+type SeedPoolFile = { meta?: unknown; candidates: SeedPoolEntry[] };
+
+/** Load seed pool JSON and return full AiParams[] (merged with defaults). */
+function loadSeedPool(filePath: string): AiParams[] {
+  const resolved = path.isAbsolute(filePath) ? filePath : path.join(process.cwd(), filePath);
+  const raw = fs.readFileSync(resolved, 'utf8');
+  const data = JSON.parse(raw) as SeedPoolFile;
+  if (!Array.isArray(data.candidates) || data.candidates.length < 12) {
+    throw new Error(`Seed pool must have at least 12 candidates, got ${data.candidates?.length ?? 0}`);
+  }
+  return data.candidates.slice(0, 12).map(entry =>
+    cloneParams({ ...DEFAULT_AI_PARAMS, ...entry.params } as AiParams),
+  );
+}
+
+/** Seed A with 2 per archetype (indices 0,1 = Sustain; 4,5 = Pressure; 8,9 = Logistics). B/C get rest + light mutation. */
+function initialCandidatesFromSeedPool(poolPath: string): Candidate[] {
+  const paramsList = loadSeedPool(poolPath);
+  const list: Candidate[] = [];
+  const aIndices = [0, 1, 4, 5, 8, 9];
+  const bIndices = [2, 6, 10];
+  const cIndices = [3, 7, 11];
+  let idx = 0;
+  for (const i of aIndices) {
+    list.push({
+      id: `seed_A_${idx}`,
+      params: cloneParams(paramsList[i]),
+      division: 'A',
+      seasonStats: emptyStats(),
+    });
+    idx++;
+  }
+  idx = 0;
+  for (const i of bIndices) {
+    list.push({
+      id: `seed_B_${idx}`,
+      params: mutateParamsLight(paramsList[i]),
+      division: 'B',
+      seasonStats: emptyStats(),
+    });
+    idx++;
+  }
+  idx = 0;
+  for (const i of cIndices) {
+    list.push({
+      id: `seed_C_${idx}`,
+      params: mutateParamsLight(paramsList[i]),
+      division: 'C',
+      seasonStats: emptyStats(),
+    });
+    idx++;
+  }
+  return list;
+}
+
 /** Initialize population: one default, rest mutated from default. */
 function initialCandidates(): Candidate[] {
   const list: Candidate[] = [];
@@ -249,7 +323,7 @@ function initialCandidates(): Candidate[] {
   return list;
 }
 
-/** Promote/relegate: top TOP_K from B->A, bottom BOT_K from A->B; same B<->C; replace bottom 2 in C with mutations. */
+/** Promote/relegate: top TOP_K from B->A (by combat/points), bottom BOT_K from A->B; same B<->C; replace bottom in C with mutations. */
 function promoteRelegateAndReplace(
   candidates: Candidate[],
   elites: Candidate[],
@@ -258,14 +332,17 @@ function promoteRelegateAndReplace(
   const B = candidates.filter(c => c.division === 'B').sort(compareCandidates);
   const C = candidates.filter(c => c.division === 'C').sort(compareCandidates);
 
-  const toA = B.slice(0, TOP_K);
+  const BByPromotion = [...B].sort(compareForPromotion);
+  const CByPromotion = [...C].sort(compareForPromotion);
+
+  const toA = BByPromotion.slice(0, TOP_K);
   const toBFromA = A.slice(-BOT_K);
-  const toB = C.slice(0, TOP_K);
+  const toB = CByPromotion.slice(0, TOP_K);
   const toCFromB = B.slice(-BOT_K);
   const bottomC = C.slice(-BOT_K);
   const newC = elites.length >= 1
-    ? [mutateParams(elites[0].params), mutateParams(elites[Math.min(1, elites.length - 1)].params)]
-    : [mutateParams(DEFAULT_AI_PARAMS), mutateParams(DEFAULT_AI_PARAMS)];
+    ? bottomC.map((_, i) => mutateParams(elites[Math.min(i, elites.length - 1)].params))
+    : bottomC.map(() => mutateParams(DEFAULT_AI_PARAMS));
 
   for (const c of toA) c.division = 'A';
   for (const c of toBFromA) c.division = 'B';
@@ -291,6 +368,7 @@ type DivisionStanding = { id: string; points: number; wins: number; losses: numb
 type LeagueReport = {
   seasons: number;
   divSize: number;
+  seedPool?: string;
   history: {
     season: number;
     standingsA: DivisionStanding[];
@@ -303,14 +381,19 @@ type LeagueReport = {
 };
 
 function main() {
+  const useSeedPool = LEAGUE_SEED_POOL.length > 0;
+  const divLabel = useSeedPool ? '6/3/3 (seed pool)' : `${LEAGUE_DIV_SIZE} each`;
+
   console.log('League tournament');
-  console.log(`  Seasons: ${LEAGUE_SEASONS}  Div size: ${LEAGUE_DIV_SIZE}  Map: ${LEAGUE_MAP_SIZE}x${LEAGUE_MAP_SIZE}  MaxCycles: ${LEAGUE_MAX_CYCLES}`);
+  console.log(`  Seasons: ${LEAGUE_SEASONS}  Divisions: ${divLabel}  Map: ${LEAGUE_MAP_SIZE}x${LEAGUE_MAP_SIZE}  MaxCycles: ${LEAGUE_MAX_CYCLES}`);
+  if (useSeedPool) console.log(`  Seed pool: ${LEAGUE_SEED_POOL}`);
   console.log('');
 
-  let candidates = initialCandidates();
+  let candidates = useSeedPool ? initialCandidatesFromSeedPool(LEAGUE_SEED_POOL) : initialCandidates();
   const report: LeagueReport = {
     seasons: LEAGUE_SEASONS,
-    divSize: LEAGUE_DIV_SIZE,
+    divSize: useSeedPool ? 6 : LEAGUE_DIV_SIZE,
+    seedPool: useSeedPool ? LEAGUE_SEED_POOL : undefined,
     history: [],
     champion: { id: '', division: 'A' },
     finalStandingsA: [],

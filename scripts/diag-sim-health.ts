@@ -2,10 +2,14 @@
  * Headless simulation health check. Runs N games and reports:
  * - games with any combat deaths, total kills, owner flips, draw rate
  * - first cycle any starvation, first cycle all units starving, first cycle food zero per side
+ * - starvation lock frequency (games where all-starving occurred)
+ * - min/median population at end (collapse metrics)
  *
- * Run: DIAG_NUM_GAMES=50 DIAG_MAX_CYCLES=1000 DIAG_MAP_SIZE=56 npm run diag-sim-health
+ * Validate with: DIAG_NUM_GAMES=40 DIAG_MAX_CYCLES=350 DIAG_MAP_SIZE=48 npm run diag-sim-health
+ * One-game trace: DIAG_TRACE=1 npm run diag-sim-health  (writes artifacts/diag-trace-1.json)
  */
 
+import * as path from 'path';
 import {
   runSimulationWithDiagnostics,
   DEFAULT_AI_PARAMS,
@@ -13,17 +17,23 @@ import {
 } from '../src/core/gameCore';
 
 const NUM_GAMES = parseInt(process.env.DIAG_NUM_GAMES || '40', 10);
-const MAX_CYCLES = parseInt(process.env.DIAG_MAX_CYCLES || '220', 10);
-const MAP_SIZE = parseInt(process.env.DIAG_MAP_SIZE || '56', 10);
-
-const OPTS: RunSimulationOptions = {
-  maxCycles: MAX_CYCLES,
-  mapConfigOverride: { width: MAP_SIZE, height: MAP_SIZE },
-};
+const MAX_CYCLES = parseInt(process.env.DIAG_MAX_CYCLES || '350', 10);
+const MAP_SIZE = parseInt(process.env.DIAG_MAP_SIZE || '48', 10);
+const DIAG_TRACE = process.env.DIAG_TRACE === '1' || process.env.DIAG_TRACE === 'true';
 
 function main() {
+  const opts: RunSimulationOptions = {
+    maxCycles: MAX_CYCLES,
+    mapConfigOverride: { width: MAP_SIZE, height: MAP_SIZE },
+  };
+  if (DIAG_TRACE) {
+    opts.tracePath = path.join(process.cwd(), 'artifacts', 'diag-trace-1.json');
+  }
+
+  const runs = DIAG_TRACE ? 1 : NUM_GAMES;
   console.log('Headless sim health check');
-  console.log(`  Games: ${NUM_GAMES}  Map: ${MAP_SIZE}x${MAP_SIZE}  MaxCycles: ${MAX_CYCLES}`);
+  console.log(`  Games: ${runs}  Map: ${MAP_SIZE}x${MAP_SIZE}  MaxCycles: ${MAX_CYCLES}`);
+  if (DIAG_TRACE) console.log('  Trace: writing per-cycle snapshot to', opts.tracePath);
   console.log('');
 
   let gamesWithDeaths = 0;
@@ -31,40 +41,57 @@ function main() {
   let totalKillsAll = 0;
   let totalUnitsAtEnd = 0;
   let draws = 0;
+  let gamesWithAllStarvingLock = 0;
   const firstAnyStarvation: number[] = [];
   const firstAllStarving: number[] = [];
   const firstFoodZeroAi1: number[] = [];
   const firstFoodZeroAi2: number[] = [];
+  const finalTotalPop: number[] = [];
 
-  for (let i = 0; i < NUM_GAMES; i++) {
+  for (let i = 0; i < runs; i++) {
     const seed = (1000 + i * 7919) % 1_000_000;
     const { winner, diagnostics } = runSimulationWithDiagnostics(
       DEFAULT_AI_PARAMS,
       DEFAULT_AI_PARAMS,
       seed,
       MAX_CYCLES,
-      OPTS,
+      opts,
     );
     if (diagnostics.totalKills > 0) gamesWithDeaths++;
     if (diagnostics.hadOwnerFlip) gamesWithOwnerFlip++;
     totalKillsAll += diagnostics.totalKills;
     totalUnitsAtEnd += diagnostics.unitsAtEnd;
     if (winner === null) draws++;
+    if (diagnostics.firstCycleAllStarving != null) gamesWithAllStarvingLock++;
     if (diagnostics.firstCycleAnyStarvation != null) firstAnyStarvation.push(diagnostics.firstCycleAnyStarvation);
     if (diagnostics.firstCycleAllStarving != null) firstAllStarving.push(diagnostics.firstCycleAllStarving);
     if (diagnostics.firstCycleFoodZeroAi1 != null) firstFoodZeroAi1.push(diagnostics.firstCycleFoodZeroAi1);
     if (diagnostics.firstCycleFoodZeroAi2 != null) firstFoodZeroAi2.push(diagnostics.firstCycleFoodZeroAi2);
+    const fp1 = diagnostics.finalAi1Pop ?? 0;
+    const fp2 = diagnostics.finalAi2Pop ?? 0;
+    finalTotalPop.push(fp1 + fp2);
   }
 
-  const drawRate = (draws / NUM_GAMES) * 100;
-  const avgUnits = totalUnitsAtEnd / NUM_GAMES;
+  const n = runs;
+  const drawRate = (draws / n) * 100;
+  const avgUnits = totalUnitsAtEnd / n;
+  const starvationLockFreq = (gamesWithAllStarvingLock / n) * 100;
+
+  const sortedPop = [...finalTotalPop].sort((a, b) => a - b);
+  const minPop = sortedPop.length ? sortedPop[0] : 0;
+  const medianPop = sortedPop.length
+    ? sortedPop[Math.floor(sortedPop.length / 2)]
+    : 0;
 
   console.log('Results:');
-  console.log(`  games_with_combat_deaths: ${gamesWithDeaths}/${NUM_GAMES}`);
-  console.log(`  games_with_owner_flip: ${gamesWithOwnerFlip}/${NUM_GAMES}`);
+  console.log(`  games_with_combat_deaths: ${gamesWithDeaths}/${n}`);
+  console.log(`  games_with_owner_flip: ${gamesWithOwnerFlip}/${n}`);
   console.log(`  total_kills: ${totalKillsAll}`);
   console.log(`  avg_units_at_end: ${avgUnits.toFixed(1)}`);
-  console.log(`  draw_rate_pct: ${drawRate.toFixed(1)} (${draws}/${NUM_GAMES})`);
+  console.log(`  draw_rate_pct: ${drawRate.toFixed(1)} (${draws}/${n})`);
+  console.log(`  starvation_lock_frequency_pct: ${starvationLockFreq.toFixed(1)} (${gamesWithAllStarvingLock}/${n} games with all-starving)`);
+  console.log(`  final_pop_min: ${minPop}`);
+  console.log(`  final_pop_median: ${medianPop}`);
   const avgFirstStarvation = firstAnyStarvation.length ? firstAnyStarvation.reduce((a, b) => a + b, 0) / firstAnyStarvation.length : null;
   const avgFirstAllStarving = firstAllStarving.length ? firstAllStarving.reduce((a, b) => a + b, 0) / firstAllStarving.length : null;
   const avgFirstFoodZero1 = firstFoodZeroAi1.length ? firstFoodZeroAi1.reduce((a, b) => a + b, 0) / firstFoodZeroAi1.length : null;
@@ -83,6 +110,7 @@ function main() {
     if (!okDeaths) console.log('  FAIL: no combat deaths in any game');
     if (!okDrawRate) console.log('  FAIL: draw rate too high');
   }
+  if (DIAG_TRACE) console.log('  Trace written. Compare before/after changes.');
 }
 
 main();

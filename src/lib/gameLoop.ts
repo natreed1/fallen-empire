@@ -446,7 +446,7 @@ function populationGrowthPhase(
       let rawBirths = Math.max(0, Math.floor(POP_BIRTH_RATE * P * (1 - P / K)));
       const civDemandCity = Math.ceil(P * 0.25);
       if (civDemandCity > 0) {
-        const bufferThreshold = 2 * civDemandCity;
+        const bufferThreshold = 3 * civDemandCity;
         if (city.storage.food < bufferThreshold) {
           const scale = city.storage.food / bufferThreshold;
           rawBirths = Math.floor(rawBirths * scale);
