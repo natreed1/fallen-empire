@@ -81,6 +81,8 @@ export interface AiParams {
   sustainableMilitaryMultiplier: number;
   /** Build order: 0 = barracks first, 1 = 2 farms before barracks. */
   farmFirstBias: number;
+  /** When food surplus is below this, prefer building a farm (priority over normal build order). 0 = off. */
+  farmPriorityThreshold: number;
   /** When factory and barracks can both upgrade, chance to pick factory first (0–1). */
   factoryUpgradePriority: number;
   /** Chance to send scout each cycle when gold allows (0–1). */
@@ -102,6 +104,7 @@ export const DEFAULT_AI_PARAMS: AiParams = {
   foodBufferThreshold: 14,
   sustainableMilitaryMultiplier: 0.9,
   farmFirstBias: 0,
+  farmPriorityThreshold: 15,
   factoryUpgradePriority: 0.6,
   scoutChance: 1,
   incorporateVillageChance: 1,
@@ -202,11 +205,17 @@ export function planAiTurn(
     const goldMineSpot = findGoldMineTile(city, territory, tiles, cities);
     const ironForGoldMine = (BUILDING_IRON_COSTS.gold_mine ?? 0);
 
-    // Build order: farmFirstBias >= 0.5 => 2 farms before barracks; else barracks first
-    const farmFirst = (params.farmFirstBias ?? 0) >= 0.5;
-    if (farmFirst && farmCount < 2 && goldBudget >= BUILDING_COSTS.farm) {
+    const farmPriority = params.farmPriorityThreshold ?? 0;
+    const foodTight = farmPriority > 0 && foodStats.surplus < farmPriority;
+    if (foodTight && farmCount < 4 && goldBudget >= BUILDING_COSTS.farm) {
       toBuild = 'farm';
-    } else if (!hasBarracks && goldBudget >= BUILDING_COSTS.barracks) {
+    }
+
+    if (!toBuild) {
+      const farmFirst = (params.farmFirstBias ?? 0) >= 0.5;
+      if (farmFirst && farmCount < 2 && goldBudget >= BUILDING_COSTS.farm) {
+        toBuild = 'farm';
+      } else if (!hasBarracks && goldBudget >= BUILDING_COSTS.barracks) {
       toBuild = 'barracks';
     } else if (!farmFirst && farmCount < 2 && goldBudget >= BUILDING_COSTS.farm) {
       toBuild = 'farm';
@@ -224,6 +233,7 @@ export function planAiTurn(
       toBuild = 'gold_mine';
     } else if (farmCount < 4 && goldBudget >= BUILDING_COSTS.farm) {
       toBuild = 'farm';
+    }
     }
 
     if (toBuild) {

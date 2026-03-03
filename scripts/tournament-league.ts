@@ -232,6 +232,7 @@ function mutateParams(parent: AiParams, strength: number = 0.15): AiParams {
     foodBufferThreshold: Math.max(0, Math.min(30, Math.round((parent.foodBufferThreshold ?? 10) + (Math.random() - 0.5) * 6))),
     sustainableMilitaryMultiplier: m(parent.sustainableMilitaryMultiplier ?? 1, 0.6, 1.2),
     farmFirstBias: m(parent.farmFirstBias ?? 0, 0, 1),
+    farmPriorityThreshold: Math.max(0, Math.min(30, Math.round((parent.farmPriorityThreshold ?? 15) + (Math.random() - 0.5) * 8))),
     factoryUpgradePriority: m(parent.factoryUpgradePriority ?? 0.6, 0, 1),
     scoutChance: m(parent.scoutChance ?? 1, 0, 1),
     incorporateVillageChance: m(parent.incorporateVillageChance ?? 1, 0, 1),
