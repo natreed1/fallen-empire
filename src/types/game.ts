@@ -253,8 +253,11 @@ export interface TerritoryInfo {
 // ─── Game Constants ────────────────────────────────────────────────
 
 export const TERRITORY_RADIUS = 3;
-/** Units/builders get supply when within this hex distance of any friendly city. No roads required. */
-export const SUPPLY_VICINITY_RADIUS = 8;
+/** Rough max hexes a unit can move in one sim cycle (30s) at speed 1. Supply radius should be >= this so movement and supply are aligned. */
+export const MOVEMENT_HEXES_PER_CYCLE_ESTIMATE = 24;
+/** Units/builders get supply when within this hex distance of any friendly city. No roads required.
+ *  >= MOVEMENT_HEXES_PER_CYCLE_ESTIMATE so one cycle of movement doesn't leave supply. */
+export const SUPPLY_VICINITY_RADIUS = 24;
 export const STARTING_GOLD = 150;
 
 export const STARTING_CITY_TEMPLATE: Omit<City, 'id' | 'name' | 'q' | 'r' | 'ownerId'> = {

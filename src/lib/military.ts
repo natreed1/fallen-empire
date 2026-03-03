@@ -3,6 +3,7 @@ import {
   UNIT_BASE_STATS, UNIT_L2_STATS, ROAD_SPEED_BONUS,
   hexDistance, hexNeighbors, tileKey, generateId,
   RETREAT_DELAY_MS, ASSAULT_ATTACK_DEBUFF,
+  SUPPLY_VICINITY_RADIUS,
 } from '@/types/game';
 import { getUnitAttack, awardXp } from './combat';
 import { computeTradeClusters, getSupplyingClusterKey } from '@/lib/logistics';
@@ -71,6 +72,19 @@ export function movementTick(
     const next = stepTowardZOC(leader.q, leader.r, targetQ, targetR, tiles, units, leader.ownerId, wallSections, cities);
 
     if (next[0] === leader.q && next[1] === leader.r) {
+      for (const u of army) { u.status = 'idle'; u.targetQ = undefined; u.targetR = undefined; }
+      continue;
+    }
+
+    // Status/supply gating: if unit is out of supply, do not advance further from any friendly city (so they can be re-tasked or retreat)
+    const friendlyCities = cities.filter(c => c.ownerId === leader.ownerId);
+    const distToNearestNow = friendlyCities.length > 0
+      ? Math.min(...friendlyCities.map(c => hexDistance(leader.q, leader.r, c.q, c.r)))
+      : 0;
+    const distToNearestAfter = friendlyCities.length > 0
+      ? Math.min(...friendlyCities.map(c => hexDistance(next[0], next[1], c.q, c.r)))
+      : 0;
+    if (distToNearestNow > SUPPLY_VICINITY_RADIUS && distToNearestAfter > distToNearestNow) {
       for (const u of army) { u.status = 'idle'; u.targetQ = undefined; u.targetR = undefined; }
       continue;
     }

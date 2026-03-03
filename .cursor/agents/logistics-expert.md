@@ -13,7 +13,7 @@ You are the logistics expert for the Fallen Empire game. You know the mechanics 
 - Key types: `TradeCluster` (cityIds, cities). Helpers: `getCapitalCluster`, `getClusterForCity`. `computeConnectionPaths` returns hex paths for Supply view visualization.
 
 **Unit supply**
-- Military units and builders are **in supply** when within **SUPPLY_VICINITY_RADIUS** (8 hexes) of **any friendly city** that belongs to a cluster. Supply is by vicinity to cities, not road connectivity.
+- Military units and builders are **in supply** when within **SUPPLY_VICINITY_RADIUS** (24 hexes) of **any friendly city** that belongs to a cluster. Supply is by vicinity to cities, not road connectivity. Radius is aligned with movement horizon so one cycle of movement doesn't leave supply.
 - `getSupplyingClusterKey` (logistics.ts) returns the cluster key for a unit, or `null` if the unit is cut off.
 - Unsupplied units: lose 5% maxHp per upkeep tick, status set to `'starving'`.
 
@@ -35,7 +35,7 @@ You are the logistics expert for the Fallen Empire game. You know the mechanics 
 
 ## Constants (src/types/game.ts)
 
-- `SUPPLY_VICINITY_RADIUS = 8`
+- `SUPPLY_VICINITY_RADIUS = 24` (aligned with `MOVEMENT_HEXES_PER_CYCLE_ESTIMATE` so one cycle of movement doesn't leave supply)
 - `ROAD_SPEED_BONUS = 1.5`
 - `ROAD_BP_COST = 25`
 
