@@ -7,7 +7,9 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "train-ai": "npx ts-node -r tsconfig-paths/register --project tsconfig.train.json scripts/train-ai.ts"
+    "train-ai": "npx ts-node -r tsconfig-paths/register --project tsconfig.train.json scripts/train-ai.ts",
+    "diag-sim-health": "npx ts-node -r tsconfig-paths/register --project tsconfig.train.json scripts/diag-sim-health.ts",
+    "audit-strategy-flow": "npx ts-node -r tsconfig-paths/register --project tsconfig.train.json scripts/audit-strategy-flow.ts"
   },
   "dependencies": {
     "@react-three/drei": "^9.108.0",

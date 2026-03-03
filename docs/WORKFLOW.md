@@ -12,6 +12,7 @@ A single place to capture ideas, things to build, and notes so we can see them a
 | *"Add [X] to backlog"* / *"We should build …"* / *"Come back to this"* | **Backlog** below |
 | *"Note [X]"* / *"Document this"* / *"Add to notes"* | **Notes** below |
 | *"What’s in the workflow?"* / *"Show workflow"* | This file |
+| *"Run the changes check"* / *"Check changes"* | Use the prompt in [CURSOR_SIMULATION_FIX_OUTLINE.MD](./CURSOR_SIMULATION_FIX_OUTLINE.MD) |
 
 ---
 
@@ -45,6 +46,9 @@ A single place to capture ideas, things to build, and notes so we can see them a
 
 ## Related docs
 
-- [Siege & Combat Design](./SIEGE_AND_COMBAT_DESIGN.md) — city capture, siege, supply, combat rules
+- [Siege & Combat Design](./SIEGE_AND_COMBAT_DESIGN.md) — city capture, siege, supply, combat rules (and **Implementation checklist** for changes check)
+- [AI Training](./AI_TRAINING.md) — sim, fitness, workers
+- [Cursor simulation fix outline](./CURSOR_SIMULATION_FIX_OUTLINE.MD) — changes check prompt and sim/training points
+- [Optimization](./OPTIMIZATION.md) — evolutionary model, GPU notes
 
-*Last updated: 2025-03-01*
+*Last updated: 2026-03-01*

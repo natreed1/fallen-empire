@@ -15,7 +15,7 @@ The game can **self-improve** the AI by running many headless bot-vs-bot simulat
 - **`stepSimulation(state, paramsA, paramsB)`** – One step = one economy cycle + one movement/combat/siege/capture tick. No UI, no real-time delay; runs as fast as the CPU allows.
 - **`runSimulation(paramsA, paramsB, seed, maxCycles?)`** – Runs a full game until one side has no cities or `maxCycles` is reached. Returns **`SimResult`** (winner, cycle, cities/pop per side).
 
-The core reuses the same logic as the main game (economy, upkeep, AI planning, movement, combat, siege, city capture, victory).
+The core reuses the same logic as the main game (economy, upkeep, AI planning, movement, combat, siege, city capture, victory). **Simulation clock consistency:** headless runs use simulated time (`simTimeMs`, 30s per cycle) for movement/combat gating so units advance and engage correctly; the live game still uses wall-clock time. See `docs/CURSOR_SIMULATION_FIX_OUTLINE.MD`.
 
 ## 2. Training script (`scripts/train-ai.ts`)
 

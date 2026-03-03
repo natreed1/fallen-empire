@@ -34,8 +34,9 @@ export function movementTick(
   tiles: Map<string, Tile>,
   wallSections: WallSection[] = [],
   cities: City[] = [],
+  nowMs: number = Date.now(),
 ): void {
-  const now = Date.now();
+  const now = nowMs;
 
   // Retreat execution: when retreatAt has passed, set target to hex away from enemies (design §5, 30)
   for (const u of units) {
@@ -119,12 +120,13 @@ export function combatTick(
   heroes: Hero[],
   cycle: number,
   cities: City[] = [],
+  nowMs: number = Date.now(),
 ): CombatTickResult {
   const killed: string[] = [];
   const notifications: GameNotification[] = [];
   const combatHexKeys: string[] = [];
   const processed = new Set<string>();
-  const now = Date.now();
+  const now = nowMs;
 
   // Build hex -> units map
   const byHex: Record<string, Unit[]> = {};

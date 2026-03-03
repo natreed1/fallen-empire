@@ -186,11 +186,62 @@ export function runSimulation(
   };
 }
 
+export type RunSimulationDiagnostics = SimDiagnostics & {
+  unitsAtEnd: number;
+};
+
+/** Run simulation and return result plus diagnostics (kills, owner flips, units at end). */
+export function runSimulationWithDiagnostics(
+  paramsA: AiParams,
+  paramsB: AiParams,
+  seed: number,
+  maxCycles: number = 500,
+  options?: RunSimulationOptions,
+): SimResult & { diagnostics: RunSimulationDiagnostics } {
+  const diag: SimDiagnostics = { totalKills: 0, hadOwnerFlip: false };
+  const maxC = options?.maxCycles ?? maxCycles;
+  const mapOverride = options?.mapConfigOverride;
+  let state = initBotVsBotGame(seed, paramsA, paramsB, mapOverride);
+  while (state.phase === 'playing' && state.cycle < maxC) {
+    state = stepSimulation(state, paramsA, paramsB, diag);
+  }
+  const ai1Cities = state.cities.filter(c => c.ownerId === AI_ID);
+  const ai2Cities = state.cities.filter(c => c.ownerId === AI_ID_2);
+  const ai1Pop = ai1Cities.reduce((a, c) => a + c.population, 0);
+  const ai2Pop = ai2Cities.reduce((a, c) => a + c.population, 0);
+  let winner: 'ai1' | 'ai2' | null = null;
+  if (state.phase === 'victory') {
+    if (ai1Cities.length === 0) winner = 'ai2';
+    else if (ai2Cities.length === 0) winner = 'ai1';
+  }
+  const unitsAtEnd = state.units.filter(u => u.hp > 0).length;
+  return {
+    winner,
+    cycle: state.cycle,
+    ai1Cities: ai1Cities.length,
+    ai2Cities: ai2Cities.length,
+    ai1Pop,
+    ai2Pop,
+    diagnostics: { ...diag, unitsAtEnd },
+  };
+}
+
+/** Optional diagnostics accumulated during a simulation run (for diag-sim-health / audit-strategy-flow). */
+export type SimDiagnostics = {
+  totalKills: number;
+  hadOwnerFlip: boolean;
+  /** First cycle when any combat kill occurred (set when diagnostics provided). */
+  firstCombatCycle?: number;
+  /** First cycle when any city changed owner (set when diagnostics provided). */
+  firstOwnerFlipCycle?: number;
+};
+
 /** Single step: economy + AI actions + one movement/combat/siege/capture tick. */
 export function stepSimulation(
   state: SimState,
   paramsA: AiParams,
   paramsB: AiParams,
+  diagnostics?: SimDiagnostics,
 ): SimState {
   if (state.phase !== 'playing') return state;
 
@@ -379,11 +430,11 @@ export function stepSimulation(
   }
   let territory = calculateTerritory(citiesToSet, tilesMut);
 
-  // ── One movement + combat + siege tick ──
+  // ── One movement + combat + siege tick (use sim time so headless runs advance correctly) ──
   const movingUnits = units.map(u => ({ ...u }));
   const movingHeroes = state.heroes.map(h => ({ ...h }));
-  movementTick(movingUnits, movingHeroes, state.tiles, state.wallSections, citiesToSet);
-  const combatResult = combatTick(movingUnits, movingHeroes, newCycle, citiesToSet);
+  movementTick(movingUnits, movingHeroes, state.tiles, state.wallSections, citiesToSet, newSimTimeMs);
+  const combatResult = combatTick(movingUnits, movingHeroes, newCycle, citiesToSet, newSimTimeMs);
   const wallSectionsMut = state.wallSections.map(w => ({ ...w }));
   siegeTick(wallSectionsMut, movingUnits);
 
@@ -436,6 +487,19 @@ export function stepSimulation(
     }
   }
   territory = calculateTerritory(citiesToSet, tilesMut);
+
+  if (diagnostics) {
+    const killsThisStep = combatResult.killedUnitIds.length;
+    diagnostics.totalKills += killsThisStep;
+    const hadFlip = state.cities.some(
+      c => citiesToSet.find(n => n.id === c.id)?.ownerId !== c.ownerId,
+    );
+    if (hadFlip) {
+      diagnostics.hadOwnerFlip = true;
+      if (diagnostics.firstOwnerFlipCycle == null) diagnostics.firstOwnerFlipCycle = newCycle;
+    }
+    if (killsThisStep > 0 && diagnostics.firstCombatCycle == null) diagnostics.firstCombatCycle = newCycle;
+  }
 
   // ── Victory ──
   let phase: GamePhase = 'playing';
