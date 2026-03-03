@@ -6,6 +6,7 @@ import {
   STARTING_CITY_TEMPLATE, HERO_NAMES, CITY_CENTER_STORAGE,
   BUILDING_IRON_COSTS, SCOUT_MISSION_COST, VILLAGE_INCORPORATE_COST,
 } from '@/types/game';
+import { computeCityProductionRate } from '@/lib/gameLoop';
 
 // ─── AI Action Types ───────────────────────────────────────────────
 
@@ -73,6 +74,21 @@ export interface AiParams {
   nearestTargetDistanceRatio: number;
   /** Builder recruit chance per cycle when academy and pop > 5 (0–1). */
   builderRecruitChance: number;
+  // ─── Extended (food, build, upgrade, scout, village, targeting) ──
+  /** Min food surplus to allow more than 1 recruit per cycle (higher = more conservative). */
+  foodBufferThreshold: number;
+  /** Scale for max sustainable military (0.6–1.2: <1 = underfill cap, >1 = allow overfill). */
+  sustainableMilitaryMultiplier: number;
+  /** Build order: 0 = barracks first, 1 = 2 farms before barracks. */
+  farmFirstBias: number;
+  /** When factory and barracks can both upgrade, chance to pick factory first (0–1). */
+  factoryUpgradePriority: number;
+  /** Chance to send scout each cycle when gold allows (0–1). */
+  scoutChance: number;
+  /** Chance to incorporate village when military + gold (0–1). */
+  incorporateVillageChance: number;
+  /** Weight for enemy city pop in target score (higher = prefer high-pop cities). */
+  targetPopWeight: number;
 }
 
 export const DEFAULT_AI_PARAMS: AiParams = {
@@ -83,7 +99,45 @@ export const DEFAULT_AI_PARAMS: AiParams = {
   targetDefenderWeight: 3,
   nearestTargetDistanceRatio: 0.85,
   builderRecruitChance: 0.2,
+  foodBufferThreshold: 10,
+  sustainableMilitaryMultiplier: 1,
+  farmFirstBias: 0,
+  factoryUpgradePriority: 0.6,
+  scoutChance: 1,
+  incorporateVillageChance: 1,
+  targetPopWeight: 1,
 };
+
+// ─── Food-aware recruit gating (avoid starvation lock in headless sim) ──
+const CIV_FOOD_PER_POP = 0.25;
+const AVG_MILITARY_FOOD_PER_UNIT = 1.5;
+
+export function estimateAiFoodSurplus(
+  aiPlayerId: string,
+  cities: City[],
+  units: Unit[],
+  tiles: Map<string, Tile>,
+  territory: Map<string, TerritoryInfo>,
+  harvestMultiplier: number = 1.0,
+): { foodIncome: number; civDemand: number; militaryDemand: number; surplus: number; maxSustainableMilitary: number } {
+  const aiCities = cities.filter(c => c.ownerId === aiPlayerId);
+  let foodIncome = 0;
+  let civDemand = 0;
+  for (const c of aiCities) {
+    foodIncome += computeCityProductionRate(c, tiles, territory, harvestMultiplier).food;
+    civDemand += Math.ceil(c.population * CIV_FOOD_PER_POP);
+  }
+  const aiUnits = units.filter(u => u.ownerId === aiPlayerId && u.hp > 0);
+  let militaryDemand = 0;
+  for (const u of aiUnits) {
+    const stats = u.armsLevel === 2 ? UNIT_L2_STATS[u.type] : UNIT_BASE_STATS[u.type];
+    militaryDemand += stats.foodUpkeep ?? 0;
+  }
+  const surplus = foodIncome - civDemand - militaryDemand;
+  const foodForMilitary = Math.max(0, foodIncome - civDemand);
+  const maxSustainableMilitary = Math.floor(foodForMilitary / AVG_MILITARY_FOOD_PER_UNIT);
+  return { foodIncome, civDemand, militaryDemand, surplus, maxSustainableMilitary };
+}
 
 // ─── Execute AI Turn ───────────────────────────────────────────────
 
@@ -107,6 +161,9 @@ export function planAiTurn(
   const enemyCities = cities.filter(c => c.ownerId !== aiPlayerId);
   const aiUnits = units.filter(u => u.ownerId === aiPlayerId && u.hp > 0);
 
+  const foodStats = estimateAiFoodSurplus(aiPlayerId, cities, units, tiles, territory);
+  const militaryCount = aiUnits.filter(u => u.type !== 'builder').length;
+
   for (const city of aiCities) {
     const farmCount = city.buildings.filter(b => b.type === 'farm').length;
     const hasFactory = city.buildings.some(b => b.type === 'factory');
@@ -118,15 +175,23 @@ export function planAiTurn(
     const barracksToUpgrade = city.buildings.find(b => b.type === 'barracks' && (b.level ?? 1) < 2);
     const farmToUpgrade = city.buildings.find(b => b.type === 'farm' && (b.level ?? 1) < 2);
 
-    if (goldBudget >= FACTORY_UPGRADE_COST && factoryToUpgrade && city.storage.iron >= 5) {
-      actions.upgrades.push({ cityId: city.id, buildingQ: factoryToUpgrade.q, buildingR: factoryToUpgrade.r, type: 'factory' });
-      goldBudget -= FACTORY_UPGRADE_COST;
-    } else if (goldBudget >= BARACKS_UPGRADE_COST && barracksToUpgrade) {
-      actions.upgrades.push({ cityId: city.id, buildingQ: barracksToUpgrade.q, buildingR: barracksToUpgrade.r, type: 'barracks' });
-      goldBudget -= BARACKS_UPGRADE_COST;
-    } else if (goldBudget >= FARM_UPGRADE_COST && farmToUpgrade) {
-      actions.upgrades.push({ cityId: city.id, buildingQ: farmToUpgrade.q, buildingR: farmToUpgrade.r, type: 'farm' });
-      goldBudget -= FARM_UPGRADE_COST;
+    const upgradeOrder = (params.factoryUpgradePriority ?? 0.6) >= 0.5 ? ['factory', 'barracks', 'farm'] : ['barracks', 'factory', 'farm'];
+    for (const kind of upgradeOrder) {
+      if (kind === 'factory' && goldBudget >= FACTORY_UPGRADE_COST && factoryToUpgrade && (city.storage.iron ?? 0) >= 5) {
+        actions.upgrades.push({ cityId: city.id, buildingQ: factoryToUpgrade.q, buildingR: factoryToUpgrade.r, type: 'factory' });
+        goldBudget -= FACTORY_UPGRADE_COST;
+        break;
+      }
+      if (kind === 'barracks' && goldBudget >= BARACKS_UPGRADE_COST && barracksToUpgrade) {
+        actions.upgrades.push({ cityId: city.id, buildingQ: barracksToUpgrade.q, buildingR: barracksToUpgrade.r, type: 'barracks' });
+        goldBudget -= BARACKS_UPGRADE_COST;
+        break;
+      }
+      if (kind === 'farm' && goldBudget >= FARM_UPGRADE_COST && farmToUpgrade) {
+        actions.upgrades.push({ cityId: city.id, buildingQ: farmToUpgrade.q, buildingR: farmToUpgrade.r, type: 'farm' });
+        goldBudget -= FARM_UPGRADE_COST;
+        break;
+      }
     }
 
     let toBuild: BuildingType | null = null;
@@ -137,10 +202,13 @@ export function planAiTurn(
     const goldMineSpot = findGoldMineTile(city, territory, tiles, cities);
     const ironForGoldMine = (BUILDING_IRON_COSTS.gold_mine ?? 0);
 
-    // Balanced build order: barracks, then economy (farms + market for growth/income), then factory/academy
-    if (!hasBarracks && goldBudget >= BUILDING_COSTS.barracks) {
+    // Build order: farmFirstBias >= 0.5 => 2 farms before barracks; else barracks first
+    const farmFirst = (params.farmFirstBias ?? 0) >= 0.5;
+    if (farmFirst && farmCount < 2 && goldBudget >= BUILDING_COSTS.farm) {
+      toBuild = 'farm';
+    } else if (!hasBarracks && goldBudget >= BUILDING_COSTS.barracks) {
       toBuild = 'barracks';
-    } else if (farmCount < 2 && goldBudget >= BUILDING_COSTS.farm) {
+    } else if (!farmFirst && farmCount < 2 && goldBudget >= BUILDING_COSTS.farm) {
       toBuild = 'farm';
     } else if (!hasFactory && goldBudget >= BUILDING_COSTS.factory) {
       toBuild = 'factory';
@@ -171,14 +239,23 @@ export function planAiTurn(
       }
     }
 
-    // Recruit military: mix of infantry/cavalry/ranged, sometimes L2, sometimes siege (up to 3 per city per cycle)
+    // Recruit military: food-aware gating so we don't overshoot into starvation (see SIMULATION_ECONOMY_ANALYSIS.md)
     const barracks = city.buildings.find(b => b.type === 'barracks');
     const barracksLvl = barracks ? (barracks.level ?? 1) : 1;
     const hasGunsL2 = (city.storage.gunsL2 ?? 0) >= 1;
     if (hasBarracks && city.population > 3) {
+      const goldBasedMax = goldBudget > params.recruitGoldThreshold ? params.maxRecruitsWhenRich : params.maxRecruitsWhenPoor;
+      let maxRecruits = goldBasedMax;
+      if (militaryCount >= foodStats.maxSustainableMilitary) maxRecruits = 0;
+      else if (foodStats.surplus < 0) maxRecruits = 0;
+      else if (foodStats.surplus < (params.foodBufferThreshold ?? 10)) maxRecruits = Math.min(maxRecruits, 1);
+      else {
+        const cap = Math.max(0, Math.floor(foodStats.maxSustainableMilitary * (params.sustainableMilitaryMultiplier ?? 1)));
+        maxRecruits = Math.min(maxRecruits, Math.max(0, cap - militaryCount));
+      }
+
       const unitChoices: UnitType[] = ['infantry', 'infantry', 'cavalry', 'ranged'];
       const siegeChoices: UnitType[] = ['trebuchet', 'battering_ram'];
-      const maxRecruits = goldBudget > params.recruitGoldThreshold ? params.maxRecruitsWhenRich : params.maxRecruitsWhenPoor;
       for (let i = 0; i < maxRecruits; i++) {
         const useSiege = Math.random() < params.siegeChance;
         const pick = useSiege
@@ -203,8 +280,8 @@ export function planAiTurn(
     }
   }
 
-  // Scout: send one mission per cycle to nearest enemy city if gold allows
-  if (enemyCities.length > 0 && goldBudget >= SCOUT_MISSION_COST) {
+  // Scout: chance per cycle when gold allows (scoutChance)
+  if (enemyCities.length > 0 && goldBudget >= SCOUT_MISSION_COST && Math.random() < (params.scoutChance ?? 1)) {
     const capital = aiCities[0];
     if (capital) {
       let nearest = enemyCities[0];
@@ -225,7 +302,7 @@ export function planAiTurn(
     if (!tile || !tile.hasVillage) continue;
     if (cities.some(c => c.q === tile.q && c.r === tile.r)) continue;
     const militaryHere = aiUnits.filter(u => u.q === tile.q && u.r === tile.r && u.type !== 'builder');
-    if (militaryHere.length > 0 && goldBudget >= VILLAGE_INCORPORATE_COST) {
+    if (militaryHere.length > 0 && goldBudget >= VILLAGE_INCORPORATE_COST && Math.random() < (params.incorporateVillageChance ?? 1)) {
       actions.incorporateVillages.push({ q: tile.q, r: tile.r });
       goldBudget -= VILLAGE_INCORPORATE_COST;
     }
@@ -236,7 +313,9 @@ export function planAiTurn(
     const idleUnits = aiUnits.filter(u => u.status === 'idle' && u.type !== 'builder');
     const enemyUnitCount = (eq: number, er: number): number =>
       units.filter(u => u.ownerId !== aiPlayerId && u.hp > 0 && hexDistance(u.q, u.r, eq, er) <= 2).length;
-    const score = (ec: City): number => ec.population + enemyUnitCount(ec.q, ec.r) * params.targetDefenderWeight;
+    const popW = params.targetPopWeight ?? 1;
+    const defW = params.targetDefenderWeight;
+    const score = (ec: City): number => popW * ec.population + enemyUnitCount(ec.q, ec.r) * defW;
     const sortedEnemies = [...enemyCities].sort((a, b) => score(a) - score(b));
     const primaryTarget = sortedEnemies[0];
     const ratio = Math.max(0.1, Math.min(1, params.nearestTargetDistanceRatio));

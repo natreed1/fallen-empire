@@ -61,13 +61,13 @@ In `scripts/train-ai.ts`:
 
 ## Evolvable params (`AiParams`)
 
-Defined in `src/lib/ai.ts` and used by both the live game and the core:
+Defined in `src/lib/ai.ts` and used by both the live game and the core.
 
-- **`siegeChance`** – Chance to build siege instead of combat units.
+**Recruitment & gold:** `siegeChance` – Chance to build siege instead of combat units.
 - **`recruitGoldThreshold`** – Gold above this → recruit up to `maxRecruitsWhenRich` per city per cycle.
 - **`maxRecruitsWhenRich`** / **`maxRecruitsWhenPoor`** – Recruits per city per cycle.
 - **`targetDefenderWeight`** – Weight for “weakest city” targeting (higher = prefer fewer defenders).
 - **`nearestTargetDistanceRatio`** – When to send a unit to a secondary target (distance ratio).
 - **`builderRecruitChance`** – Chance to recruit a builder when academy and pop allow.
 
-You can add more evolvable knobs in `AiParams` and in `planAiTurn`, then re-run training.
+Extended params (all mutated by training): **Targeting** `targetPopWeight`. **Food** `foodBufferThreshold`, `sustainableMilitaryMultiplier`. **Build/upgrades** `farmFirstBias`, `factoryUpgradePriority`. **Scout/villages** `scoutChance`, `incorporateVillageChance`. Old saved JSON is merged with defaults.

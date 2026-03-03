@@ -32,7 +32,7 @@ A single place to capture ideas, things to build, and notes so we can see them a
 
 *Things we decided to build or revisit. Ready to pick up when we have time.*
 
-- *(none yet)*
+- **Food-aware recruit gating** — Add food budget check and “max sustainable units” cap in AI so sim doesn’t overshoot into starvation lock. See [Simulation economy analysis](./SIMULATION_ECONOMY_ANALYSIS.md).
 
 ---
 
@@ -40,7 +40,7 @@ A single place to capture ideas, things to build, and notes so we can see them a
 
 *Decisions, context, or one-off info that doesn’t belong in a design doc.*
 
-- *(none yet)*
+- **Sim economy collapse (seed 42, 56×56):** Pop overshoots then crashes to 1; units keep rising; food → 0; permanent starvation, no decisive combat. Root cause: recruit is gold-driven, not food-driven; units don’t consume pop on recruit. Fix: food-aware recruit gating + sustainable-unit cap, then optional growth smoothing. See [SIMULATION_ECONOMY_ANALYSIS.md](./SIMULATION_ECONOMY_ANALYSIS.md).
 
 ---
 
@@ -49,6 +49,7 @@ A single place to capture ideas, things to build, and notes so we can see them a
 - [Siege & Combat Design](./SIEGE_AND_COMBAT_DESIGN.md) — city capture, siege, supply, combat rules (and **Implementation checklist** for changes check)
 - [AI Training](./AI_TRAINING.md) — sim, fitness, workers
 - [Cursor simulation fix outline](./CURSOR_SIMULATION_FIX_OUTLINE.MD) — changes check prompt and sim/training points
+- [Simulation economy analysis](./SIMULATION_ECONOMY_ANALYSIS.md) — starvation lock, food-aware recruit gating
 - [Optimization](./OPTIMIZATION.md) — evolutionary model, GPU notes
 
 *Last updated: 2026-03-01*

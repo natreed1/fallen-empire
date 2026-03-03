@@ -44,7 +44,9 @@ const TRAIN_MAP = { width: MAP_SIZE, height: MAP_SIZE };
 const SIM_OPTS: RunSimulationOptions = { maxCycles: MAX_CYCLES, mapConfigOverride: TRAIN_MAP };
 
 function formatParamsShort(p: AiParams): string {
-  return `siege=${p.siegeChance.toFixed(2)} goldThr=${p.recruitGoldThreshold} recRich=${p.maxRecruitsWhenRich} recPoor=${p.maxRecruitsWhenPoor} defW=${p.targetDefenderWeight.toFixed(1)} near=${p.nearestTargetDistanceRatio.toFixed(2)} buildCh=${p.builderRecruitChance.toFixed(2)}`;
+  const base = `siege=${p.siegeChance.toFixed(2)} goldThr=${p.recruitGoldThreshold} recRich=${p.maxRecruitsWhenRich} recPoor=${p.maxRecruitsWhenPoor} defW=${p.targetDefenderWeight.toFixed(1)} near=${p.nearestTargetDistanceRatio.toFixed(2)} buildCh=${p.builderRecruitChance.toFixed(2)}`;
+  const ext = ` foodBuf=${p.foodBufferThreshold ?? 10} sustMul=${(p.sustainableMilitaryMultiplier ?? 1).toFixed(2)} farmFirst=${(p.farmFirstBias ?? 0).toFixed(2)} factUpg=${(p.factoryUpgradePriority ?? 0.6).toFixed(2)} scout=${(p.scoutChance ?? 1).toFixed(2)} incorp=${(p.incorporateVillageChance ?? 1).toFixed(2)} popW=${(p.targetPopWeight ?? 1).toFixed(2)}`;
+  return base + ext;
 }
 
 function formatResult(r: SimResult): string {
@@ -53,7 +55,7 @@ function formatResult(r: SimResult): string {
 }
 
 function cloneParams(p: AiParams): AiParams {
-  return { ...p };
+  return { ...DEFAULT_AI_PARAMS, ...p };
 }
 
 function mutateParams(p: AiParams): AiParams {
@@ -68,6 +70,13 @@ function mutateParams(p: AiParams): AiParams {
     targetDefenderWeight: m(p.targetDefenderWeight, 1, 8),
     nearestTargetDistanceRatio: m(p.nearestTargetDistanceRatio, 0.5, 1),
     builderRecruitChance: m(p.builderRecruitChance, 0.05, 0.5),
+    foodBufferThreshold: Math.max(0, Math.min(30, Math.round((p.foodBufferThreshold ?? 10) + (Math.random() - 0.5) * 6))),
+    sustainableMilitaryMultiplier: m(p.sustainableMilitaryMultiplier ?? 1, 0.6, 1.2),
+    farmFirstBias: m(p.farmFirstBias ?? 0, 0, 1),
+    factoryUpgradePriority: m(p.factoryUpgradePriority ?? 0.6, 0, 1),
+    scoutChance: m(p.scoutChance ?? 1, 0, 1),
+    incorporateVillageChance: m(p.incorporateVillageChance ?? 1, 0, 1),
+    targetPopWeight: m(p.targetPopWeight ?? 1, 0.5, 2),
   };
 }
 

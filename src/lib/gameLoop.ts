@@ -437,10 +437,17 @@ function populationGrowthPhase(
     const starvationDeaths = city.storage.food <= 0 ? STARVATION_DEATHS : 0;
     const deaths = naturalDeaths + starvationDeaths;
 
-    // Births use expected K; when starving (no grain in storage) births = 0 so pop never grows into starvation
+    // Births use expected K; when starving (no grain in storage) births = 0 so pop never grows into starvation.
+    // When food buffer is thin (below civ demand), scale growth down to avoid overshoot into collapse (SIMULATION_ECONOMY_ANALYSIS).
     let births = 0;
     if (P > 0 && K > 0 && city.storage.food > 0) {
-      births = Math.max(0, Math.floor(POP_BIRTH_RATE * P * (1 - P / K)));
+      let rawBirths = Math.max(0, Math.floor(POP_BIRTH_RATE * P * (1 - P / K)));
+      const civDemandCity = Math.ceil(P * 0.25);
+      if (civDemandCity > 0 && city.storage.food < civDemandCity) {
+        const scale = city.storage.food / civDemandCity;
+        rawBirths = Math.floor(rawBirths * scale);
+      }
+      births = rawBirths;
     }
 
     const netGrowth = births - deaths;
