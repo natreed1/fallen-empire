@@ -20,7 +20,7 @@ import { generateMap, placeAncientCity } from '../lib/mapGenerator';
 import { calculateTerritory } from '../lib/territory';
 import { processEconomyTurn } from '../lib/gameLoop';
 import { planAiTurn, placeAiStartingCityAt, createAiHero, AiParams, DEFAULT_AI_PARAMS } from '../lib/ai';
-import { movementTick, combatTick, upkeepTick, siegeTick } from '../lib/military';
+import { movementTick, combatTick, upkeepTick, siegeTick, type SupplyCacheEntry } from '../lib/military';
 import { rollForWeatherEvent, tickWeatherEvent, getWeatherHarvestMultiplier } from '../lib/weather';
 
 export type { AiParams };
@@ -47,6 +47,8 @@ export type SimState = {
   cityCaptureHold: Record<string, { attackerId: string; startedAt: number }>;
   /** Simulated time in ms; advances 30s per cycle for capture hold & scout completion */
   simTimeMs: number;
+  /** Cache: unitId -> { clusterKey, q, r }; recomputed only when unit moves or cities change. */
+  supplyCache?: Map<string, SupplyCacheEntry>;
 };
 
 let _cityNameIdx = 0;
@@ -198,7 +200,7 @@ export function runSimulationWithDiagnostics(
   maxCycles: number = 500,
   options?: RunSimulationOptions,
 ): SimResult & { diagnostics: RunSimulationDiagnostics } {
-  const diag: SimDiagnostics = { totalKills: 0, hadOwnerFlip: false };
+  const diag: SimDiagnostics = { totalKills: 0, killsByAi1: 0, killsByAi2: 0, hadOwnerFlip: false };
   const maxC = options?.maxCycles ?? maxCycles;
   const mapOverride = options?.mapConfigOverride;
   let state = initBotVsBotGame(seed, paramsA, paramsB, mapOverride);
@@ -229,11 +231,23 @@ export function runSimulationWithDiagnostics(
 /** Optional diagnostics accumulated during a simulation run (for diag-sim-health / audit-strategy-flow). */
 export type SimDiagnostics = {
   totalKills: number;
+  /** Kills scored by AI1 (units belonging to AI2 that died). */
+  killsByAi1?: number;
+  /** Kills scored by AI2 (units belonging to AI1 that died). */
+  killsByAi2?: number;
   hadOwnerFlip: boolean;
   /** First cycle when any combat kill occurred (set when diagnostics provided). */
   firstCombatCycle?: number;
   /** First cycle when any city changed owner (set when diagnostics provided). */
   firstOwnerFlipCycle?: number;
+  /** First cycle when any unit was starving. */
+  firstCycleAnyStarvation?: number;
+  /** First cycle when one side had all military units starving (if ever). */
+  firstCycleAllStarving?: number;
+  /** First cycle when AI1 had zero total food in cities. */
+  firstCycleFoodZeroAi1?: number;
+  /** First cycle when AI2 had zero total food in cities. */
+  firstCycleFoodZeroAi2?: number;
 };
 
 /** Single step: economy + AI actions + one movement/combat/siege/capture tick. */
@@ -271,9 +285,27 @@ export function stepSimulation(
   let units = econ.units;
   let players = econ.players;
 
-  // ── Upkeep ──
-  const upkeepResult = upkeepTick(units, cities, state.heroes, newCycle, state.tiles, state.territory);
+  // ── Upkeep (reuse clusters from economy; supply cache avoids recomputing per-unit supply when position unchanged) ──
+  const supplyCache = state.supplyCache ?? new Map<string, SupplyCacheEntry>();
+  const upkeepResult = upkeepTick(
+    units, cities, state.heroes, newCycle, state.tiles, state.territory,
+    econ.clusters, supplyCache,
+  );
   units = units.filter(u => u.hp > 0);
+
+  if (diagnostics) {
+    const anyStarving = units.some(u => u.status === 'starving');
+    if (anyStarving && diagnostics.firstCycleAnyStarvation == null) diagnostics.firstCycleAnyStarvation = newCycle;
+    const ai1Military = units.filter(u => u.ownerId === AI_ID && u.type !== 'builder');
+    const ai2Military = units.filter(u => u.ownerId === AI_ID_2 && u.type !== 'builder');
+    const allStarving1 = ai1Military.length > 0 && ai1Military.every(u => u.status === 'starving');
+    const allStarving2 = ai2Military.length > 0 && ai2Military.every(u => u.status === 'starving');
+    if ((allStarving1 || allStarving2) && diagnostics.firstCycleAllStarving == null) diagnostics.firstCycleAllStarving = newCycle;
+    const foodAi1 = cities.filter(c => c.ownerId === AI_ID).reduce((s, c) => s + c.storage.food, 0);
+    const foodAi2 = cities.filter(c => c.ownerId === AI_ID_2).reduce((s, c) => s + c.storage.food, 0);
+    if (foodAi1 <= 0 && diagnostics.firstCycleFoodZeroAi1 == null) diagnostics.firstCycleFoodZeroAi1 = newCycle;
+    if (foodAi2 <= 0 && diagnostics.firstCycleFoodZeroAi2 == null) diagnostics.firstCycleFoodZeroAi2 = newCycle;
+  }
 
   // ── AI turns (apply plans with per-player params) ──
   let scoutMissions = [...state.scoutMissions];
@@ -400,7 +432,8 @@ export function stepSimulation(
 
     for (const mt of aiPlan.moveTargets) {
       const unit = units.find(u => u.id === mt.unitId);
-      if (unit && unit.hp > 0 && unit.status === 'idle') {
+      // Allow idle, moving, or starving units to receive move targets (not fighting) so headless sims stay decisive
+      if (unit && unit.hp > 0 && unit.status !== 'fighting') {
         unit.targetQ = mt.toQ;
         unit.targetR = mt.toR;
         unit.status = 'moving';
@@ -428,7 +461,7 @@ export function stepSimulation(
     const newOwnerId = attackers[0].ownerId;
     citiesToSet = citiesToSet.map(c => c.id === city.id ? { ...c, ownerId: newOwnerId } : c);
   }
-  let territory = calculateTerritory(citiesToSet, tilesMut);
+  // Territory computed once at end of step (after capture hold) to avoid duplicate work
 
   // ── One movement + combat + siege tick (use sim time so headless runs advance correctly) ──
   const movingUnits = units.map(u => ({ ...u }));
@@ -486,11 +519,16 @@ export function stepSimulation(
       delete captureHoldNext[city.id];
     }
   }
-  territory = calculateTerritory(citiesToSet, tilesMut);
+  const territory = calculateTerritory(citiesToSet, tilesMut);
 
   if (diagnostics) {
     const killsThisStep = combatResult.killedUnitIds.length;
     diagnostics.totalKills += killsThisStep;
+    for (const uid of combatResult.killedUnitIds) {
+      const u = units.find(unit => unit.id === uid);
+      if (u?.ownerId === AI_ID) diagnostics.killsByAi2 = (diagnostics.killsByAi2 ?? 0) + 1;
+      else if (u?.ownerId === AI_ID_2) diagnostics.killsByAi1 = (diagnostics.killsByAi1 ?? 0) + 1;
+    }
     const hadFlip = state.cities.some(
       c => citiesToSet.find(n => n.id === c.id)?.ownerId !== c.ownerId,
     );
@@ -506,6 +544,12 @@ export function stepSimulation(
   const ai1Cities = citiesToSet.filter(c => c.ownerId === AI_ID);
   const ai2Cities = citiesToSet.filter(c => c.ownerId === AI_ID_2);
   if (ai1Cities.length === 0 || ai2Cities.length === 0) phase = 'victory';
+
+  // Invalidate supply cache when city ownership or count changed (capture/new city) so next step recomputes
+  const citiesChanged =
+    state.cities.length !== citiesToSet.length ||
+    state.cities.some(c => citiesToSet.find(n => n.id === c.id)?.ownerId !== c.ownerId);
+  const supplyCacheNext = state.supplyCache != null && !citiesChanged ? state.supplyCache : undefined;
 
   return {
     ...state,
@@ -523,5 +567,6 @@ export function stepSimulation(
     cityCaptureHold: captureHoldNext,
     simTimeMs: newSimTimeMs,
     heroes: movingHeroes,
+    supplyCache: supplyCacheNext,
   };
 }

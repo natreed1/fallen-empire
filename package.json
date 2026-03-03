@@ -9,7 +9,8 @@
     "lint": "next lint",
     "train-ai": "npx ts-node -r tsconfig-paths/register --project tsconfig.train.json scripts/train-ai.ts",
     "diag-sim-health": "npx ts-node -r tsconfig-paths/register --project tsconfig.train.json scripts/diag-sim-health.ts",
-    "audit-strategy-flow": "npx ts-node -r tsconfig-paths/register --project tsconfig.train.json scripts/audit-strategy-flow.ts"
+    "audit-strategy-flow": "npx ts-node -r tsconfig-paths/register --project tsconfig.train.json scripts/audit-strategy-flow.ts",
+    "tournament-league": "npx ts-node -r tsconfig-paths/register --project tsconfig.train.json scripts/tournament-league.ts"
   },
   "dependencies": {
     "@react-three/drei": "^9.108.0",

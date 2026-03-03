@@ -141,6 +141,8 @@ export interface TurnResult {
   units: Unit[];
   players: Player[];
   notifications: GameNotification[];
+  /** Precomputed trade clusters (cities, tiles, units, territory); callers may reuse for upkeep. */
+  clusters?: Map<string, TradeCluster[]>;
 }
 
 // ─── Process Economy Cycle ──────────────────────────────────────────
@@ -177,7 +179,7 @@ export function processEconomyTurn(
   economicsPhase(newCities, newPlayers, notify);
   moraleDrift(newCities, newPlayers);
 
-  return { cities: newCities, units: newUnits, players: newPlayers, notifications };
+  return { cities: newCities, units: newUnits, players: newPlayers, notifications, clusters };
 }
 
 // ─── Phase 0: Auto-assign workers ───────────────────────────────────
@@ -438,14 +440,17 @@ function populationGrowthPhase(
     const deaths = naturalDeaths + starvationDeaths;
 
     // Births use expected K; when starving (no grain in storage) births = 0 so pop never grows into starvation.
-    // When food buffer is thin (below civ demand), scale growth down to avoid overshoot into collapse (SIMULATION_ECONOMY_ANALYSIS).
+    // Taper births when food buffer is low (not only when storage hits zero) to prevent early boom-bust collapse.
     let births = 0;
     if (P > 0 && K > 0 && city.storage.food > 0) {
       let rawBirths = Math.max(0, Math.floor(POP_BIRTH_RATE * P * (1 - P / K)));
       const civDemandCity = Math.ceil(P * 0.25);
-      if (civDemandCity > 0 && city.storage.food < civDemandCity) {
-        const scale = city.storage.food / civDemandCity;
-        rawBirths = Math.floor(rawBirths * scale);
+      if (civDemandCity > 0) {
+        const bufferThreshold = 2 * civDemandCity;
+        if (city.storage.food < bufferThreshold) {
+          const scale = city.storage.food / bufferThreshold;
+          rawBirths = Math.floor(rawBirths * scale);
+        }
       }
       births = rawBirths;
     }

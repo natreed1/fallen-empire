@@ -825,8 +825,8 @@ export const useGameStore = create<GameState>((set, get) => ({
     let players = econ.players;
     const notifs = [...weatherNotifs, ...econ.notifications];
 
-    // Military upkeep (food + guns consumption, per cluster)
-    const upkeepResult = upkeepTick(units, cities, s.heroes, newCycle, s.tiles, s.territory);
+    // Military upkeep (food + guns consumption, per cluster); reuse clusters from economy
+    const upkeepResult = upkeepTick(units, cities, s.heroes, newCycle, s.tiles, s.territory, econ.clusters);
     notifs.push(...upkeepResult.notifications);
 
     // AI turn(s): for each AI player, plan and apply builds, upgrades, recruits, moves, scouts, village incorporation

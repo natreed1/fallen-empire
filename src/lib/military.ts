@@ -6,7 +6,7 @@ import {
   SUPPLY_VICINITY_RADIUS,
 } from '@/types/game';
 import { getUnitAttack, awardXp } from './combat';
-import { computeTradeClusters, getSupplyingClusterKey } from '@/lib/logistics';
+import { computeTradeClusters, getSupplyingClusterKey, TradeCluster } from '@/lib/logistics';
 
 const TOWER_DEFENSE_BONUS = 0.10;
 
@@ -306,6 +306,9 @@ export interface UpkeepResult {
   notifications: GameNotification[];
 }
 
+/** Cache entry for unit supply: avoid recomputing when position unchanged. */
+export type SupplyCacheEntry = { clusterKey: string | null; q: number; r: number };
+
 export function upkeepTick(
   units: Unit[],
   cities: City[],
@@ -313,9 +316,11 @@ export function upkeepTick(
   cycle: number,
   tiles: Map<string, Tile>,
   territory: Map<string, TerritoryInfo>,
+  precomputedClusters?: Map<string, TradeCluster[]>,
+  supplyCache?: Map<string, SupplyCacheEntry>,
 ): UpkeepResult {
   const notifications: GameNotification[] = [];
-  const clusters = computeTradeClusters(cities, tiles, units, territory);
+  const clusters = precomputedClusters ?? computeTradeClusters(cities, tiles, units, territory);
 
   const byOwner: Record<string, Unit[]> = {};
   for (const u of units) {
@@ -329,10 +334,17 @@ export function upkeepTick(
     const playerClusters = clusters.get(ownerId) ?? [];
     const isHuman = ownerId.includes('human');
 
-    // Group units by supplying cluster (null = cut off, no supply)
+    // Group units by supplying cluster (null = cut off, no supply); use cache when position unchanged
     const unitsByCluster = new Map<string | null, Unit[]>();
     for (const u of playerUnits) {
-      const key = getSupplyingClusterKey(u, playerClusters, tiles, units, ownerId);
+      let key: string | null;
+      const cached = supplyCache?.get(u.id);
+      if (cached && cached.q === u.q && cached.r === u.r) {
+        key = cached.clusterKey;
+      } else {
+        key = getSupplyingClusterKey(u, playerClusters, tiles, units, ownerId);
+        if (supplyCache) supplyCache.set(u.id, { clusterKey: key, q: u.q, r: u.r });
+      }
       if (!unitsByCluster.has(key)) unitsByCluster.set(key, []);
       unitsByCluster.get(key)!.push(u);
     }

@@ -239,25 +239,25 @@ export function planAiTurn(
       }
     }
 
-    // Recruit military: food-aware gating so we don't overshoot into starvation (see SIMULATION_ECONOMY_ANALYSIS.md)
+    // Recruit military: food-aware gating + sustainable army cap to avoid starvation lock in headless sims
     const barracks = city.buildings.find(b => b.type === 'barracks');
     const barracksLvl = barracks ? (barracks.level ?? 1) : 1;
     const hasGunsL2 = (city.storage.gunsL2 ?? 0) >= 1;
+    const foodThreshold = params.foodBufferThreshold ?? 10;
+    const sustainableArmyCap = Math.max(0, Math.floor(foodStats.maxSustainableMilitary * (params.sustainableMilitaryMultiplier ?? 1)));
     if (hasBarracks && city.population > 3) {
       const goldBasedMax = goldBudget > params.recruitGoldThreshold ? params.maxRecruitsWhenRich : params.maxRecruitsWhenPoor;
       let maxRecruits = goldBasedMax;
-      if (militaryCount >= foodStats.maxSustainableMilitary) maxRecruits = 0;
-      else if (foodStats.surplus < 0) maxRecruits = 0;
-      else if (foodStats.surplus < (params.foodBufferThreshold ?? 10)) maxRecruits = Math.min(maxRecruits, 1);
-      else {
-        const cap = Math.max(0, Math.floor(foodStats.maxSustainableMilitary * (params.sustainableMilitaryMultiplier ?? 1)));
-        maxRecruits = Math.min(maxRecruits, Math.max(0, cap - militaryCount));
-      }
+      if (foodStats.surplus < 0) maxRecruits = 0;
+      else if (militaryCount >= sustainableArmyCap) maxRecruits = 0;
+      else if (foodStats.surplus < foodThreshold) maxRecruits = Math.min(maxRecruits, 1);
+      maxRecruits = Math.min(maxRecruits, Math.max(0, sustainableArmyCap - militaryCount));
 
       const unitChoices: UnitType[] = ['infantry', 'infantry', 'cavalry', 'ranged'];
       const siegeChoices: UnitType[] = ['trebuchet', 'battering_ram'];
+      const allowSiege = foodStats.surplus >= foodThreshold; // high-upkeep units only when food buffer is safe
       for (let i = 0; i < maxRecruits; i++) {
-        const useSiege = Math.random() < params.siegeChance;
+        const useSiege = allowSiege && Math.random() < params.siegeChance;
         const pick = useSiege
           ? siegeChoices[Math.floor(Math.random() * siegeChoices.length)]
           : unitChoices[Math.floor(Math.random() * unitChoices.length)];
