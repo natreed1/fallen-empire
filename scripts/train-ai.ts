@@ -25,7 +25,7 @@ const POPULATION_SIZE = parseInt(process.env.TRAIN_POPULATION_SIZE || '12', 10) 
 const GENERATIONS = parseInt(process.env.TRAIN_GENERATIONS || '20', 10) || 20;
 const MATCHES_PER_PAIR = parseInt(process.env.TRAIN_MATCHES_PER_PAIR || '8', 10) || 8;
 const MAX_CYCLES = parseInt(process.env.TRAIN_MAX_CYCLES || '250', 10) || 250;
-const MAP_SIZE = parseInt(process.env.TRAIN_MAP_SIZE || '56', 10) || 56;
+const MAP_SIZE = parseInt(process.env.TRAIN_MAP_SIZE || '38', 10) || 38;
 const NUM_WORKERS_ENV = process.env.NUM_WORKERS;
 const NUM_WORKERS =
   NUM_WORKERS_ENV !== undefined

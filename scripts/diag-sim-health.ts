@@ -5,7 +5,7 @@
  * - starvation lock frequency (games where all-starving occurred)
  * - min/median population at end (collapse metrics)
  *
- * Validate with: DIAG_NUM_GAMES=40 DIAG_MAX_CYCLES=350 DIAG_MAP_SIZE=48 npm run diag-sim-health
+ * Validate with: DIAG_NUM_GAMES=40 DIAG_MAX_CYCLES=350 DIAG_MAP_SIZE=32 npm run diag-sim-health
  * One-game trace: DIAG_TRACE=1 npm run diag-sim-health  (writes artifacts/diag-trace-1.json)
  */
 
@@ -18,7 +18,7 @@ import {
 
 const NUM_GAMES = parseInt(process.env.DIAG_NUM_GAMES || '40', 10);
 const MAX_CYCLES = parseInt(process.env.DIAG_MAX_CYCLES || '350', 10);
-const MAP_SIZE = parseInt(process.env.DIAG_MAP_SIZE || '48', 10);
+const MAP_SIZE = parseInt(process.env.DIAG_MAP_SIZE || '32', 10);
 const DIAG_TRACE = process.env.DIAG_TRACE === '1' || process.env.DIAG_TRACE === 'true';
 
 function main() {
@@ -47,6 +47,15 @@ function main() {
   const firstFoodZeroAi1: number[] = [];
   const firstFoodZeroAi2: number[] = [];
   const finalTotalPop: number[] = [];
+  let sumFarmsEarly = 0;
+  let sumFarmsLate = 0;
+  let sumMarkets = 0;
+  let sumMines = 0;
+  let sumQuarries = 0;
+  let sumBarracks = 0;
+  let sumFactories = 0;
+  let sumAcademies = 0;
+  let sumGoldMines = 0;
 
   for (let i = 0; i < runs; i++) {
     const seed = (1000 + i * 7919) % 1_000_000;
@@ -70,6 +79,15 @@ function main() {
     const fp1 = diagnostics.finalAi1Pop ?? 0;
     const fp2 = diagnostics.finalAi2Pop ?? 0;
     finalTotalPop.push(fp1 + fp2);
+    sumFarmsEarly += (diagnostics.buildsAi1Early?.farm ?? 0) + (diagnostics.buildsAi2Early?.farm ?? 0);
+    sumFarmsLate += (diagnostics.buildsAi1Late?.farm ?? 0) + (diagnostics.buildsAi2Late?.farm ?? 0);
+    sumMarkets += (diagnostics.buildsAi1?.market ?? 0) + (diagnostics.buildsAi2?.market ?? 0);
+    sumMines += (diagnostics.buildsAi1?.mine ?? 0) + (diagnostics.buildsAi2?.mine ?? 0);
+    sumQuarries += (diagnostics.buildsAi1?.quarry ?? 0) + (diagnostics.buildsAi2?.quarry ?? 0);
+    sumBarracks += (diagnostics.buildsAi1?.barracks ?? 0) + (diagnostics.buildsAi2?.barracks ?? 0);
+    sumFactories += (diagnostics.buildsAi1?.factory ?? 0) + (diagnostics.buildsAi2?.factory ?? 0);
+    sumAcademies += (diagnostics.buildsAi1?.academy ?? 0) + (diagnostics.buildsAi2?.academy ?? 0);
+    sumGoldMines += (diagnostics.buildsAi1?.gold_mine ?? 0) + (diagnostics.buildsAi2?.gold_mine ?? 0);
   }
 
   const n = runs;
@@ -92,6 +110,7 @@ function main() {
   console.log(`  starvation_lock_frequency_pct: ${starvationLockFreq.toFixed(1)} (${gamesWithAllStarvingLock}/${n} games with all-starving)`);
   console.log(`  final_pop_min: ${minPop}`);
   console.log(`  final_pop_median: ${medianPop}`);
+  console.log(`  builds_per_game_avg: farms_early=${(sumFarmsEarly / n).toFixed(1)} farms_late=${(sumFarmsLate / n).toFixed(1)} markets=${(sumMarkets / n).toFixed(1)} mines=${(sumMines / n).toFixed(1)} quarries=${(sumQuarries / n).toFixed(1)} barracks=${(sumBarracks / n).toFixed(1)} factories=${(sumFactories / n).toFixed(1)} academies=${(sumAcademies / n).toFixed(1)} gold_mines=${(sumGoldMines / n).toFixed(1)}`);
   const avgFirstStarvation = firstAnyStarvation.length ? firstAnyStarvation.reduce((a, b) => a + b, 0) / firstAnyStarvation.length : null;
   const avgFirstAllStarving = firstAllStarving.length ? firstAllStarving.reduce((a, b) => a + b, 0) / firstAllStarving.length : null;
   const avgFirstFoodZero1 = firstFoodZeroAi1.length ? firstFoodZeroAi1.reduce((a, b) => a + b, 0) / firstFoodZeroAi1.length : null;

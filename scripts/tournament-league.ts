@@ -23,7 +23,7 @@ import {
 const LEAGUE_SEASONS = parseInt(process.env.LEAGUE_SEASONS || '12', 10) || 12;
 const LEAGUE_DIV_SIZE = parseInt(process.env.LEAGUE_DIV_SIZE || '8', 10) || 8;
 const LEAGUE_MAX_CYCLES = parseInt(process.env.LEAGUE_MAX_CYCLES || '500', 10) || 500;
-const LEAGUE_MAP_SIZE = parseInt(process.env.LEAGUE_MAP_SIZE || '56', 10) || 56;
+const LEAGUE_MAP_SIZE = parseInt(process.env.LEAGUE_MAP_SIZE || '38', 10) || 38;
 const LEAGUE_WORKERS = parseInt(process.env.LEAGUE_WORKERS || '0', 10) || 0; // 0 = main thread only
 const LEAGUE_SEED_POOL = process.env.LEAGUE_SEED_POOL || ''; // e.g. artifacts/seed_pool_v1.json → 12 candidates, 6/3/3 divisions
 
@@ -64,6 +64,15 @@ export type Stats = {
   goldDiff: number;
   decisiveGames: number;
   noCombatGames: number;
+  farmsBuiltEarly: number;
+  farmsBuiltLate: number;
+  marketsBuilt: number;
+  minesBuilt: number;
+  quarriesBuilt: number;
+  barracksBuilt: number;
+  factoriesBuilt: number;
+  academiesBuilt: number;
+  goldMinesBuilt: number;
 };
 
 export type Candidate = {
@@ -89,6 +98,15 @@ function emptyStats(): Stats {
     goldDiff: 0,
     decisiveGames: 0,
     noCombatGames: 0,
+    farmsBuiltEarly: 0,
+    farmsBuiltLate: 0,
+    marketsBuilt: 0,
+    minesBuilt: 0,
+    quarriesBuilt: 0,
+    barracksBuilt: 0,
+    factoriesBuilt: 0,
+    academiesBuilt: 0,
+    goldMinesBuilt: 0,
   };
 }
 
@@ -184,6 +202,23 @@ function applyScores(
     c1.seasonStats.noCombatGames += 1;
     c2.seasonStats.noCombatGames += 1;
   }
+
+  const addBuilds = (c: Candidate, playedAs: 'ai1' | 'ai2') => {
+    const early = playedAs === 'ai1' ? result.diagnostics.buildsAi1Early : result.diagnostics.buildsAi2Early;
+    const late = playedAs === 'ai1' ? result.diagnostics.buildsAi1Late : result.diagnostics.buildsAi2Late;
+    const all = playedAs === 'ai1' ? result.diagnostics.buildsAi1 : result.diagnostics.buildsAi2;
+    c.seasonStats.farmsBuiltEarly += early?.farm ?? 0;
+    c.seasonStats.farmsBuiltLate += late?.farm ?? 0;
+    c.seasonStats.marketsBuilt += all?.market ?? 0;
+    c.seasonStats.minesBuilt += all?.mine ?? 0;
+    c.seasonStats.quarriesBuilt += all?.quarry ?? 0;
+    c.seasonStats.barracksBuilt += all?.barracks ?? 0;
+    c.seasonStats.factoriesBuilt += all?.factory ?? 0;
+    c.seasonStats.academiesBuilt += all?.academy ?? 0;
+    c.seasonStats.goldMinesBuilt += all?.gold_mine ?? 0;
+  };
+  addBuilds(c1, c1PlayedAs);
+  addBuilds(c2, c2PlayedAs);
 }
 
 /** Round-robin pairings for one division (each pair plays twice, side-balanced). */
@@ -364,7 +399,7 @@ function selectChampion(divisionA: Candidate[]): Candidate {
 }
 
 // ─── Main ─────────────────────────────────────────────────────────────────
-type DivisionStanding = { id: string; points: number; wins: number; losses: number; draws: number; killsFor: number; killsAgainst: number; cityDiff: number; popDiff: number; decisiveGames: number; noCombatGames: number };
+type DivisionStanding = { id: string; points: number; wins: number; losses: number; draws: number; killsFor: number; killsAgainst: number; cityDiff: number; popDiff: number; decisiveGames: number; noCombatGames: number; farmsBuiltEarly: number; farmsBuiltLate: number; marketsBuilt: number; minesBuilt: number; quarriesBuilt: number; barracksBuilt: number; factoriesBuilt: number; academiesBuilt: number; goldMinesBuilt: number };
 
 type LeagueReport = {
   seasons: number;
@@ -439,6 +474,15 @@ function main() {
       popDiff: c.seasonStats.popDiff,
       decisiveGames: c.seasonStats.decisiveGames,
       noCombatGames: c.seasonStats.noCombatGames,
+      farmsBuiltEarly: c.seasonStats.farmsBuiltEarly,
+      farmsBuiltLate: c.seasonStats.farmsBuiltLate,
+      marketsBuilt: c.seasonStats.marketsBuilt,
+      minesBuilt: c.seasonStats.minesBuilt,
+      quarriesBuilt: c.seasonStats.quarriesBuilt,
+      barracksBuilt: c.seasonStats.barracksBuilt,
+      factoriesBuilt: c.seasonStats.factoriesBuilt,
+      academiesBuilt: c.seasonStats.academiesBuilt,
+      goldMinesBuilt: c.seasonStats.goldMinesBuilt,
     });
     const standingsA = A.map(toStanding);
     const standingsB = B.map(toStanding);

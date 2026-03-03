@@ -223,7 +223,18 @@ export function runSimulationWithDiagnostics(
   maxCycles: number = 500,
   options?: RunSimulationOptions,
 ): SimResult & { diagnostics: RunSimulationDiagnostics } {
-  const diag: SimDiagnostics = { totalKills: 0, killsByAi1: 0, killsByAi2: 0, hadOwnerFlip: false };
+  const diag: SimDiagnostics = {
+    totalKills: 0,
+    killsByAi1: 0,
+    killsByAi2: 0,
+    hadOwnerFlip: false,
+    buildsAi1: {},
+    buildsAi2: {},
+    buildsAi1Early: {},
+    buildsAi2Early: {},
+    buildsAi1Late: {},
+    buildsAi2Late: {},
+  };
   const maxC = options?.maxCycles ?? maxCycles;
   const mapOverride = options?.mapConfigOverride;
   const tracePath = options?.tracePath;
@@ -293,6 +304,15 @@ export type SimDiagnostics = {
   /** Final-cycle population per side (for collapse metrics). */
   finalAi1Pop?: number;
   finalAi2Pop?: number;
+  /** Builds completed per type per side (farm, market, mine, quarry, barracks, factory, academy, gold_mine). */
+  buildsAi1?: Record<string, number>;
+  buildsAi2?: Record<string, number>;
+  /** Builds in early game (cycle <= 100). */
+  buildsAi1Early?: Record<string, number>;
+  buildsAi2Early?: Record<string, number>;
+  /** Builds in late game (cycle > 100). */
+  buildsAi1Late?: Record<string, number>;
+  buildsAi2Late?: Record<string, number>;
 };
 
 /** Single step: economy + AI actions + one movement/combat/siege/capture tick. */
@@ -432,6 +452,20 @@ export function stepSimulation(
       city.buildings.push(b);
       aiPlayer.gold -= BUILDING_COSTS[build.type];
       if (ironCost > 0) city.storage.iron = (city.storage.iron ?? 0) - ironCost;
+
+      if (diagnostics) {
+        const key = build.type;
+        const early = newCycle <= 100;
+        if (aiPlayerId === AI_ID) {
+          diagnostics.buildsAi1![key] = (diagnostics.buildsAi1![key] ?? 0) + 1;
+          if (early) diagnostics.buildsAi1Early![key] = (diagnostics.buildsAi1Early![key] ?? 0) + 1;
+          else diagnostics.buildsAi1Late![key] = (diagnostics.buildsAi1Late![key] ?? 0) + 1;
+        } else {
+          diagnostics.buildsAi2![key] = (diagnostics.buildsAi2![key] ?? 0) + 1;
+          if (early) diagnostics.buildsAi2Early![key] = (diagnostics.buildsAi2Early![key] ?? 0) + 1;
+          else diagnostics.buildsAi2Late![key] = (diagnostics.buildsAi2Late![key] ?? 0) + 1;
+        }
+      }
     }
 
     for (const up of aiPlan.upgrades ?? []) {

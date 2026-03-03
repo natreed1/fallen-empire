@@ -34,8 +34,8 @@ export type MapConfig = {
 };
 
 export const DEFAULT_MAP_CONFIG: MapConfig = {
-  width: 100,
-  height: 100,
+  width: 67,
+  height: 67,
   seed: 42,
   noiseScale: 0.035,
   moistureScale: 0.045,

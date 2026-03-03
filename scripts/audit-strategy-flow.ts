@@ -16,7 +16,7 @@ import {
 import type { BuildingType, UnitType } from '../src/types/game';
 
 const MAX_CYCLES = parseInt(process.env.AUDIT_MAX_CYCLES || '220', 10);
-const MAP_SIZE = parseInt(process.env.AUDIT_MAP_SIZE || '56', 10);
+const MAP_SIZE = parseInt(process.env.AUDIT_MAP_SIZE || '38', 10);
 const SEED = parseInt(process.env.AUDIT_SEED || '42', 10);
 
 function countBuildingsByType(state: SimState): Record<string, number> {
