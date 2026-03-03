@@ -99,8 +99,8 @@ export const DEFAULT_AI_PARAMS: AiParams = {
   targetDefenderWeight: 3,
   nearestTargetDistanceRatio: 0.85,
   builderRecruitChance: 0.2,
-  foodBufferThreshold: 10,
-  sustainableMilitaryMultiplier: 1,
+  foodBufferThreshold: 14,
+  sustainableMilitaryMultiplier: 0.9,
   farmFirstBias: 0,
   factoryUpgradePriority: 0.6,
   scoutChance: 1,
@@ -310,7 +310,7 @@ export function planAiTurn(
 
   // Move idle units toward best enemy target: prefer weakest city (fewest defenders + low pop)
   if (enemyCities.length > 0) {
-    const idleUnits = aiUnits.filter(u => u.status === 'idle' && u.type !== 'builder');
+    const movableUnits = aiUnits.filter(u => u.hp > 0 && u.type !== 'builder' && u.status !== 'fighting');
     const enemyUnitCount = (eq: number, er: number): number =>
       units.filter(u => u.ownerId !== aiPlayerId && u.hp > 0 && hexDistance(u.q, u.r, eq, er) <= 2).length;
     const popW = params.targetPopWeight ?? 1;
@@ -319,7 +319,7 @@ export function planAiTurn(
     const sortedEnemies = [...enemyCities].sort((a, b) => score(a) - score(b));
     const primaryTarget = sortedEnemies[0];
     const ratio = Math.max(0.1, Math.min(1, params.nearestTargetDistanceRatio));
-    for (const unit of idleUnits) {
+    for (const unit of movableUnits) {
       let target = primaryTarget;
       let bestDist = hexDistance(unit.q, unit.r, target.q, target.r);
       for (const ec of sortedEnemies.slice(1, 4)) {
