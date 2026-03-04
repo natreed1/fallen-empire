@@ -143,7 +143,7 @@ export interface Unit {
   maxHp: number;
   xp: number;
   level: number;
-  armsLevel?: 1 | 2;  // 1 = L1 arms, 2 = L2 arms (for upkeep)
+  armsLevel?: 1 | 2 | 3;  // 1 = L1, 2 = L2 (stone), 3 = L3 (iron); defender is L3 only
   status: UnitStatus;
   stance: ArmyStance;
   targetQ?: number;
@@ -161,6 +161,9 @@ export interface Unit {
 
 // ─── Hero ──────────────────────────────────────────────────────────
 
+export const HERO_BASE_HP = 100;
+export const HERO_ATTACK = 15;
+
 export interface Hero {
   id: string;
   name: string;
@@ -168,6 +171,9 @@ export interface Hero {
   q: number;
   r: number;
   ownerId: string;
+  /** Combat HP; when <= 0 hero is removed. Defaults to HERO_BASE_HP when missing. */
+  hp?: number;
+  maxHp?: number;
 }
 
 // ─── Road construction (builder-built; free, takes builder time) ───
@@ -367,6 +373,7 @@ export const UNEMPLOYMENT_MORALE_PENALTY_CAP = 5;
 /** Scale for productivity term in migration pull (foodProduced / this = multiplier component). */
 export const PRODUCTIVITY_NORMALIZE = 50;
 
+/** L1 recruit costs (gold only for combat; defender not recruitable at L1). */
 export const UNIT_COSTS: Record<UnitType, { gold: number; iron?: number }> = {
   infantry:       { gold: 1 },
   cavalry:        { gold: 3 },
@@ -374,9 +381,29 @@ export const UNIT_COSTS: Record<UnitType, { gold: number; iron?: number }> = {
   builder:        { gold: 2 },
   trebuchet:      { gold: 8 },
   battering_ram:  { gold: 6 },
-  defender:       { gold: 4, iron: 2 },
+  defender:       { gold: 0, iron: 2 },  // L3 only; cost comes from UNIT_L3_COSTS
 };
-/** Defender requires L2 barracks and this much iron (from city storage). */
+/** L2 recruit costs (gold + stone); siege/builder/defender have no L2. */
+export const UNIT_L2_COSTS: Record<UnitType, { gold: number; stone?: number }> = {
+  infantry:       { gold: 1, stone: 2 },
+  cavalry:        { gold: 3, stone: 3 },
+  ranged:         { gold: 2, stone: 2 },
+  builder:        { gold: 2 },
+  trebuchet:      { gold: 8 },
+  battering_ram:  { gold: 6 },
+  defender:       { gold: 0 },  // defender has no L2; L3 only
+};
+/** L3 recruit costs (gold + iron); defender is iron only. */
+export const UNIT_L3_COSTS: Record<UnitType, { gold: number; iron?: number }> = {
+  infantry:       { gold: 2, iron: 1 },
+  cavalry:        { gold: 5, iron: 2 },
+  ranged:         { gold: 3, iron: 1 },
+  builder:        { gold: 2 },
+  trebuchet:      { gold: 8 },
+  battering_ram:  { gold: 6 },
+  defender:       { gold: 0, iron: 2 },  // L3 only, iron only
+};
+/** Defender (L3 only) iron cost from city storage. */
 export const DEFENDER_IRON_COST = 2;
 
 export const UNIT_DISPLAY_NAMES: Record<UnitType, string> = {
@@ -424,6 +451,31 @@ export const UNIT_L2_STATS: Record<UnitType, {
   battering_ram:  { maxHp: 120, attack: 10, range: 1, speed: 0.5, foodUpkeep: 2, gunUpkeep: 0, gunL2Upkeep: 0, siegeAttack: 40 },
   defender:       { maxHp: 130, attack: 8,  range: 1, speed: 0.9, foodUpkeep: 1, gunUpkeep: 0, gunL2Upkeep: 0, damageResist: 0.25, damageResistOnCityHex: 0.4 },
 };
+
+// Level 3 unit stats (require L2 barracks, iron cost); defender is L3 only
+export const UNIT_L3_STATS: Record<UnitType, {
+  maxHp: number; attack: number; range: number;
+  speed: number; foodUpkeep: number; gunUpkeep: number; gunL2Upkeep: number;
+  siegeAttack?: number;
+  damageResist?: number;
+  damageResistOnCityHex?: number;
+}> = {
+  infantry:       { maxHp: 140, attack: 21, range: 1, speed: 1.0, foodUpkeep: 1, gunUpkeep: 0, gunL2Upkeep: 2 },
+  cavalry:        { maxHp: 105, attack: 28, range: 1, speed: 1.5, foodUpkeep: 2, gunUpkeep: 0, gunL2Upkeep: 2 },
+  ranged:         { maxHp: 70,  attack: 17, range: 2, speed: 1.0, foodUpkeep: 1, gunUpkeep: 0, gunL2Upkeep: 2 },
+  builder:        { maxHp: 40,  attack: 0,  range: 0, speed: 1.0, foodUpkeep: 1, gunUpkeep: 0, gunL2Upkeep: 0 },
+  trebuchet:      { maxHp: 60,  attack: 5,  range: 3, speed: 0.6, foodUpkeep: 2, gunUpkeep: 0, gunL2Upkeep: 0, siegeAttack: 25 },
+  battering_ram:  { maxHp: 120, attack: 10, range: 1, speed: 0.5, foodUpkeep: 2, gunUpkeep: 0, gunL2Upkeep: 0, siegeAttack: 40 },
+  defender:       { maxHp: 130, attack: 8,  range: 1, speed: 0.9, foodUpkeep: 1, gunUpkeep: 0, gunL2Upkeep: 0, damageResist: 0.25, damageResistOnCityHex: 0.4 },
+};
+
+/** Resolve unit stats by arms level (L1/L2/L3). Defender uses L3. */
+export function getUnitStats(u: { type: UnitType; armsLevel?: 1 | 2 | 3 }) {
+  const level = u.armsLevel ?? 1;
+  if (level === 3) return UNIT_L3_STATS[u.type];
+  if (level === 2) return UNIT_L2_STATS[u.type];
+  return UNIT_BASE_STATS[u.type];
+}
 
 export const HERO_BUFFS: Record<HeroType, { label: string; desc: string }> = {
   general:     { label: 'General', desc: '+10% Attack' },

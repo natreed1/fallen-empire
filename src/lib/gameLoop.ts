@@ -4,7 +4,7 @@ import {
   MARKET_GOLD_PER_CYCLE, POP_BIRTH_RATE, POP_NATURAL_DEATHS,   POP_CARRYING_CAPACITY_PER_FOOD, POP_EXPECTED_K_ALPHA, STARVATION_DEATHS,
   FACTORY_L2_IRON_PER_CYCLE, FACTORY_L2_ARMS_PER_CYCLE, UNEMPLOYMENT_MORALE_PENALTY, UNEMPLOYMENT_MORALE_PENALTY_CAP,
   FARM_L2_FOOD_PER_CYCLE, getBuildingJobs, PRODUCTIVITY_NORMALIZE,
-  WORKERS_PER_LEVEL, MIN_STAFFING_RATIO, UNIT_BASE_STATS, UNIT_L2_STATS,
+  WORKERS_PER_LEVEL, MIN_STAFFING_RATIO, getUnitStats,
   generateId, tileKey, parseTileKey, hexDistance,
   FRONTIER_CYCLES, FRONTIER_MIGRATION_BONUS, MIGRATION_BASE_RATE,
 } from '@/types/game';
@@ -104,7 +104,7 @@ export function computeClusterIncomeStatement(
   let armsExpense = 0;
   let armsL2Expense = 0;
   for (const u of clusterUnits) {
-    const stats = u.armsLevel === 2 ? UNIT_L2_STATS[u.type] : UNIT_BASE_STATS[u.type];
+    const stats = getUnitStats(u);
     let foodUp = stats.foodUpkeep;
     const heroAtUnit = heroes.find(h => h.q === u.q && h.r === u.r && h.ownerId === u.ownerId && h.type === 'logistician');
     if (heroAtUnit) foodUp = Math.ceil(foodUp * 0.5);

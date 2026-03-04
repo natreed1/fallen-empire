@@ -2,10 +2,11 @@
 
 import { useState, useEffect } from 'react';
 import { useGameStore } from '@/store/useGameStore';
+import { setAiParams } from '@/lib/aiParams';
 import { computeTradeClusters, getCapitalCluster, getSupplyingClusterKey } from '@/lib/logistics';
 import { computeCityProductionRate } from '@/lib/gameLoop';
 import { getWeatherHarvestMultiplier } from '@/lib/weather';
-import { BUILDING_COSTS, BUILDING_PRODUCTION, BUILDING_BP_COST, BUILDING_JOBS, CITY_BUILDING_POWER, BUILDER_POWER, BP_RATE_BASE, TERRAIN_FOOD_YIELD, UNIT_COSTS, UNIT_BASE_STATS, UNIT_L2_STATS, UNIT_DISPLAY_NAMES, HERO_BUFFS, VILLAGE_INCORPORATE_COST, MARKET_GOLD_PER_CYCLE, SCOUT_MISSION_COST, WEATHER_DISPLAY, BARACKS_UPGRADE_COST, FACTORY_UPGRADE_COST, FARM_UPGRADE_COST, FARM_L2_FOOD_PER_CYCLE, WALL_SECTION_STONE_COST, WORKERS_PER_LEVEL, MIN_STAFFING_RATIO, ROAD_BP_COST, TREBUCHET_FIELD_BP_COST, TREBUCHET_FIELD_GOLD_COST, getBuildingJobs, BuildingType, UnitType, ArmyStance, Biome, hexDistance, tileKey, POP_BIRTH_RATE, POP_NATURAL_DEATHS, POP_CARRYING_CAPACITY_PER_FOOD, POP_EXPECTED_K_ALPHA, STARVATION_DEATHS } from '@/types/game';
+import { BUILDING_COSTS, BUILDING_PRODUCTION, BUILDING_BP_COST, BUILDING_JOBS, CITY_BUILDING_POWER, BUILDER_POWER, BP_RATE_BASE, TERRAIN_FOOD_YIELD, UNIT_COSTS, UNIT_L2_COSTS, UNIT_L3_COSTS, UNIT_BASE_STATS, UNIT_DISPLAY_NAMES, HERO_BUFFS, VILLAGE_INCORPORATE_COST, MARKET_GOLD_PER_CYCLE, SCOUT_MISSION_COST, WEATHER_DISPLAY, BARACKS_UPGRADE_COST, FACTORY_UPGRADE_COST, FARM_UPGRADE_COST, FARM_L2_FOOD_PER_CYCLE, WALL_SECTION_STONE_COST, WORKERS_PER_LEVEL, MIN_STAFFING_RATIO, ROAD_BP_COST, TREBUCHET_FIELD_BP_COST, TREBUCHET_FIELD_GOLD_COST, SCOUT_TOWER_BP_COST, SCOUT_TOWER_GOLD_COST, getBuildingJobs, getUnitStats, BuildingType, UnitType, ArmyStance, Biome, hexDistance, tileKey, POP_BIRTH_RATE, POP_NATURAL_DEATHS, POP_CARRYING_CAPACITY_PER_FOOD, POP_EXPECTED_K_ALPHA, STARVATION_DEATHS } from '@/types/game';
 import Image from 'next/image';
 import Link from 'next/link';
 
@@ -43,10 +44,21 @@ function SetupScreen() {
           </button>
           <button
             type="button"
+            onClick={async () => {
+              const data = await fetch('/ai-params.json').then(r => r.ok ? r.json() : null).catch(() => null);
+              if (data) setAiParams(data);
+              useGameStore.getState().startSmallMapBotVsBot();
+            }}
+            className="px-8 py-3 bg-empire-gold/15 border border-empire-gold/50 rounded-lg text-empire-gold/90 font-medium tracking-wide hover:bg-empire-gold/25 transition-colors"
+          >
+            Small map battle (38×38, champion AI)
+          </button>
+          <button
+            type="button"
             onClick={() => useGameStore.getState().startBotVsBot()}
             className="px-8 py-3 bg-empire-dark border border-empire-gold/40 rounded-lg text-empire-parchment font-medium tracking-wide hover:bg-empire-gold/10 transition-colors"
           >
-            Watch 2 Bot
+            Watch 2 Bot (large map)
           </button>
           <button
             type="button"
@@ -56,9 +68,7 @@ function SetupScreen() {
             Watch 4 Bot
           </button>
           <p className="text-empire-parchment/40 text-xs">
-            2 Bot: two AIs on small map. 4 Bot: four kingdoms, one per corner (52×52, land in all corners).
-            <br />
-            <span className="text-empire-gold/70">?watch</span> = 2 bot (38×38), <span className="text-empire-gold/70">?watch=4</span> = 4 bot.
+            Small map: 38×38, trained champion from ai-params.json. 2 Bot: default map. 4 Bot: four kingdoms (52×52).
           </p>
         </div>
       </div>
@@ -654,7 +664,7 @@ function TopBar() {
     if (clusterKey === null) continue; // unsupplied: no upkeep deducted
     let foodD = 0, gunD = 0;
     for (const u of clusterUnits) {
-      const stats = u.armsLevel === 2 ? UNIT_L2_STATS[u.type] : UNIT_BASE_STATS[u.type];
+      const stats = getUnitStats(u);
       const heroAtUnit = heroes.find(
         h => h.q === u.q && h.r === u.r && h.ownerId === u.ownerId && h.type === 'logistician',
       );
@@ -852,6 +862,8 @@ function SidePanel() {
   const hasRoadConstructionAt = useGameStore(s => s.hasRoadConstructionAt);
   const buildRoad = useGameStore(s => s.buildRoad);
   const buildTrebuchetInField = useGameStore(s => s.buildTrebuchetInField);
+  const buildScoutTowerInField = useGameStore(s => s.buildScoutTowerInField);
+  const scoutTowers = useGameStore(s => s.scoutTowers);
   const startBuilderBuild = useGameStore(s => s.startBuilderBuild);
   const cancelBuilderBuild = useGameStore(s => s.cancelBuilderBuild);
   const confirmRoadPath = useGameStore(s => s.confirmRoadPath);
@@ -915,6 +927,9 @@ function SidePanel() {
   const human = players.find(p => p.isHuman);
   const canBuildTrebuchetHere = buildersHere > 0 && !cityAtHex && !construction && tile?.biome !== 'water' && tile?.biome !== 'mountain';
   const canAffordTrebuchet = (human?.gold ?? 0) >= TREBUCHET_FIELD_GOLD_COST;
+  const hasScoutTowerHere = scoutTowers.some(t => t.q === selectedHex.q && t.r === selectedHex.r);
+  const canBuildScoutTowerHere = buildersHere > 0 && !cityAtHex && !construction && !hasScoutTowerHere && tile?.biome !== 'water' && tile?.biome !== 'mountain';
+  const canAffordScoutTower = (human?.gold ?? 0) >= SCOUT_TOWER_GOLD_COST;
   const cityForWall = inTerritory && human ? (() => {
     const info = territory.get(tileKey(selectedHex.q, selectedHex.r));
     if (!info || info.playerId !== human.id) return null;
@@ -1039,6 +1054,9 @@ function SidePanel() {
             buildTrebuchetHere={() => buildTrebuchetInField(selectedHex.q, selectedHex.r)}
             canBuildTrebuchetHere={canBuildTrebuchetHere}
             canAffordTrebuchet={canAffordTrebuchet}
+            buildScoutTowerHere={() => buildScoutTowerInField(selectedHex.q, selectedHex.r)}
+            canBuildScoutTowerHere={canBuildScoutTowerHere}
+            canAffordScoutTower={canAffordScoutTower}
           />
         )}
 
@@ -1347,12 +1365,13 @@ function MoraleBar({ value }: { value: number }) {
 
 // ─── Barracks Panel (Click barracks → recruit military units) ──────
 
-const MILITARY_RECRUIT_INFO: { type: UnitType; cost: number; maintain: string; desc: string }[] = [
-  { type: 'infantry', cost: 1,  maintain: '1 grain/cycle',   desc: 'Melee. Cheap and sturdy.' },
-  { type: 'cavalry',  cost: 3,  maintain: '2 grain/cycle',   desc: 'Fast melee. 1.5x speed.' },
-  { type: 'ranged',   cost: 2,  maintain: '1 grain/cycle',  desc: 'Archer. Attacks from 2 hex.' },
-  { type: 'trebuchet', cost: 8, maintain: '2 grain/cycle',  desc: 'Siege. Range 3 vs walls/buildings.' },
-  { type: 'battering_ram', cost: 6, maintain: '2 grain/cycle', desc: 'Siege. Melee vs walls. Low HP, defend well.' },
+const MILITARY_RECRUIT_INFO: { type: UnitType; maintain: string; desc: string; l2BarracksOnly?: boolean }[] = [
+  { type: 'infantry', maintain: '1 grain/cycle', desc: 'Melee. Cheap and sturdy.' },
+  { type: 'cavalry', maintain: '2 grain/cycle', desc: 'Fast melee. 1.5x speed.' },
+  { type: 'ranged', maintain: '1 grain/cycle', desc: 'Archer. Attacks from 2 hex.' },
+  { type: 'trebuchet', maintain: '2 grain/cycle', desc: 'Siege. Range 3 vs walls/buildings.' },
+  { type: 'battering_ram', maintain: '2 grain/cycle', desc: 'Siege. Melee vs walls. Low HP, defend well.' },
+  { type: 'defender', maintain: '1 grain/cycle', desc: 'Tank. L3 only, iron only. High HP, damage resist.', l2BarracksOnly: true },
 ];
 
 // ─── Academy Panel (Click academy → recruit civilian units) ────────
@@ -1381,16 +1400,17 @@ function BarracksPanel({ city, barracksQ, barracksR }: { city: import('@/types/g
   const troopSlotsLeft = Math.max(0, totalPop - livingTroops);
 
   const [quantities, setQuantities] = useState<Record<string, number>>({});
-  const [levels, setLevels] = useState<Record<string, 1 | 2>>({});
+  const [levels, setLevels] = useState<Record<string, 1 | 2 | 3>>({});
   const getQty = (type: string) => quantities[type] ?? 1;
   const setQty = (type: string, val: number) => setQuantities(prev => ({ ...prev, [type]: val }));
-  const getLevel = (type: string): 1 | 2 => {
+  const getLevel = (type: string): 1 | 2 | 3 => {
+    if (type === 'defender') return 3;
     const l = levels[type] ?? 1;
-    return barracksLvl >= 2 ? (l as 1 | 2) : 1;
+    return (barracksLvl >= 2 ? (l as 1 | 2 | 3) : 1) as 1 | 2 | 3;
   };
-  const setLevel = (type: string, l: 1 | 2) => setLevels(prev => ({ ...prev, [type]: l }));
+  const setLevel = (type: string, l: 1 | 2 | 3) => setLevels(prev => ({ ...prev, [type]: l }));
 
-  const handleBatchRecruit = (type: import('@/types/game').UnitType, cost: number, qty: number, armsLevel: 1 | 2) => {
+  const handleBatchRecruit = (type: import('@/types/game').UnitType, qty: number, armsLevel: 1 | 2 | 3) => {
     for (let i = 0; i < qty; i++) {
       recruitUnit(city.id, type, armsLevel);
     }
@@ -1411,60 +1431,55 @@ function BarracksPanel({ city, barracksQ, barracksR }: { city: import('@/types/g
       <p className="text-empire-parchment/50 text-[10px]">Troops: {livingTroops} / {totalPop} (1 per pop; pop lost when unit dies)</p>
 
       <div className="space-y-1.5">
-        {MILITARY_RECRUIT_INFO.map(({ type, cost, maintain, desc }) => {
-          const lvl = getLevel(type);
-          const stats = lvl === 2 ? UNIT_L2_STATS[type] : UNIT_BASE_STATS[type];
-          const gunL2Upkeep = lvl === 2 ? ((UNIT_L2_STATS[type] as { gunL2Upkeep?: number }).gunL2Upkeep ?? 0) : 0;
-          const upkeepText = lvl === 2
-            ? `L2 arms. +${gunL2Upkeep} L2 arms/cycle`
-            : maintain;
+        {MILITARY_RECRUIT_INFO.filter(({ l2BarracksOnly }) => !l2BarracksOnly || barracksLvl >= 2).map(({ type, maintain, desc }) => {
+          const lvl = getLevel(type) as 1 | 2 | 3;
+          const goldCost = lvl === 3 ? UNIT_L3_COSTS[type].gold : lvl === 2 ? UNIT_L2_COSTS[type].gold : UNIT_COSTS[type].gold;
+          const stoneCost = lvl === 2 ? (UNIT_L2_COSTS[type].stone ?? 0) : 0;
+          const ironCost = lvl === 3 ? (UNIT_L3_COSTS[type].iron ?? 0) : 0;
+          const stats = getUnitStats({ type, armsLevel: lvl });
+          const gunL2Upkeep = (stats as { gunL2Upkeep?: number }).gunL2Upkeep ?? 0;
+          const upkeepText = gunL2Upkeep > 0 ? `L2 arms. +${gunL2Upkeep} L2 arms/cycle` : maintain;
           const qty = getQty(type);
-          const totalCost = cost * qty;
-          const maxByGold = Math.floor(gold / Math.max(1, cost));
-          const maxByPop = troopSlotsLeft;
-          const maxQty = Math.max(1, Math.min(maxByGold, maxByPop, 20));
-          const canAffordL2 = gunL2Upkeep === 0 || totalGunsL2 >= gunL2Upkeep * qty;
-          const canAfford = gold >= totalCost && livingTroops + qty <= totalPop && (lvl === 1 || canAffordL2);
+          const totalGold = goldCost * qty;
+          const totalStone = stoneCost * qty;
+          const totalIron = ironCost * qty;
+          const cityStone = city.storage.stone ?? 0;
+          const cityIron = city.storage.iron ?? 0;
+          const maxByGold = goldCost > 0 ? Math.floor(gold / goldCost) : 999;
+          const maxByStone = stoneCost > 0 ? Math.floor(cityStone / stoneCost) : 999;
+          const maxByIron = ironCost > 0 ? Math.floor(cityIron / ironCost) : 999;
+          const maxQty = Math.max(1, Math.min(maxByGold, maxByStone, maxByIron, troopSlotsLeft, 20));
+          const canAffordL2Arms = gunL2Upkeep === 0 || totalGunsL2 >= gunL2Upkeep * qty;
+          const canAfford = gold >= totalGold && cityStone >= totalStone && cityIron >= totalIron && livingTroops + qty <= totalPop && canAffordL2Arms;
           const isL2 = lvl === 2;
+          const isL3 = lvl === 3;
+          const costLabel = ironCost > 0 ? (goldCost > 0 ? `${goldCost}g, ${ironCost} iron` : `${ironCost} iron`) : stoneCost > 0 ? `${goldCost}g, ${stoneCost} stone` : `${goldCost}g`;
           return (
             <div key={type} className={`px-2.5 py-2 rounded border transition-colors ${
               canAfford
-                ? isL2 ? 'border-cyan-500/30 bg-cyan-900/15 text-empire-parchment' : 'border-orange-500/30 bg-orange-900/15 text-empire-parchment'
+                ? isL3 ? 'border-amber-500/30 bg-amber-900/15 text-empire-parchment' : isL2 ? 'border-cyan-500/30 bg-cyan-900/15 text-empire-parchment' : 'border-orange-500/30 bg-orange-900/15 text-empire-parchment'
                 : 'border-empire-stone/20 bg-transparent text-empire-parchment/30'
             }`}>
               <div className="flex justify-between items-center gap-2 mb-0.5">
-                <span className={`font-bold text-xs ${isL2 ? 'text-cyan-300' : ''}`}>
-                  {isL2 ? `L2 ` : ''}{UNIT_DISPLAY_NAMES[type]}
+                <span className={`font-bold text-xs ${isL3 ? 'text-amber-300' : isL2 ? 'text-cyan-300' : ''}`}>
+                  {isL3 ? `L3 ` : isL2 ? `L2 ` : ''}{UNIT_DISPLAY_NAMES[type]}
                 </span>
-                <span className={`text-xs font-mono ${canAfford ? 'text-yellow-400' : 'text-red-400/50'}`}>{cost}g ea</span>
+                <span className={`text-xs font-mono ${canAfford ? 'text-yellow-400' : 'text-red-400/50'}`}>{costLabel} ea</span>
               </div>
               <div className="flex items-center justify-between gap-2 flex-wrap">
                 <span className="text-[10px] text-empire-parchment/50">{desc}</span>
-                {/* Level: minus / level / plus */}
-                <div className="flex items-center gap-1">
-                  <button
-                    type="button"
-                    onClick={() => setLevel(type, 1)}
-                    disabled={lvl === 1}
-                    className="w-5 h-5 rounded bg-empire-stone/30 text-empire-parchment/80 text-xs font-bold disabled:opacity-40 disabled:cursor-not-allowed hover:bg-empire-stone/50"
-                    aria-label="Level down"
-                  >
-                    −
-                  </button>
-                  <span className="text-[10px] font-mono text-orange-300 w-5 text-center">L{lvl}</span>
-                  <button
-                    type="button"
-                    onClick={() => setLevel(type, 2)}
-                    disabled={lvl === 2 || barracksLvl < 2}
-                    className="w-5 h-5 rounded bg-empire-stone/30 text-empire-parchment/80 text-xs font-bold disabled:opacity-40 disabled:cursor-not-allowed hover:bg-empire-stone/50"
-                    aria-label="Level up"
-                  >
-                    +
-                  </button>
-                </div>
+                {type !== 'defender' && (
+                  <div className="flex items-center gap-1">
+                    <button type="button" onClick={() => setLevel(type, 1)} disabled={lvl === 1} className="w-5 h-5 rounded bg-empire-stone/30 text-empire-parchment/80 text-xs font-bold disabled:opacity-40 disabled:cursor-not-allowed hover:bg-empire-stone/50" aria-label="L1">−</button>
+                    <span className="text-[10px] font-mono text-orange-300 w-5 text-center">L{lvl}</span>
+                    <button type="button" onClick={() => setLevel(type, 2)} disabled={lvl === 2 || lvl === 3 || barracksLvl < 2} className="w-5 h-5 rounded bg-empire-stone/30 text-empire-parchment/80 text-xs font-bold disabled:opacity-40 disabled:cursor-not-allowed hover:bg-empire-stone/50" aria-label="L2">+</button>
+                    <button type="button" onClick={() => setLevel(type, 3)} disabled={lvl === 3 || barracksLvl < 2} className="w-5 h-5 rounded bg-empire-stone/30 text-empire-parchment/80 text-xs font-bold disabled:opacity-40 disabled:cursor-not-allowed hover:bg-empire-stone/50" aria-label="L3">++</button>
+                  </div>
+                )}
+                {type === 'defender' && <span className="text-[10px] font-mono text-amber-300">L3 only</span>}
               </div>
               <div className="flex justify-between text-[10px] mt-0.5 mb-1.5">
-                <span className={isL2 ? 'text-cyan-300/90' : 'text-empire-parchment/40'}>HP {stats.maxHp} | ATK {stats.attack} | Rng {stats.range}</span>
+                <span className={isL3 ? 'text-amber-300/90' : isL2 ? 'text-cyan-300/90' : 'text-empire-parchment/40'}>HP {stats.maxHp} | ATK {stats.attack} | Rng {stats.range}</span>
                 <span className="text-orange-300/60">{upkeepText}</span>
               </div>
 
@@ -1482,19 +1497,21 @@ function BarracksPanel({ city, barracksQ, barracksR }: { city: import('@/types/g
 
               <div className="flex justify-between items-center mt-1">
                 <span className="text-[10px] text-empire-parchment/40">
-                  Total: <span className={canAfford ? 'text-yellow-400' : 'text-red-400'}>{totalCost}g</span>
-                  {' + '}{qty} pop
+                  Total: {totalGold > 0 && <span className={canAfford ? 'text-yellow-400' : 'text-red-400'}>{totalGold}g</span>}
+                  {totalStone > 0 && <span className={canAfford ? 'text-empire-parchment' : 'text-red-400'}> {totalStone} stone</span>}
+                  {totalIron > 0 && <span className={canAfford ? 'text-empire-parchment' : 'text-red-400'}> {totalIron} iron</span>}
+                  {' · '}{qty} pop
                 </span>
                 <button
-                  onClick={() => handleBatchRecruit(type, cost, qty, lvl)}
+                  onClick={() => handleBatchRecruit(type, qty, lvl as 1 | 2 | 3)}
                   disabled={!canAfford}
                   className={`px-2.5 py-1 text-[10px] font-bold rounded transition-colors ${
                     canAfford
-                      ? isL2 ? 'bg-cyan-600/40 text-cyan-200 hover:bg-cyan-600/60' : 'bg-orange-600/40 text-orange-200 hover:bg-orange-600/60'
+                      ? isL3 ? 'bg-amber-600/40 text-amber-200 hover:bg-amber-600/60' : isL2 ? 'bg-cyan-600/40 text-cyan-200 hover:bg-cyan-600/60' : 'bg-orange-600/40 text-orange-200 hover:bg-orange-600/60'
                       : 'bg-empire-stone/10 text-empire-parchment/20 cursor-not-allowed'
                   }`}
                 >
-                  Recruit {qty}{isL2 ? ' L2' : ''}
+                  Recruit {qty}{isL3 ? ' L3' : isL2 ? ' L2' : ''}
                 </button>
               </div>
             </div>
@@ -1964,7 +1981,7 @@ function ArmyPanel({ units }: { units: import('@/types/game').Unit[] }) {
   const uiMode = useGameStore(s => s.uiMode);
   const cities = useGameStore(s => s.cities);
 
-  const counts: Record<UnitType, number> = { infantry: 0, cavalry: 0, ranged: 0, builder: 0, trebuchet: 0, battering_ram: 0 };
+  const counts: Record<UnitType, number> = { infantry: 0, cavalry: 0, ranged: 0, builder: 0, trebuchet: 0, battering_ram: 0, defender: 0 };
   let totalHp = 0, totalMaxHp = 0;
   let defendingCity: string | null = null;
   let retreating = false;
@@ -1979,7 +1996,7 @@ function ArmyPanel({ units }: { units: import('@/types/game').Unit[] }) {
   }
   const defendCityName = defendingCity ? cities.find(c => c.id === defendingCity)?.name : null;
 
-  const hasCombatUnits = counts.infantry > 0 || counts.cavalry > 0 || counts.ranged > 0 || counts.trebuchet > 0 || counts.battering_ram > 0;
+  const hasCombatUnits = counts.infantry > 0 || counts.cavalry > 0 || counts.ranged > 0 || counts.trebuchet > 0 || counts.battering_ram > 0 || counts.defender > 0;
   const avgStance = units[0]?.stance ?? 'aggressive';
   const stances: ArmyStance[] = ['aggressive', 'defensive', 'passive'];
   const stanceColors: Record<ArmyStance, string> = {
@@ -2008,6 +2025,7 @@ function ArmyPanel({ units }: { units: import('@/types/game').Unit[] }) {
         {counts.ranged > 0 && <span className="text-empire-parchment">&#127993; {counts.ranged} Rng</span>}
         {counts.trebuchet > 0 && <span className="text-empire-parchment">&#9883; {counts.trebuchet} Treb</span>}
         {counts.battering_ram > 0 && <span className="text-empire-parchment">&#128737; {counts.battering_ram} Ram</span>}
+        {counts.defender > 0 && <span className="text-empire-parchment">&#128737; {counts.defender} Def</span>}
       </div>
 
       {/* HP bar */}
@@ -2156,6 +2174,9 @@ function BuilderBuildMenu({
   buildTrebuchetHere,
   canBuildTrebuchetHere,
   canAffordTrebuchet,
+  buildScoutTowerHere,
+  canBuildScoutTowerHere,
+  canAffordScoutTower,
 }: {
   uiMode: string;
   startBuilderBuild: (mode: 'mine' | 'quarry' | 'gold_mine' | 'road') => void;
@@ -2165,6 +2186,9 @@ function BuilderBuildMenu({
   buildTrebuchetHere: () => void;
   canBuildTrebuchetHere: boolean;
   canAffordTrebuchet: boolean;
+  buildScoutTowerHere: () => void;
+  canBuildScoutTowerHere: boolean;
+  canAffordScoutTower: boolean;
 }) {
   if (uiMode === 'normal' || uiMode === 'move') {
     return (
@@ -2185,6 +2209,22 @@ function BuilderBuildMenu({
               <span className="font-medium">Build Trebuchet (this hex)</span>
               <span className={canAffordTrebuchet ? 'text-amber-400/70 ml-1' : 'text-red-400/50 ml-1'}>
                 — {TREBUCHET_FIELD_GOLD_COST}g, {TREBUCHET_FIELD_BP_COST} BP (siege)
+              </span>
+            </button>
+          )}
+          {canBuildScoutTowerHere && (
+            <button
+              onClick={buildScoutTowerHere}
+              disabled={!canAffordScoutTower}
+              className={`w-full text-left px-3 py-2 rounded border text-xs transition-colors ${
+                canAffordScoutTower
+                  ? 'border-cyan-600/40 bg-cyan-900/20 text-cyan-300 hover:bg-cyan-900/30'
+                  : 'border-empire-stone/20 bg-transparent text-empire-parchment/30 cursor-not-allowed'
+              }`}
+            >
+              <span className="font-medium">Build Scout Tower (this hex)</span>
+              <span className={canAffordScoutTower ? 'text-cyan-400/70 ml-1' : 'text-red-400/50 ml-1'}>
+                — {SCOUT_TOWER_GOLD_COST}g, {SCOUT_TOWER_BP_COST} BP (vision 4)
               </span>
             </button>
           )}
@@ -2284,6 +2324,8 @@ function BuildMenu({ q, r, inTerritory, buildersHere, unitsHere, tile, hasRoadCo
 }) {
   const buildStructure = useGameStore(s => s.buildStructure);
   const buildTrebuchetInField = useGameStore(s => s.buildTrebuchetInField);
+  const buildScoutTowerInField = useGameStore(s => s.buildScoutTowerInField);
+  const scoutTowers = useGameStore(s => s.scoutTowers);
   const buildWallRing = useGameStore(s => s.buildWallRing);
   const human = useGameStore(s => s.getHumanPlayer)();
   const humanCities = useGameStore(s => s.cities).filter(c => c.ownerId === human?.id);
@@ -2295,6 +2337,9 @@ function BuildMenu({ q, r, inTerritory, buildersHere, unitsHere, tile, hasRoadCo
 
   const hasUnitsForDeposit = unitsHere > 0;
   const canBuildTrebuchetHere = buildersHere > 0 && !hasCityAt(q, r) && !hasConstructionAt(q, r) && tile?.biome !== 'water' && tile?.biome !== 'mountain';
+  const hasScoutTowerAt = scoutTowers.some(t => t.q === q && t.r === r);
+  const canBuildScoutTowerHere = buildersHere > 0 && !hasCityAt(q, r) && !hasConstructionAt(q, r) && !hasScoutTowerAt && tile?.biome !== 'water' && tile?.biome !== 'mountain';
+  const scoutTowerCanAfford = (human?.gold ?? 0) >= SCOUT_TOWER_GOLD_COST;
 
   const buildings: { type: BuildingType; label: string; desc: string; show?: boolean; needsUnits?: boolean }[] = [
     { type: 'farm' as BuildingType, label: 'Farm', desc: `L1: +25 grain/cycle (2 jobs); L2: +60 (3 jobs)  (${BUILDING_BP_COST.farm} BP)` },
@@ -2327,6 +2372,23 @@ function BuildMenu({ q, r, inTerritory, buildersHere, unitsHere, tile, hasRoadCo
             <span className={trebuchetCanAfford ? 'text-yellow-400' : 'text-red-400/50'}>{TREBUCHET_FIELD_GOLD_COST}g</span>
           </div>
           <div className="text-empire-parchment/40 text-[10px]">Siege. Builder builds on this hex ({TREBUCHET_FIELD_BP_COST} BP)</div>
+        </button>
+      )}
+      {canBuildScoutTowerHere && (
+        <button
+          onClick={() => buildScoutTowerInField(q, r)}
+          disabled={!scoutTowerCanAfford}
+          className={`w-full text-left px-3 py-2 rounded border text-xs transition-colors ${
+            scoutTowerCanAfford
+              ? 'border-cyan-600/40 bg-cyan-900/20 text-cyan-300 hover:bg-cyan-900/30'
+              : 'border-empire-stone/20 bg-transparent text-empire-parchment/30 cursor-not-allowed'
+          }`}
+        >
+          <div className="flex justify-between">
+            <span className="font-medium">Build Scout Tower (field)</span>
+            <span className={scoutTowerCanAfford ? 'text-cyan-400' : 'text-red-400/50'}>{SCOUT_TOWER_GOLD_COST}g</span>
+          </div>
+          <div className="text-empire-parchment/40 text-[10px]">Vision 4. Builder builds on this hex ({SCOUT_TOWER_BP_COST} BP)</div>
         </button>
       )}
 {canBuildRoad && (

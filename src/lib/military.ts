@@ -1,8 +1,8 @@
 import {
   Unit, Hero, Tile, City, GameNotification, TerritoryInfo, WallSection,
-  UNIT_BASE_STATS, UNIT_L2_STATS, ROAD_SPEED_BONUS,
+  getUnitStats, ROAD_SPEED_BONUS,
   hexDistance, hexNeighbors, tileKey, generateId,
-  RETREAT_DELAY_MS, ASSAULT_ATTACK_DEBUFF,
+  RETREAT_DELAY_MS, ASSAULT_ATTACK_DEBUFF, HERO_BASE_HP, HERO_ATTACK,
 } from '@/types/game';
 import { getUnitAttack, awardXp } from './combat';
 import { computeTradeClusters, getSupplyingClusterKey, TradeCluster } from '@/lib/logistics';
@@ -18,6 +18,18 @@ function applyTowerDefense(damage: number, targetQ: number, targetR: number, cit
     return Math.max(1, Math.floor(damage * (1 - TOWER_DEFENSE_BONUS)));
   }
   return damage;
+}
+
+/** Apply defender (and other unit) damage resistance. When defender is on friendly city hex, uses damageResistOnCityHex. */
+function applyDamageResist(damage: number, target: Unit, cities: City[]): number {
+  const stats = getUnitStats(target);
+  const resist = (stats as { damageResist?: number; damageResistOnCityHex?: number }).damageResist ?? 0;
+  const onCityHex = target.type === 'defender' && cities.some(c => c.ownerId === target.ownerId && c.q === target.q && c.r === target.r);
+  const resistVal = onCityHex
+    ? ((stats as { damageResistOnCityHex?: number }).damageResistOnCityHex ?? resist)
+    : resist;
+  if (resistVal <= 0) return damage;
+  return Math.max(1, Math.floor(damage * (1 - resistVal)));
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -64,7 +76,7 @@ export function movementTick(
       continue;
     }
 
-    const slowestSpeed = Math.min(...army.map(u => (u.armsLevel === 2 ? UNIT_L2_STATS[u.type] : UNIT_BASE_STATS[u.type]).speed));
+    const slowestSpeed = Math.min(...army.map(u => getUnitStats(u).speed));
     const earliestReady = Math.min(...army.map(u => u.nextMoveAt));
     if (now < earliestReady) continue;
 
@@ -114,6 +126,7 @@ export function movementTick(
 
 export interface CombatTickResult {
   killedUnitIds: string[];
+  killedHeroIds: string[];
   notifications: GameNotification[];
   /** Hex keys (q,r) where combat occurred this tick (for ancient city: no reward if combat on that hex) */
   combatHexKeys: string[];
@@ -127,6 +140,7 @@ export function combatTick(
   nowMs: number = Date.now(),
 ): CombatTickResult {
   const killed: string[] = [];
+  const killedHeroIds: string[] = [];
   const notifications: GameNotification[] = [];
   const combatHexKeys: string[] = [];
   const processed = new Set<string>();
@@ -143,7 +157,7 @@ export function combatTick(
 
   const hexKeys = Object.keys(byHex);
 
-  // Phase A: Same-hex combat (units from different owners sharing a hex)
+  // Phase A: Same-hex combat (units from different owners sharing a hex); heroes can attack and take damage
   for (const hexKey of hexKeys) {
     const hexUnits = byHex[hexKey];
     const ownerSet: Record<string, boolean> = {};
@@ -157,7 +171,7 @@ export function combatTick(
     const hero2 = heroes.find(h => h.q === side2[0]?.q && h.r === side2[0]?.r && h.ownerId === owners[1]);
 
     combatHexKeys.push(hexKey);
-    resolveMeleeRound(side1, side2, hero1, hero2, killed, notifications, cycle, cities);
+    resolveMeleeRound(side1, side2, hero1, hero2, killed, killedHeroIds, notifications, cycle, cities);
     for (const u of side1.concat(side2)) processed.add(u.id);
   }
 
@@ -171,7 +185,7 @@ export function combatTick(
     if (aggressors.length === 0) continue;
 
     const ownerId = aggressors[0].ownerId;
-    const maxRange = Math.max(...aggressors.map((u: Unit) => UNIT_BASE_STATS[u.type].range));
+    const maxRange = Math.max(...aggressors.map((u: Unit) => getUnitStats(u).range));
     const attackerHero = heroes.find(h => h.q === q && h.r === r && h.ownerId === ownerId);
 
     for (const otherKey of hexKeys) {
@@ -182,46 +196,52 @@ export function combatTick(
       if (dist > maxRange) continue;
 
       const enemies = otherUnits.filter((u: Unit) => u.ownerId !== ownerId && u.hp > 0);
-      if (enemies.length === 0) continue;
+      const enemyHero = heroes.find(h => h.q === oq && h.r === or_ && h.ownerId !== ownerId && heroHp(h) > 0);
+      if (enemies.length === 0 && !enemyHero) continue;
 
       if (!combatHexKeys.includes(hexKey)) combatHexKeys.push(hexKey);
       if (!combatHexKeys.includes(otherKey)) combatHexKeys.push(otherKey);
 
       for (const atk of aggressors) {
         if (processed.has(atk.id) || atk.hp <= 0) continue;
-        const unitRange = UNIT_BASE_STATS[atk.type].range;
+        const unitRange = getUnitStats(atk).range;
         if (dist > unitRange) continue;
 
         const target = enemies.find((e: Unit) => e.hp > 0);
-        if (!target) break;
-
-        let rawDamage = getUnitAttack(atk, attackerHero);
-        let damage = applyTowerDefense(rawDamage, target.q, target.r, cities);
-        if (atk.assaulting && isCityCenter(target.q, target.r, cities)) {
-          damage = Math.max(1, Math.floor(damage * ASSAULT_ATTACK_DEBUFF));
-        }
-        target.hp -= damage;
-        atk.status = 'fighting';
-
-        if (target.hp <= 0) {
-          killed.push(target.id);
-          const leveled = awardXp(atk, 10);
-          if (leveled) {
-            notifications.push({
-              id: generateId('n'), turn: cycle,
-              message: `${capitalize(atk.type)} leveled up to ${atk.level}!`,
-              type: 'success',
-            });
+        if (target) {
+          let rawDamage = getUnitAttack(atk, attackerHero);
+          let damage = applyTowerDefense(rawDamage, target.q, target.r, cities);
+          if (atk.assaulting && isCityCenter(target.q, target.r, cities)) {
+            damage = Math.max(1, Math.floor(damage * ASSAULT_ATTACK_DEBUFF));
           }
+          damage = applyDamageResist(damage, target, cities);
+          target.hp -= damage;
+          atk.status = 'fighting';
+          if (target.hp <= 0) {
+            killed.push(target.id);
+            const leveled = awardXp(atk, 10);
+            if (leveled) {
+              notifications.push({
+                id: generateId('n'), turn: cycle,
+                message: `${capitalize(atk.type)} leveled up to ${atk.level}!`,
+                type: 'success',
+              });
+            }
+          }
+        } else if (enemyHero) {
+          const damage = applyTowerDefense(getUnitAttack(atk, attackerHero), oq, or_, cities);
+          const hp = (enemyHero.hp ?? HERO_BASE_HP) - damage;
+          enemyHero.hp = Math.max(0, hp);
+          if (enemyHero.hp <= 0) killedHeroIds.push(enemyHero.id);
         }
         processed.add(atk.id);
       }
 
-      const defenderHero = heroes.find(h => h.q === oq && h.r === or_ && h.ownerId === enemies[0]?.ownerId);
+      const defenderHero = heroes.find(h => h.q === oq && h.r === or_ && h.ownerId === (enemies[0]?.ownerId ?? enemyHero?.ownerId));
       for (const def of enemies) {
         if (def.hp <= 0 || processed.has(def.id) || def.stance === 'passive') continue;
         if (def.retreatAt) continue;
-        const defRange = UNIT_BASE_STATS[def.type].range;
+        const defRange = getUnitStats(def).range;
         if (dist > defRange) continue;
 
         const counterTarget = aggressors.find((a: Unit) => a.hp > 0);
@@ -232,6 +252,7 @@ export function combatTick(
         if (def.assaulting && isCityCenter(counterTarget.q, counterTarget.r, cities)) {
           damage = Math.max(1, Math.floor(damage * ASSAULT_ATTACK_DEBUFF));
         }
+        damage = applyDamageResist(damage, counterTarget, cities);
         counterTarget.hp -= damage;
 
         if (counterTarget.hp <= 0) {
@@ -250,41 +271,83 @@ export function combatTick(
     }
   }
 
-  return { killedUnitIds: killed, notifications, combatHexKeys };
+  return { killedUnitIds: killed, killedHeroIds, notifications, combatHexKeys };
+}
+
+function heroHp(hero: Hero | undefined): number {
+  return hero?.hp ?? HERO_BASE_HP;
 }
 
 function resolveMeleeRound(
   side1: Unit[], side2: Unit[],
   hero1: Hero | undefined, hero2: Hero | undefined,
-  killed: string[], notifications: GameNotification[], cycle: number,
+  killed: string[], killedHeroIds: string[], notifications: GameNotification[], cycle: number,
   cities: City[] = [],
 ) {
   const now = Date.now();
   for (const atk of side1) {
     if (atk.hp <= 0 || atk.retreatAt) continue;
-    const target = side2.find(d => d.hp > 0);
-    if (!target) break;
+    const unitTarget = side2.find(d => d.hp > 0);
+    const heroTargetAlive = hero2 && heroHp(hero2) > 0;
+    if (!unitTarget && !heroTargetAlive) break;
     let rawDmg = getUnitAttack(atk, hero1);
-    let dmg = applyTowerDefense(rawDmg, target.q, target.r, cities);
-    if (atk.assaulting && isCityCenter(target.q, target.r, cities)) {
-      dmg = Math.max(1, Math.floor(dmg * ASSAULT_ATTACK_DEBUFF));
+    if (unitTarget) {
+      let dmg = applyTowerDefense(rawDmg, unitTarget.q, unitTarget.r, cities);
+      if (atk.assaulting && isCityCenter(unitTarget.q, unitTarget.r, cities)) {
+        dmg = Math.max(1, Math.floor(dmg * ASSAULT_ATTACK_DEBUFF));
+      }
+      dmg = applyDamageResist(dmg, unitTarget, cities);
+      unitTarget.hp -= dmg;
+      atk.status = 'fighting';
+      if (unitTarget.hp <= 0) { killed.push(unitTarget.id); awardXp(atk, 10); }
+    } else if (hero2) {
+      const dmg = applyTowerDefense(rawDmg, hero2.q, hero2.r, cities);
+      const hp = (hero2.hp ?? HERO_BASE_HP) - dmg;
+      hero2.hp = Math.max(0, hp);
+      atk.status = 'fighting';
+      if (hero2.hp <= 0) { killedHeroIds.push(hero2.id); }
     }
-    target.hp -= dmg;
-    atk.status = 'fighting';
-    if (target.hp <= 0) { killed.push(target.id); awardXp(atk, 10); }
   }
   for (const atk of side2) {
     if (atk.hp <= 0 || atk.retreatAt) continue;
-    const target = side1.find(d => d.hp > 0);
-    if (!target) break;
+    const unitTarget = side1.find(d => d.hp > 0);
+    const heroTargetAlive = hero1 && heroHp(hero1) > 0;
+    if (!unitTarget && !heroTargetAlive) break;
     let rawDmg = getUnitAttack(atk, hero2);
-    let dmg = applyTowerDefense(rawDmg, target.q, target.r, cities);
-    if (atk.assaulting && isCityCenter(target.q, target.r, cities)) {
-      dmg = Math.max(1, Math.floor(dmg * ASSAULT_ATTACK_DEBUFF));
+    if (unitTarget) {
+      let dmg = applyTowerDefense(rawDmg, unitTarget.q, unitTarget.r, cities);
+      if (atk.assaulting && isCityCenter(unitTarget.q, unitTarget.r, cities)) {
+        dmg = Math.max(1, Math.floor(dmg * ASSAULT_ATTACK_DEBUFF));
+      }
+      dmg = applyDamageResist(dmg, unitTarget, cities);
+      unitTarget.hp -= dmg;
+      atk.status = 'fighting';
+      if (unitTarget.hp <= 0) { killed.push(unitTarget.id); awardXp(atk, 10); }
+    } else if (hero1) {
+      const dmg = applyTowerDefense(rawDmg, hero1.q, hero1.r, cities);
+      const hp = (hero1.hp ?? HERO_BASE_HP) - dmg;
+      hero1.hp = Math.max(0, hp);
+      atk.status = 'fighting';
+      if (hero1.hp <= 0) { killedHeroIds.push(hero1.id); }
     }
-    target.hp -= dmg;
-    atk.status = 'fighting';
-    if (target.hp <= 0) { killed.push(target.id); awardXp(atk, 10); }
+  }
+  if (hero1 && heroHp(hero1) > 0) {
+    const target = side2.find(d => d.hp > 0);
+    if (target) {
+      const dmg = applyTowerDefense(HERO_ATTACK, target.q, target.r, cities);
+      const afterResist = applyDamageResist(dmg, target, cities);
+      target.hp -= afterResist;
+      if (target.hp <= 0) { killed.push(target.id); }
+    }
+  }
+  if (hero2 && heroHp(hero2) > 0) {
+    const target = side1.find(d => d.hp > 0);
+    if (target) {
+      const dmg = applyTowerDefense(HERO_ATTACK, target.q, target.r, cities);
+      const afterResist = applyDamageResist(dmg, target, cities);
+      target.hp -= afterResist;
+      if (target.hp <= 0) { killed.push(target.id); }
+    }
   }
 }
 
@@ -366,7 +429,7 @@ export function upkeepTick(
       let totalGunDemand = 0;
       let totalGunL2Demand = 0;
       for (const u of clusterUnits) {
-        const stats = u.armsLevel === 2 ? UNIT_L2_STATS[u.type] : UNIT_BASE_STATS[u.type];
+        const stats = getUnitStats(u);
         let foodUp = stats.foodUpkeep;
         const heroAtUnit = heroes.find(
           h => h.q === u.q && h.r === u.r && h.ownerId === u.ownerId && h.type === 'logistician'
@@ -549,7 +612,7 @@ export function siegeTick(
     for (const u of units) {
       if (u.hp <= 0 || u.ownerId === w.ownerId) continue;
       if (!siegeTypes.includes(u.type as typeof siegeTypes[number])) continue;
-      const stats = u.armsLevel === 2 ? UNIT_L2_STATS[u.type] : UNIT_BASE_STATS[u.type];
+      const stats = getUnitStats(u);
       const range = stats.range;
       const siegeAttack = (stats as { siegeAttack?: number }).siegeAttack ?? 0;
       if (siegeAttack <= 0) continue;

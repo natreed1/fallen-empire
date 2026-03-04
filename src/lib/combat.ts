@@ -1,5 +1,5 @@
 import {
-  Unit, Hero, UNIT_BASE_STATS, UNIT_L2_STATS,
+  Unit, Hero, getUnitStats,
 } from '@/types/game';
 
 /**
@@ -7,7 +7,7 @@ import {
  * Formula: BaseAttack * (1 + level * 0.1) * hero bonus
  */
 export function getUnitAttack(unit: Unit, hero?: Hero): number {
-  const stats = unit.armsLevel === 2 ? UNIT_L2_STATS[unit.type] : UNIT_BASE_STATS[unit.type];
+  const stats = getUnitStats(unit);
   const base = stats.attack;
   const levelBonus = 1 + unit.level * 0.1;
   const heroBonus = hero?.type === 'general' ? 1.1 : 1.0;
@@ -22,7 +22,7 @@ export function awardXp(unit: Unit, amount: number): boolean {
   if (unit.xp >= 100) {
     unit.xp -= 100;
     unit.level += 1;
-    const stats = unit.armsLevel === 2 ? UNIT_L2_STATS[unit.type] : UNIT_BASE_STATS[unit.type];
+    const stats = getUnitStats(unit);
     unit.maxHp = Math.floor(stats.maxHp * (1 + unit.level * 0.1));
     unit.hp = Math.min(unit.hp + 20, unit.maxHp);
     return true; // leveled up

@@ -2,21 +2,23 @@ import { create } from 'zustand';
 import {
   Tile, MapConfig, DEFAULT_MAP_CONFIG, City, Unit, Player, Hero,
   GameNotification, TerritoryInfo, GamePhase, UIMode, FoodPriority,
-  BuildingType, UnitType, ArmyStance, CityBuilding,   ConstructionSite, ScoutMission,
+  BuildingType, UnitType, ArmyStance, CityBuilding,   ConstructionSite, ScoutMission, ScoutTower,
   WeatherEvent, WallSection, RoadConstructionSite, ROAD_BP_COST,
   tileKey, generateId, hexDistance, getHexRing,
   STARTING_GOLD, STARTING_CITY_TEMPLATE, VILLAGE_CITY_TEMPLATE, VILLAGE_INCORPORATE_COST,
   CITY_CENTER_STORAGE, FRONTIER_CYCLES,
   PLAYER_COLORS, CITY_NAMES,
-  BUILDING_COSTS, UNIT_COSTS, UNIT_BASE_STATS, UNIT_L2_STATS, UNIT_DISPLAY_NAMES, HERO_NAMES,
-  BUILDING_BP_COST, BUILDING_JOBS, getBuildingJobs,   CITY_BUILDING_POWER, BUILDER_POWER, BP_RATE_BASE,
+  BUILDING_COSTS, UNIT_COSTS, UNIT_L2_COSTS, UNIT_L3_COSTS, UNIT_BASE_STATS, UNIT_L2_STATS, UNIT_DISPLAY_NAMES, HERO_NAMES,
+  BUILDING_BP_COST, BUILDING_JOBS, getBuildingJobs, getUnitStats, CITY_BUILDING_POWER, BUILDER_POWER, BP_RATE_BASE,
   TREBUCHET_FIELD_BP_COST, TREBUCHET_FIELD_GOLD_COST,
+  DEFENDER_IRON_COST,
+  SCOUT_TOWER_BP_COST, SCOUT_TOWER_GOLD_COST,
   SCOUT_MISSION_COST, SCOUT_MISSION_DURATION_SEC,
   GAME_DURATION_SEC, CYCLE_INTERVAL_SEC,
   BARACKS_UPGRADE_COST, FACTORY_UPGRADE_COST, FARM_UPGRADE_COST, WALL_SECTION_STONE_COST,
   CITY_CAPTURE_HOLD_MS,
   WORKERS_PER_LEVEL, BUILDING_IRON_COSTS,
-  RETREAT_DELAY_MS, ASSAULT_ATTACK_DEBUFF, WALL_SECTION_HP,
+  RETREAT_DELAY_MS, ASSAULT_ATTACK_DEBUFF, WALL_SECTION_HP, HERO_BASE_HP,
 } from '@/types/game';
 import { generateMap, placeAncientCity } from '@/lib/mapGenerator';
 import { calculateTerritory } from '@/lib/territory';
@@ -55,6 +57,7 @@ interface GameState {
   heroes: Hero[];
   constructions: ConstructionSite[];
   roadConstructions: RoadConstructionSite[];
+  scoutTowers: ScoutTower[];
   scoutMissions: ScoutMission[];
   scoutedHexes: Set<string>;   // hexes that have been scouted (info revealed)
   territory: Map<string, TerritoryInfo>;
@@ -97,6 +100,10 @@ interface GameState {
   // Game flow
   startPlacement: () => void;
   startBotVsBot: () => void;
+  /** 4-player bot observer mode (same setup as 2-bot for now; gameMode affects camera/UI). */
+  startFourBotVsBot: () => void;
+  /** 38×38 map + champion params (same as ?watch); use from main menu. */
+  startSmallMapBotVsBot: () => void;
   setPendingCity: (q: number, r: number) => void;
   confirmCityPlacement: () => void;
   cancelCityPlacement: () => void;
@@ -113,12 +120,13 @@ interface GameState {
   // City
   buildStructure: (type: BuildingType, q: number, r: number) => void;
   buildTrebuchetInField: (q: number, r: number) => void;
+  buildScoutTowerInField: (q: number, r: number) => void;
   buildRoad: (q: number, r: number) => void;
   upgradeBarracks: (cityId: string, buildingQ: number, buildingR: number) => void;
   upgradeFactory: (cityId: string, buildingQ: number, buildingR: number) => void;
   upgradeFarm: (cityId: string, buildingQ: number, buildingR: number) => void;
   adjustWorkers: (cityId: string, buildingQ: number, buildingR: number, delta: number) => void;
-  recruitUnit: (cityId: string, type: UnitType, armsLevel?: 1 | 2) => void;
+  recruitUnit: (cityId: string, type: UnitType, armsLevel?: 1 | 2 | 3) => void;
   recruitHero: (cityId: string) => void;
   setFoodPriority: (priority: FoodPriority) => void;
   setTaxRate: (rate: number) => void;
@@ -161,6 +169,8 @@ interface GameState {
   getUnitsAt: (q: number, r: number) => Unit[];
   getHeroAt: (q: number, r: number) => Hero | undefined;
   getSelectedCity: () => City | undefined;
+  /** City at selected hex (any owner); used for observer mode and city modal. */
+  getSelectedCityForDisplay: () => City | undefined;
   getSelectedUnits: () => Unit[];
   getEnemyCityAt: (q: number, r: number) => City | undefined;
   getBarracksCityAt: (q: number, r: number) => City | undefined;
@@ -187,7 +197,7 @@ const HUMAN_ID = 'player_human';
 const AI_ID = 'player_ai';
 const AI_ID_2 = 'player_ai_2';
 
-export type GameMode = 'human_vs_ai' | 'bot_vs_bot';
+export type GameMode = 'human_vs_ai' | 'bot_vs_bot' | 'bot_vs_bot_4';
 let cityNameIdx = 0;
 let heroNameIdx = 0;
 function nextCityName(): string {
@@ -327,6 +337,17 @@ export const useGameStore = create<GameState>((set, get) => ({
     get().runCycle();
   },
 
+  startFourBotVsBot: () => {
+    get().startBotVsBot();
+    set({ gameMode: 'bot_vs_bot_4' });
+  },
+
+  startSmallMapBotVsBot: () => {
+    const TRAIN_MAP_SIZE = 38;
+    get().generateWorld({ width: TRAIN_MAP_SIZE, height: TRAIN_MAP_SIZE });
+    get().startBotVsBot();
+  },
+
   setPendingCity: (q, r) => {
     const { tiles } = get();
     const tile = tiles.get(tileKey(q, r));
@@ -364,7 +385,7 @@ export const useGameStore = create<GameState>((set, get) => ({
 
     // Each player starts with a General hero at their capital
     const heroes: Hero[] = [
-      { id: generateId('hero'), name: nextHeroName(), type: 'general', q, r, ownerId: HUMAN_ID },
+      { id: generateId('hero'), name: nextHeroName(), type: 'general', q, r, ownerId: HUMAN_ID, hp: HERO_BASE_HP, maxHp: HERO_BASE_HP },
     ];
     if (aiCity) {
       heroes.push(createAiHero(aiCity.q, aiCity.r, AI_ID));
@@ -434,8 +455,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       const movingHeroes = s.heroes.map(h => ({ ...h }));
       movementTick(movingUnits, movingHeroes, s.tiles, s.wallSections, s.cities);
 
-      // -- Combat tick --
-      const combatResult = combatTick(movingUnits, s.heroes, s.cycle, s.cities);
+      // -- Combat tick (pass movingHeroes so hp mutations apply; then remove killed heroes) --
+      const combatResult = combatTick(movingUnits, movingHeroes, s.cycle, s.cities);
 
       // -- Siege tick: trebuchet/ram damage walls (design §17–19) --
       const wallSectionsMut = s.wallSections.map(w => ({ ...w }));
@@ -468,7 +489,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       for (const u of aliveUnits) {
         if (u.status === 'fighting') {
           const hasNearbyEnemy = aliveUnits.some(
-            e => e.ownerId !== u.ownerId && e.hp > 0 && hexDistance(u.q, u.r, e.q, e.r) <= UNIT_BASE_STATS[u.type].range
+            e => e.ownerId !== u.ownerId && e.hp > 0 && hexDistance(u.q, u.r, e.q, e.r) <= getUnitStats(u).range
           );
           if (!hasNearbyEnemy) u.status = 'idle';
         }
@@ -533,6 +554,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         ? [...s.notifications.slice(-8), ...combatResult.notifications, ...captureNotifs]
         : s.notifications;
 
+      const aliveHeroes = movingHeroes.filter(h => !(combatResult.killedHeroIds ?? []).includes(h.id));
       set({
         units: aliveUnits,
         cities: citiesFinal,
@@ -540,7 +562,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         phase: phaseAfterCapture,
         wallSections: wallSectionsMut,
         cityCaptureHold: captureHoldNext,
-        heroes: movingHeroes,
+        heroes: aliveHeroes,
         notifications: newNotifs,
         combatHexesThisCycle: nextCombatHexes,
       });
@@ -889,12 +911,18 @@ export const useGameStore = create<GameState>((set, get) => ({
       for (const rec of aiPlan.recruits) {
         const city = cities.find(c => c.id === rec.cityId);
         if (!city || city.ownerId !== aiPlayerId || city.population <= 0 || aiTroopCount >= aiTotalPopForRecruit) continue;
-        const cost = UNIT_COSTS[rec.type];
-        if (aiPlayer.gold < cost.gold) continue;
-        const wantL2 = rec.armsLevel === 2;
-        const stats = wantL2 ? UNIT_L2_STATS[rec.type] : UNIT_BASE_STATS[rec.type];
-        const gunL2Upkeep = wantL2 ? (UNIT_L2_STATS[rec.type] as { gunL2Upkeep?: number }).gunL2Upkeep ?? 0 : 0;
-        if (wantL2 && gunL2Upkeep > 0) {
+        const effectiveLevel = rec.type === 'defender' ? 3 : (rec.armsLevel ?? 1);
+        const wantL2 = effectiveLevel === 2;
+        const wantL3 = effectiveLevel === 3;
+        const goldCost = wantL3 ? UNIT_L3_COSTS[rec.type].gold : wantL2 ? UNIT_L2_COSTS[rec.type].gold : UNIT_COSTS[rec.type].gold;
+        const stoneCost = wantL2 ? (UNIT_L2_COSTS[rec.type].stone ?? 0) : 0;
+        const ironCost = wantL3 ? (UNIT_L3_COSTS[rec.type].iron ?? 0) : 0;
+        if (aiPlayer.gold < goldCost) continue;
+        if (stoneCost > 0 && (city.storage.stone ?? 0) < stoneCost) continue;
+        if (ironCost > 0 && (city.storage.iron ?? 0) < ironCost) continue;
+        const stats = getUnitStats({ type: rec.type, armsLevel: effectiveLevel as 1 | 2 | 3 });
+        const gunL2Upkeep = (stats as { gunL2Upkeep?: number }).gunL2Upkeep ?? 0;
+        if (gunL2Upkeep > 0) {
           const totalGunsL2 = cities.filter(c => c.ownerId === aiPlayerId).reduce((sum, c) => sum + (c.storage.gunsL2 ?? 0), 0);
           if (totalGunsL2 < gunL2Upkeep) continue;
         }
@@ -914,7 +942,8 @@ export const useGameStore = create<GameState>((set, get) => ({
           originCityId: city.id,
         };
         if (wantL2) newUnit.armsLevel = 2;
-        if (wantL2 && gunL2Upkeep > 0) {
+        if (wantL3 || rec.type === 'defender') newUnit.armsLevel = 3;
+        if (gunL2Upkeep > 0) {
           for (const oc of cities.filter(c => c.ownerId === aiPlayerId)) {
             if ((oc.storage.gunsL2 ?? 0) >= gunL2Upkeep) {
               oc.storage.gunsL2 = (oc.storage.gunsL2 ?? 0) - gunL2Upkeep;
@@ -922,8 +951,22 @@ export const useGameStore = create<GameState>((set, get) => ({
             }
           }
         }
+        aiPlayer.gold -= goldCost;
+        if (stoneCost > 0 || ironCost > 0) {
+          const idx = cities.indexOf(city);
+          if (idx >= 0) {
+            const c = cities[idx];
+            cities[idx] = {
+              ...c,
+              storage: {
+                ...c.storage,
+                stone: Math.max(0, (c.storage.stone ?? 0) - stoneCost),
+                iron: Math.max(0, (c.storage.iron ?? 0) - ironCost),
+              },
+            };
+          }
+        }
         units.push(newUnit);
-        aiPlayer.gold -= cost.gold;
         aiTroopCount += 1;
       }
 
@@ -965,11 +1008,12 @@ export const useGameStore = create<GameState>((set, get) => ({
 
       for (const mt of aiPlan.moveTargets) {
         const unit = units.find(u => u.id === mt.unitId);
-        if (unit && unit.hp > 0 && unit.status === 'idle') {
+        if (unit && unit.hp > 0 && unit.status !== 'fighting') {
           unit.targetQ = mt.toQ;
           unit.targetR = mt.toR;
           unit.status = 'moving';
           unit.stance = 'aggressive';
+          unit.nextMoveAt = 0;
         }
       }
     }
@@ -1242,7 +1286,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     get().addNotification(`Trebuchet construction started (${TREBUCHET_FIELD_GOLD_COST}g, ${TREBUCHET_FIELD_BP_COST} BP). Builder builds on this hex.`, 'info');
   },
 
-  buildScoutTowerInField: (q, r) => {
+  buildScoutTowerInField: (q: number, r: number) => {
     const s = get();
     const player = s.players.find(p => p.id === HUMAN_ID);
     if (!player || player.gold < SCOUT_TOWER_GOLD_COST) {
@@ -1445,7 +1489,6 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   recruitUnit: (cityId, type, armsLevel) => {
     const s = get();
-    // Resolve human by isHuman so we use the same player the UI shows gold for (avoids desync)
     const player = s.players.find(p => p.isHuman);
     const city = s.cities.find(c => c.id === cityId);
     if (!player || !city) return;
@@ -1454,7 +1497,10 @@ export const useGameStore = create<GameState>((set, get) => ({
     const barracks = city.buildings.find(b => b.type === 'barracks');
     const academy = city.buildings.find(b => b.type === 'academy');
     const barracksLvl = barracks ? (barracks.level ?? 1) : 1;
-    const wantL2 = armsLevel === 2;
+    // Defender is always L3; other units use requested armsLevel (1/2/3)
+    const effectiveLevel = type === 'defender' ? 3 : (armsLevel ?? 1);
+    const wantL2 = effectiveLevel === 2;
+    const wantL3 = effectiveLevel === 3;
 
     if (isBuilder) {
       if (!academy) {
@@ -1467,26 +1513,38 @@ export const useGameStore = create<GameState>((set, get) => ({
       if (type === 'defender' && barracksLvl < 2) {
         get().addNotification('Upgrade barracks to L2 to recruit Defenders!', 'warning'); return;
       }
-      if (wantL2 && type !== 'defender' && barracksLvl < 2) {
-        get().addNotification('Upgrade barracks first to recruit L2 units!', 'warning'); return;
+      if ((wantL2 || wantL3) && type !== 'defender' && barracksLvl < 2) {
+        get().addNotification('Upgrade barracks first to recruit L2/L3 units!', 'warning'); return;
       }
     }
     if (wantL2 && type === 'builder') {
       get().addNotification('Builders have no L2 variant.', 'info'); return;
     }
-
-    const cost = UNIT_COSTS[type];
-    if (player.gold < cost.gold) {
-      get().addNotification(`Need ${cost.gold} gold!`, 'warning'); return;
+    if (wantL3 && type === 'builder') {
+      get().addNotification('Builders have no L3 variant.', 'info'); return;
     }
-    const ironCost = cost.iron ?? 0;
+
+    // Resolve cost by tier: L1 = UNIT_COSTS, L2 = UNIT_L2_COSTS (gold+stone), L3/defender = UNIT_L3_COSTS (gold+iron; defender iron only)
+    const goldCost = wantL3 ? UNIT_L3_COSTS[type].gold : wantL2 ? UNIT_L2_COSTS[type].gold : UNIT_COSTS[type].gold;
+    const stoneCost = wantL2 ? (UNIT_L2_COSTS[type].stone ?? 0) : 0;
+    const ironCost = wantL3 ? (UNIT_L3_COSTS[type].iron ?? 0) : 0;
+
+    if (player.gold < goldCost) {
+      get().addNotification(`Need ${goldCost} gold!`, 'warning'); return;
+    }
+    if (stoneCost > 0) {
+      const cityStone = city.storage.stone ?? 0;
+      if (cityStone < stoneCost) {
+        get().addNotification(`Need ${stoneCost} stone to recruit L2 ${UNIT_DISPLAY_NAMES[type]}! (Build a quarry.)`, 'warning'); return;
+      }
+    }
     if (ironCost > 0) {
       const cityIron = city.storage.iron ?? 0;
       if (cityIron < ironCost) {
-        get().addNotification(`Need ${ironCost} iron to recruit ${UNIT_DISPLAY_NAMES[type]}! (Build a mine.)`, 'warning'); return;
+        get().addNotification(`Need ${ironCost} iron to recruit ${type === 'defender' ? 'Defender' : 'L3 ' + UNIT_DISPLAY_NAMES[type]}! (Build a mine.)`, 'warning'); return;
       }
     }
-    // Troop limit: 1 per population; population is not deducted until unit dies (design doc §21–22)
+
     const playerCities = s.cities.filter(c => c.ownerId === player.id);
     const totalPop = playerCities.reduce((sum, c) => sum + c.population, 0);
     const livingTroops = s.units.filter(u => u.ownerId === player.id && u.hp > 0).length;
@@ -1494,12 +1552,12 @@ export const useGameStore = create<GameState>((set, get) => ({
       get().addNotification('Troop limit: need more population to recruit (1 troop per population).', 'warning'); return;
     }
 
-    const stats = wantL2 ? UNIT_L2_STATS[type] : UNIT_BASE_STATS[type];
-    const gunL2Upkeep = wantL2 ? ((UNIT_L2_STATS[type] as { gunL2Upkeep: number }).gunL2Upkeep ?? 0) : 0;
-    if (wantL2 && gunL2Upkeep > 0) {
+    const stats = getUnitStats({ type, armsLevel: effectiveLevel as 1 | 2 | 3 });
+    const gunL2Upkeep = (stats as { gunL2Upkeep?: number }).gunL2Upkeep ?? 0;
+    if (gunL2Upkeep > 0) {
       const totalGunsL2 = s.cities.filter(c => c.ownerId === HUMAN_ID).reduce((sum, c) => sum + (c.storage.gunsL2 ?? 0), 0);
       if (totalGunsL2 < gunL2Upkeep) {
-        get().addNotification('Need L2 arms to recruit L2 unit! Build upgraded factory.', 'warning'); return;
+        get().addNotification('Need L2 arms to recruit this unit! Build upgraded factory.', 'warning'); return;
       }
     }
 
@@ -1515,20 +1573,26 @@ export const useGameStore = create<GameState>((set, get) => ({
       originCityId: cityId,
     };
     if (wantL2) newUnit.armsLevel = 2;
+    if (wantL3 || type === 'defender') newUnit.armsLevel = 3;
 
-    const ironCost = cost.iron ?? 0;
-    const updatedCities = ironCost > 0
-      ? s.cities.map(c => c.id === cityId ? { ...c, storage: { ...c.storage, iron: Math.max(0, (c.storage.iron ?? 0) - ironCost) } } : c)
-      : s.cities;
+    let updatedCities = s.cities;
+    if (stoneCost > 0 || ironCost > 0) {
+      updatedCities = s.cities.map(c => {
+        if (c.id !== cityId) return c;
+        const stone = Math.max(0, (c.storage.stone ?? 0) - stoneCost);
+        const iron = Math.max(0, (c.storage.iron ?? 0) - ironCost);
+        return { ...c, storage: { ...c.storage, stone, iron } };
+      });
+    }
 
-    // Do not deduct population on recruit; population is lost when unit dies (design doc §22)
     set({
-      players: s.players.map(p => p.id === player.id ? { ...p, gold: p.gold - cost.gold } : p),
+      players: s.players.map(p => p.id === player.id ? { ...p, gold: p.gold - goldCost } : p),
       cities: updatedCities,
       units: [...s.units, newUnit],
     });
-    const costStr = ironCost > 0 ? `${cost.gold}g, ${ironCost} iron` : `${cost.gold}g`;
-    get().addNotification(`Recruited ${wantL2 ? 'L2 ' : ''}${UNIT_DISPLAY_NAMES[type]} (${costStr})`, 'success');
+    const tierLabel = wantL3 ? 'L3 ' : wantL2 ? 'L2 ' : '';
+    const costStr = ironCost > 0 ? (goldCost > 0 ? `${goldCost}g, ${ironCost} iron` : `${ironCost} iron`) : stoneCost > 0 ? `${goldCost}g, ${stoneCost} stone` : `${goldCost}g`;
+    get().addNotification(`Recruited ${tierLabel}${UNIT_DISPLAY_NAMES[type]} (${costStr})`, 'success');
   },
 
   // ─── Recruit Hero ──────────────────────────────────────────
@@ -1563,6 +1627,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       heroes: [...s.heroes, {
         id: generateId('hero'), name: nextHeroName(), type: pick,
         q: city.q, r: city.r, ownerId: HUMAN_ID,
+        hp: HERO_BASE_HP, maxHp: HERO_BASE_HP,
       }],
     });
     get().addNotification(`Hero "${HERO_NAMES[(heroNameIdx - 1) % HERO_NAMES.length]}" recruited! (${pick})`, 'success');
@@ -2091,6 +2156,10 @@ export const useGameStore = create<GameState>((set, get) => ({
   getSelectedCity: () => {
     const s = get();
     return s.selectedHex ? s.cities.find(c => c.q === s.selectedHex!.q && c.r === s.selectedHex!.r && c.ownerId === HUMAN_ID) : undefined;
+  },
+  getSelectedCityForDisplay: () => {
+    const s = get();
+    return s.selectedHex ? s.cities.find(c => c.q === s.selectedHex!.q && c.r === s.selectedHex!.r) : undefined;
   },
   getSelectedUnits: () => {
     const s = get();

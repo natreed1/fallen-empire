@@ -210,7 +210,7 @@ export default function GameScene() {
       .catch(() => setAiParamsLoadAttempted(true));
   }, []);
 
-  // ?watch: auto-start 2-bot after map ready; ?watch=4: auto-start 4-bot (generates its own map)
+  // ?watch (1v1): use champion from ai-params.json; map matches train-ai (38×38). Start only after params load attempted.
   useEffect(() => {
     if (!aiParamsLoadAttempted || phase !== 'setup') return;
     if (watchFour) {

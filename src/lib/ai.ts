@@ -1,10 +1,10 @@
 import {
   City, Unit, Player, Tile, TerritoryInfo, Hero,
-  BuildingType, UnitType, BUILDING_COSTS, UNIT_COSTS, UNIT_BASE_STATS, UNIT_L2_STATS,
+  BuildingType, UnitType, BUILDING_COSTS, UNIT_COSTS, UNIT_L2_COSTS, UNIT_L3_COSTS, getUnitStats,
   BARACKS_UPGRADE_COST, FACTORY_UPGRADE_COST, FARM_UPGRADE_COST,
   hexDistance, hexNeighbors, tileKey, generateId,
   STARTING_CITY_TEMPLATE, HERO_NAMES, CITY_CENTER_STORAGE,
-  BUILDING_IRON_COSTS, SCOUT_MISSION_COST, VILLAGE_INCORPORATE_COST,
+  BUILDING_IRON_COSTS, SCOUT_MISSION_COST, VILLAGE_INCORPORATE_COST, DEFENDER_IRON_COST, HERO_BASE_HP,
 } from '@/types/game';
 import { computeCityProductionRate } from '@/lib/gameLoop';
 
@@ -28,7 +28,7 @@ export interface AiUpgradeAction {
 export interface AiRecruitAction {
   cityId: string;
   type: UnitType;
-  armsLevel?: 1 | 2;
+  armsLevel?: 1 | 2 | 3;
 }
 
 export interface AiMoveAction {
@@ -58,6 +58,14 @@ export interface AiActions {
 
 // ─── Evolvable AI Parameters (for self-improvement / training) ───────
 // Mutate these and run bot-vs-bot; keep params that win more.
+// Canonical key list and mutation ranges: see aiParamsSchema.ts.
+
+/** Target distribution for unit level mix (L1/L2/L3); must sum to 1. */
+export interface MilitaryLevelMix {
+  L1: number;
+  L2: number;
+  L3: number;
+}
 
 export interface AiParams {
   /** Chance to recruit siege (trebuchet/ram) instead of combat unit (0–1). */
@@ -74,7 +82,6 @@ export interface AiParams {
   nearestTargetDistanceRatio: number;
   /** Builder recruit chance per cycle when academy and pop > 5 (0–1). */
   builderRecruitChance: number;
-  // ─── Extended (food, build, upgrade, scout, village, targeting) ──
   /** Min food surplus to allow more than 1 recruit per cycle (higher = more conservative). */
   foodBufferThreshold: number;
   /** Scale for max sustainable military (0.6–1.2: <1 = underfill cap, >1 = allow overfill). */
@@ -91,7 +98,67 @@ export interface AiParams {
   incorporateVillageChance: number;
   /** Weight for enemy city pop in target score (higher = prefer high-pop cities). */
   targetPopWeight: number;
+  /** When food surplus is above this, prefer building mine over quarry (0–30). */
+  minePriorityThreshold: number;
+  /** Rate at which to adopt L2 units when available (0–1). */
+  l2AdoptionRate: number;
+  /** Target share of ranged units in composition (0–1). */
+  targetRangedShare: number;
+  /** Target share of siege units in composition (0–1). */
+  targetSiegeShare: number;
+  /** Strength of composition correction toward targets (0–1). */
+  compositionCorrectionStrength: number;
+  /** Share of assault wing in formation (0–1). */
+  assaultWingShare: number;
+  /** Share of screen wing in formation (0–1). */
+  screenWingShare: number;
+  /** Max distance to chase fleeing units (hexes). */
+  maxChaseDistance: number;
+  /** Target dispersion of units (0–1). */
+  targetDispersion: number;
+  /** Priority for defending villages (0–1). */
+  villageDefensePriority: number;
+  /** Priority for recapturing villages (0–1). */
+  villageRecapturePriority: number;
+  /** Priority for cluster interdiction (0–1). */
+  clusterInterdictionPriority: number;
+  /** Share of forces committed to cluster isolation (0–1). */
+  clusterIsolationCommitShare: number;
+  /** Duration to maintain cluster isolation (cycles). */
+  clusterIsolationDuration: number;
+  /** Share of melee on frontline (0–1). */
+  frontlineMeleeShare: number;
+  /** Preferred distance of backline ranged (hexes). */
+  backlineRangedDistance: number;
+  /** Preferred distance of siege from backline (hexes). */
+  siegeBacklineDistance: number;
+  /** Share of cavalry on flanks (0–1). */
+  flankCavalryShare: number;
+  /** Formation cohesion factor (0–1). */
+  formationCohesion: number;
+  /** Weight for acquiring L3 units (0–2). */
+  l3AcquisitionWeight: number;
+  /** Target iron per unit for L3 acquisition. */
+  l3IronPerUnitTarget: number;
+  /** Target stone per unit for L2 acquisition. */
+  l2StonePerUnitTarget: number;
+  /** Target mix of military levels (L1/L2/L3); normalized to sum to 1. */
+  militaryLevelMixTarget: MilitaryLevelMix;
+  /** Strength of correction toward military level mix target (0–1). */
+  militaryLevelMixCorrectionStrength: number;
+  /** Target hex coverage per city for defenders (0–1). */
+  defenderCityHexCoverageTarget: number;
+  /** Priority for assigning defenders to cities (0–1). */
+  defenderAssignmentPriority: number;
+  /** Target wall builds per city. */
+  wallBuildPerCityTarget: number;
+  /** Priority for building walls (0–1). */
+  wallBuildPriority: number;
+  /** Weight for wall–defender synergy (0–1). */
+  wallToDefenderSynergyWeight: number;
 }
+
+const DEFAULT_MILITARY_LEVEL_MIX: MilitaryLevelMix = { L1: 0.6, L2: 0.3, L3: 0.1 };
 
 export const DEFAULT_AI_PARAMS: AiParams = {
   siegeChance: 0.22,
@@ -109,6 +176,35 @@ export const DEFAULT_AI_PARAMS: AiParams = {
   scoutChance: 1,
   incorporateVillageChance: 1,
   targetPopWeight: 1,
+  minePriorityThreshold: 12,
+  l2AdoptionRate: 0.5,
+  targetRangedShare: 0.25,
+  targetSiegeShare: 0.15,
+  compositionCorrectionStrength: 0.3,
+  assaultWingShare: 0.6,
+  screenWingShare: 0.2,
+  maxChaseDistance: 8,
+  targetDispersion: 0.5,
+  villageDefensePriority: 0.5,
+  villageRecapturePriority: 0.6,
+  clusterInterdictionPriority: 0.4,
+  clusterIsolationCommitShare: 0.3,
+  clusterIsolationDuration: 5,
+  frontlineMeleeShare: 0.6,
+  backlineRangedDistance: 3,
+  siegeBacklineDistance: 4,
+  flankCavalryShare: 0.2,
+  formationCohesion: 0.7,
+  l3AcquisitionWeight: 1,
+  l3IronPerUnitTarget: 15,
+  l2StonePerUnitTarget: 8,
+  militaryLevelMixTarget: { ...DEFAULT_MILITARY_LEVEL_MIX },
+  militaryLevelMixCorrectionStrength: 0.4,
+  defenderCityHexCoverageTarget: 0.5,
+  defenderAssignmentPriority: 0.6,
+  wallBuildPerCityTarget: 2,
+  wallBuildPriority: 0.4,
+  wallToDefenderSynergyWeight: 0.5,
 };
 
 // ─── Food-aware recruit gating (avoid starvation lock in headless sim) ──
@@ -133,7 +229,7 @@ export function estimateAiFoodSurplus(
   const aiUnits = units.filter(u => u.ownerId === aiPlayerId && u.hp > 0);
   let militaryDemand = 0;
   for (const u of aiUnits) {
-    const stats = u.armsLevel === 2 ? UNIT_L2_STATS[u.type] : UNIT_BASE_STATS[u.type];
+    const stats = getUnitStats(u);
     militaryDemand += stats.foodUpkeep ?? 0;
   }
   const surplus = foodIncome - civDemand - militaryDemand;
@@ -264,19 +360,51 @@ export function planAiTurn(
       else if (foodStats.surplus < foodThreshold) maxRecruits = Math.min(maxRecruits, 1);
       maxRecruits = Math.min(maxRecruits, Math.max(0, sustainableArmyCap - militaryCount));
 
-      const unitChoices: UnitType[] = ['infantry', 'infantry', 'cavalry', 'ranged'];
+      const unitChoices: UnitType[] = barracksLvl >= 2
+        ? ['infantry', 'infantry', 'cavalry', 'ranged', 'defender']
+        : ['infantry', 'infantry', 'cavalry', 'ranged'];
       const siegeChoices: UnitType[] = ['trebuchet', 'battering_ram'];
-      const allowSiege = foodStats.surplus >= foodThreshold; // high-upkeep units only when food buffer is safe
+      const allowSiege = foodStats.surplus >= foodThreshold;
+      let stoneBudget = city.storage.stone ?? 0;
+      let ironBudget = city.storage.iron ?? 0;
       for (let i = 0; i < maxRecruits; i++) {
         const useSiege = allowSiege && Math.random() < params.siegeChance;
         const pick = useSiege
           ? siegeChoices[Math.floor(Math.random() * siegeChoices.length)]
           : unitChoices[Math.floor(Math.random() * unitChoices.length)];
-        const wantL2 = !useSiege && barracksLvl >= 2 && hasGunsL2 && pick !== 'builder';
-        const cost = UNIT_COSTS[pick];
-        if (goldBudget >= cost.gold) {
-          actions.recruits.push({ cityId: city.id, type: pick, armsLevel: wantL2 ? 2 : undefined });
-          goldBudget -= cost.gold;
+        let goldCost: number;
+        let stoneCost = 0;
+        let ironCost = 0;
+        let armsLevel: 1 | 2 | 3 | undefined = undefined;
+        if (pick === 'defender') {
+          armsLevel = 3;
+          goldCost = UNIT_L3_COSTS.defender.gold;
+          ironCost = UNIT_L3_COSTS.defender.iron ?? 0;
+        } else if (useSiege || pick === 'builder') {
+          goldCost = UNIT_COSTS[pick].gold;
+        } else {
+          const canL3 = barracksLvl >= 2 && hasGunsL2 && goldBudget >= UNIT_L3_COSTS[pick].gold && ironBudget >= (UNIT_L3_COSTS[pick].iron ?? 0);
+          const canL2 = barracksLvl >= 2 && hasGunsL2 && goldBudget >= UNIT_L2_COSTS[pick].gold && stoneBudget >= (UNIT_L2_COSTS[pick].stone ?? 0);
+          const canL1 = goldBudget >= UNIT_COSTS[pick].gold;
+          if (canL3 && (Math.random() < 0.35 || !canL2)) {
+            armsLevel = 3;
+            goldCost = UNIT_L3_COSTS[pick].gold;
+            ironCost = UNIT_L3_COSTS[pick].iron ?? 0;
+          } else if (canL2) {
+            armsLevel = 2;
+            goldCost = UNIT_L2_COSTS[pick].gold;
+            stoneCost = UNIT_L2_COSTS[pick].stone ?? 0;
+          } else if (canL1) {
+            goldCost = UNIT_COSTS[pick].gold;
+          } else {
+            break;
+          }
+        }
+        if (goldBudget >= goldCost && stoneBudget >= stoneCost && ironBudget >= ironCost) {
+          actions.recruits.push({ cityId: city.id, type: pick, armsLevel });
+          goldBudget -= goldCost;
+          stoneBudget -= stoneCost;
+          ironBudget -= ironCost;
         } else break;
       }
     }
@@ -306,11 +434,9 @@ export function planAiTurn(
     }
   }
 
-  // Incorporate villages: where we have military and gold
-  for (const [key, info] of Array.from(territory.entries())) {
-    if (info.playerId !== aiPlayerId) continue;
-    const tile = tiles.get(key);
-    if (!tile || !tile.hasVillage) continue;
+  // Incorporate villages: any village where we have military and gold (allow outside territory so sending troops = expansion)
+  for (const tile of tiles.values()) {
+    if (!tile.hasVillage) continue;
     if (cities.some(c => c.q === tile.q && c.r === tile.r)) continue;
     const militaryHere = aiUnits.filter(u => u.q === tile.q && u.r === tile.r && u.type !== 'builder');
     if (militaryHere.length > 0 && goldBudget >= VILLAGE_INCORPORATE_COST && Math.random() < (params.incorporateVillageChance ?? 1)) {
@@ -319,9 +445,36 @@ export function planAiTurn(
     }
   }
 
-  // Move idle units toward best enemy target: prefer weakest city (fewest defenders + low pop)
+  // Move units toward villages we don't have military on (village expansion)
+  const villagesNeedingUnits: { q: number; r: number }[] = [];
+  for (const tile of tiles.values()) {
+    if (!tile.hasVillage) continue;
+    if (cities.some(c => c.q === tile.q && c.r === tile.r)) continue;
+    const militaryHere = aiUnits.filter(u => u.q === tile.q && u.r === tile.r && u.type !== 'builder');
+    if (militaryHere.length === 0) villagesNeedingUnits.push({ q: tile.q, r: tile.r });
+  }
+  const movableForVillage = aiUnits.filter(u => u.hp > 0 && u.type !== 'builder' && u.status !== 'fighting');
+  const assignedToVillage = new Set<string>();
+  if (villagesNeedingUnits.length > 0 && goldBudget >= VILLAGE_INCORPORATE_COST) {
+    for (const v of villagesNeedingUnits.slice(0, 3)) {
+      const available = movableForVillage.filter(u => !assignedToVillage.has(u.id));
+      if (available.length === 0) break;
+      let nearest = available[0];
+      let nearestDist = hexDistance(nearest.q, nearest.r, v.q, v.r);
+      for (const u of available.slice(1)) {
+        const d = hexDistance(u.q, u.r, v.q, v.r);
+        if (d < nearestDist) { nearest = u; nearestDist = d; }
+      }
+      if (nearestDist > 1) {
+        actions.moveTargets.push({ unitId: nearest.id, toQ: v.q, toR: v.r });
+        assignedToVillage.add(nearest.id);
+      }
+    }
+  }
+
+  // Move units toward best enemy target (units not already sent to villages)
   if (enemyCities.length > 0) {
-    const movableUnits = aiUnits.filter(u => u.hp > 0 && u.type !== 'builder' && u.status !== 'fighting');
+    const movableUnits = aiUnits.filter(u => u.hp > 0 && u.type !== 'builder' && u.status !== 'fighting' && !assignedToVillage.has(u.id));
     const enemyUnitCount = (eq: number, er: number): number =>
       units.filter(u => u.ownerId !== aiPlayerId && u.hp > 0 && hexDistance(u.q, u.r, eq, er) <= 2).length;
     const popW = params.targetPopWeight ?? 1;
@@ -330,7 +483,9 @@ export function planAiTurn(
     const sortedEnemies = [...enemyCities].sort((a, b) => score(a) - score(b));
     const primaryTarget = sortedEnemies[0];
     const ratio = Math.max(0.1, Math.min(1, params.nearestTargetDistanceRatio));
+    const unitIdsTargeted = new Set(actions.moveTargets.map(mt => mt.unitId));
     for (const unit of movableUnits) {
+      if (unitIdsTargeted.has(unit.id)) continue;
       let target = primaryTarget;
       let bestDist = hexDistance(unit.q, unit.r, target.q, target.r);
       for (const ec of sortedEnemies.slice(1, 4)) {
@@ -356,6 +511,8 @@ export function createAiHero(q: number, r: number, ownerId: string): Hero {
     type: 'general',
     q, r,
     ownerId,
+    hp: HERO_BASE_HP,
+    maxHp: HERO_BASE_HP,
   };
 }
 

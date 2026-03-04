@@ -19,6 +19,11 @@ import {
   type SimResult,
   type RunSimulationOptions,
 } from '../src/core/gameCore';
+import {
+  mutateParams as mutateParamsFromSchema,
+  assertAiParamsConsistency,
+  getMutationSpaceSummary,
+} from '../src/lib/aiParamsSchema';
 
 // ─── Config (env overrides for main knobs only) ────────────────────────
 const POPULATION_SIZE = parseInt(process.env.TRAIN_POPULATION_SIZE || '12', 10) || 12;
@@ -44,9 +49,7 @@ const TRAIN_MAP = { width: MAP_SIZE, height: MAP_SIZE };
 const SIM_OPTS: RunSimulationOptions = { maxCycles: MAX_CYCLES, mapConfigOverride: TRAIN_MAP };
 
 function formatParamsShort(p: AiParams): string {
-  const base = `siege=${p.siegeChance.toFixed(2)} goldThr=${p.recruitGoldThreshold} recRich=${p.maxRecruitsWhenRich} recPoor=${p.maxRecruitsWhenPoor} defW=${p.targetDefenderWeight.toFixed(1)} near=${p.nearestTargetDistanceRatio.toFixed(2)} buildCh=${p.builderRecruitChance.toFixed(2)}`;
-  const ext = ` foodBuf=${p.foodBufferThreshold ?? 10} sustMul=${(p.sustainableMilitaryMultiplier ?? 1).toFixed(2)} farmFirst=${(p.farmFirstBias ?? 0).toFixed(2)} farmPri=${p.farmPriorityThreshold ?? 15} factUpg=${(p.factoryUpgradePriority ?? 0.6).toFixed(2)} scout=${(p.scoutChance ?? 1).toFixed(2)} incorp=${(p.incorporateVillageChance ?? 1).toFixed(2)} popW=${(p.targetPopWeight ?? 1).toFixed(2)}`;
-  return base + ext;
+  return JSON.stringify(p).slice(0, 120) + '…';
 }
 
 function formatResult(r: SimResult): string {
@@ -59,26 +62,7 @@ function cloneParams(p: AiParams): AiParams {
 }
 
 function mutateParams(p: AiParams): AiParams {
-  const s = MUTATION_STRENGTH;
-  const m = (x: number, lo: number, hi: number) =>
-    Math.max(lo, Math.min(hi, x + (Math.random() - 0.5) * 2 * s * x));
-  return {
-    siegeChance: m(p.siegeChance, 0.05, 0.5),
-    recruitGoldThreshold: Math.round(m(p.recruitGoldThreshold, 100, 800)),
-    maxRecruitsWhenRich: Math.max(1, Math.min(5, Math.round(p.maxRecruitsWhenRich + (Math.random() - 0.5) * 2))),
-    maxRecruitsWhenPoor: Math.max(1, Math.min(5, Math.round(p.maxRecruitsWhenPoor + (Math.random() - 0.5) * 2))),
-    targetDefenderWeight: m(p.targetDefenderWeight, 1, 8),
-    nearestTargetDistanceRatio: m(p.nearestTargetDistanceRatio, 0.5, 1),
-    builderRecruitChance: m(p.builderRecruitChance, 0.05, 0.5),
-    foodBufferThreshold: Math.max(0, Math.min(30, Math.round((p.foodBufferThreshold ?? 10) + (Math.random() - 0.5) * 6))),
-    sustainableMilitaryMultiplier: m(p.sustainableMilitaryMultiplier ?? 1, 0.6, 1.2),
-    farmFirstBias: m(p.farmFirstBias ?? 0, 0, 1),
-    farmPriorityThreshold: Math.max(0, Math.min(30, Math.round((p.farmPriorityThreshold ?? 15) + (Math.random() - 0.5) * 8))),
-    factoryUpgradePriority: m(p.factoryUpgradePriority ?? 0.6, 0, 1),
-    scoutChance: m(p.scoutChance ?? 1, 0, 1),
-    incorporateVillageChance: m(p.incorporateVillageChance ?? 1, 0, 1),
-    targetPopWeight: m(p.targetPopWeight ?? 1, 0.5, 2),
-  };
+  return mutateParamsFromSchema({ ...DEFAULT_AI_PARAMS, ...p }, MUTATION_STRENGTH);
 }
 
 function scoreResult(
@@ -195,7 +179,10 @@ async function evaluatePopulationParallel(
 }
 
 async function main() {
+  assertAiParamsConsistency();
+  const summary = getMutationSpaceSummary();
   console.log('Training AI parameters (evolutionary + multi-game evaluation)...');
+  console.log(`Param count: ${summary.totalParamCount}  In mutation space: ${summary.paramsInMutationSpace.length}  Excluded: ${summary.excludedFromMutation.length} (${summary.excludedReason})`);
   console.log(`Map: ${TRAIN_MAP.width}x${TRAIN_MAP.height}  maxCycles: ${MAX_CYCLES}  workers: ${NUM_WORKERS}`);
   console.log(`Gens: ${GENERATIONS}  population: ${POPULATION_SIZE}  matches/candidate: ${MATCHES_PER_PAIR}  elite: ${ELITE_COUNT}`);
   console.log('');

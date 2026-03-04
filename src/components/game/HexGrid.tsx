@@ -6,7 +6,7 @@ import { useFrame } from '@react-three/fiber';
 import { Html } from '@react-three/drei';
 import { useGameStore } from '@/store/useGameStore';
 import {
-  Biome, Tile, City, Unit, Hero, ConstructionSite, WallSection, RoadConstructionSite,
+  Biome, Tile, City, Unit, Hero, ConstructionSite, WallSection, RoadConstructionSite, ScoutTower,
   BuildingType,
   WeatherEventType,
   BIOME_COLORS, BIOME_COLORS_DARK, ROAD_COLOR, RUINS_COLOR,
@@ -34,6 +34,7 @@ const SPRITE_PATHS: Record<string, string> = {
   archer:   '/sprites/units/archer.png',
   builder:  '/sprites/units/builder.png',
   trebuchet: '/sprites/units/trebuchet.png',
+  defender:  '/sprites/units/infantry.png', // placeholder until defender.png exists
   // Buildings
   farm:        '/sprites/buildings/farm.png',
   factory:     '/sprites/buildings/factory.png',
@@ -572,6 +573,7 @@ const UNIT_SPRITE_KEY: Record<string, string> = {
   builder: 'builder',
   trebuchet: 'trebuchet',
   battering_ram: 'infantry', // placeholder until siege sprite exists
+  defender: 'infantry', // reuse infantry sprite until defender.png exists
 };
 
 const UNIT_SPRITE_SCALE: Record<string, [number, number]> = {
@@ -582,10 +584,11 @@ const UNIT_SPRITE_SCALE: Record<string, [number, number]> = {
   builder:  [1.0, 1.0],
   trebuchet: [1.2, 1.2],
   battering_ram: [1.2, 1.2],
+  defender: [1.1, 1.1],
 };
 
 function UnitMarkers({ units, tiles }: { units: Unit[]; tiles: Map<string, Tile> }) {
-  const textures = useGameTextures(['infantry', 'cavalry', 'archer', 'builder', 'trebuchet']);
+  const textures = useGameTextures(['infantry', 'cavalry', 'archer', 'builder', 'trebuchet', 'defender']);
 
   const positioned = useMemo(() => {
     const hexCount = new Map<string, number>();
@@ -651,6 +654,32 @@ function HeroMarkers({ heroes, tiles }: { heroes: Hero[]; tiles: Map<string, Til
       })}
     </group>
   );
+}
+
+// ─── Scout Tower Markers ─────────────────────────────────────────────
+
+function ScoutTowerMarkers({ scoutTowers: towers, tiles, players }: { scoutTowers: ScoutTower[]; tiles: Map<string, Tile>; players: { id: string; color: string }[] }) {
+  const meshRef = useRef<THREE.InstancedMesh>(null);
+  const geo = useMemo(() => new THREE.CylinderGeometry(0.2, 0.28, 0.5, 6), []);
+  const material = useMemo(() => new THREE.MeshLambertMaterial({ color: '#66aacc', emissive: '#224466', emissiveIntensity: 0.3 }), []);
+
+  useEffect(() => {
+    if (!meshRef.current || towers.length === 0) return;
+    const mesh = meshRef.current;
+    const dummy = new THREE.Object3D();
+    towers.forEach((t, i) => {
+      const tile = tiles.get(tileKey(t.q, t.r));
+      const h = tile?.height ?? 0.3;
+      const [x, z] = axialToWorld(t.q, t.r, HEX_RADIUS);
+      dummy.position.set(x, h + 0.35, z);
+      dummy.updateMatrix();
+      mesh.setMatrixAt(i, dummy.matrix);
+    });
+    mesh.instanceMatrix.needsUpdate = true;
+  }, [towers, tiles]);
+
+  if (towers.length === 0) return null;
+  return <instancedMesh ref={meshRef} args={[geo, material, towers.length]} />;
 }
 
 // ─── Construction Site Markers ───────────────────────────────────────
@@ -1157,6 +1186,7 @@ export default function HexGrid() {
   const activeWeather = useGameStore(s => s.activeWeather);
   const roadPathSelection = useGameStore(s => s.roadPathSelection);
   const wallSections = useGameStore(s => s.wallSections);
+  const scoutTowers = useGameStore(s => s.scoutTowers);
   const supplyViewTab = useGameStore(s => s.supplyViewTab);
   const getSupplyClustersWithHealth = useGameStore(s => s.getSupplyClustersWithHealth);
 
@@ -1246,6 +1276,7 @@ export default function HexGrid() {
       <CityMarkers cities={cities} tiles={tiles} />
       <BuildingMarkers cities={cities} tiles={tiles} />
       <ConstructionMarkers sites={constructions} tiles={tiles} />
+      <ScoutTowerMarkers scoutTowers={scoutTowers} tiles={tiles} players={players} />
       <UnitMarkers units={visibleUnits} tiles={tiles} />
       <UnitHpBars units={visibleUnits} tiles={tiles} />
       <HeroMarkers heroes={visibleHeroes} tiles={tiles} />

@@ -2,9 +2,11 @@
  * Load/save evolvable AI parameters (for self-improvement).
  * In browser: persists to localStorage so training UI or scripts can update them.
  * Training: mutate params, run games, keep params that win more.
+ * Clamps use aiParamsSchema ranges for consistency.
  */
 
 import { AiParams, DEFAULT_AI_PARAMS } from './ai';
+import { MUTATION_RANGES, SCALAR_PARAM_KEYS, normalizeMilitaryLevelMix } from './aiParamsSchema';
 
 const STORAGE_KEY = 'fallen_empire_ai_params';
 
@@ -25,19 +27,23 @@ export function getAiParams(): AiParams {
   }
 }
 
-/** Save AI params (e.g. after evolution). Clamps to valid ranges. */
+/** Save AI params (e.g. after evolution). Clamps to valid ranges from schema. */
 export function setAiParams(params: Partial<AiParams>): AiParams {
   const merged: AiParams = {
     ...DEFAULT_AI_PARAMS,
     ...params,
   };
-  merged.siegeChance = Math.max(0, Math.min(1, merged.siegeChance));
-  merged.recruitGoldThreshold = Math.max(0, merged.recruitGoldThreshold);
-  merged.maxRecruitsWhenRich = Math.max(1, Math.min(5, Math.round(merged.maxRecruitsWhenRich)));
-  merged.maxRecruitsWhenPoor = Math.max(1, Math.min(5, Math.round(merged.maxRecruitsWhenPoor)));
-  merged.targetDefenderWeight = Math.max(0.5, Math.min(10, merged.targetDefenderWeight));
-  merged.nearestTargetDistanceRatio = Math.max(0.1, Math.min(1, merged.nearestTargetDistanceRatio));
-  merged.builderRecruitChance = Math.max(0, Math.min(1, merged.builderRecruitChance));
+  for (const key of SCALAR_PARAM_KEYS) {
+    const range = MUTATION_RANGES[key];
+    let v = (merged as unknown as Record<string, number>)[key];
+    if (typeof v !== 'number' || !Number.isFinite(v)) continue;
+    v = Math.max(range.min, Math.min(range.max, v));
+    if (range.round) v = Math.round(v);
+    (merged as unknown as Record<string, number>)[key] = v;
+  }
+  if (merged.militaryLevelMixTarget) {
+    merged.militaryLevelMixTarget = normalizeMilitaryLevelMix(merged.militaryLevelMixTarget);
+  }
   if (isBrowser()) {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));

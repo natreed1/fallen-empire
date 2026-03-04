@@ -9,12 +9,13 @@ import * as fs from 'fs';
 import {
   MapConfig, DEFAULT_MAP_CONFIG, GamePhase, tileKey, generateId, hexDistance,
   City, Unit, Player, Hero, Tile, TerritoryInfo,
-  CityBuilding, ScoutMission, WallSection, WeatherEvent,
+  CityBuilding, ScoutMission, WallSection, ScoutTower, WeatherEvent,
   STARTING_GOLD, VILLAGE_CITY_TEMPLATE, CITY_CENTER_STORAGE,
   BUILDING_COSTS, BUILDING_IRON_COSTS, WORKERS_PER_LEVEL,
   BARACKS_UPGRADE_COST, FACTORY_UPGRADE_COST, FARM_UPGRADE_COST,
-  UNIT_COSTS, UNIT_L2_STATS, UNIT_BASE_STATS,
+  UNIT_COSTS, UNIT_L2_COSTS, UNIT_L3_COSTS, getUnitStats,
   SCOUT_MISSION_COST, SCOUT_MISSION_DURATION_SEC, VILLAGE_INCORPORATE_COST,
+  DEFENDER_IRON_COST,
   FRONTIER_CYCLES, CITY_NAMES, PLAYER_COLORS,
   CITY_CAPTURE_HOLD_MS,
 } from '../types/game';
@@ -45,6 +46,7 @@ export type SimState = {
   lastWeatherEndCycle: number;
   scoutMissions: ScoutMission[];
   scoutedHexes: Set<string>;
+  scoutTowers: ScoutTower[];
   wallSections: WallSection[];
   cityCaptureHold: Record<string, { attackerId: string; startedAt: number }>;
   /** Simulated time in ms; advances 30s per cycle for capture hold & scout completion */
@@ -131,6 +133,7 @@ export function initBotVsBotGame(
     lastWeatherEndCycle: -10,
     scoutMissions: [],
     scoutedHexes: new Set(),
+    scoutTowers: [],
     wallSections: [],
     cityCaptureHold: {},
     simTimeMs: 0,
@@ -485,12 +488,22 @@ export function stepSimulation(
     for (const rec of aiPlan.recruits) {
       const city = cities.find(c => c.id === rec.cityId);
       if (!city || city.ownerId !== aiPlayerId || city.population <= 0 || aiTroopCount >= aiTotalPopForRecruit) continue;
-      const cost = UNIT_COSTS[rec.type];
-      if (aiPlayer.gold < cost.gold) continue;
-      const wantL2 = rec.armsLevel === 2;
-      const stats = wantL2 ? UNIT_L2_STATS[rec.type] : UNIT_BASE_STATS[rec.type];
-      const gunL2Upkeep = wantL2 ? (UNIT_L2_STATS[rec.type] as { gunL2Upkeep?: number }).gunL2Upkeep ?? 0 : 0;
-      if (wantL2 && gunL2Upkeep > 0) {
+      const effectiveLevel = rec.type === 'defender' ? 3 : (rec.armsLevel ?? 1);
+      const wantL2 = effectiveLevel === 2;
+      const wantL3 = effectiveLevel === 3;
+      const goldCost = wantL3 ? UNIT_L3_COSTS[rec.type].gold : wantL2 ? UNIT_L2_COSTS[rec.type].gold : UNIT_COSTS[rec.type].gold;
+      const stoneCost = wantL2 ? (UNIT_L2_COSTS[rec.type].stone ?? 0) : 0;
+      const ironCost = wantL3 ? (UNIT_L3_COSTS[rec.type].iron ?? 0) : 0;
+      if (aiPlayer.gold < goldCost) continue;
+      if (stoneCost > 0 && (city.storage.stone ?? 0) < stoneCost) continue;
+      if (ironCost > 0 && (city.storage.iron ?? 0) < ironCost) continue;
+      if (rec.type === 'defender' || wantL2 || wantL3) {
+        const barracks = city.buildings.find(b => b.type === 'barracks');
+        if ((barracks?.level ?? 1) < 2) continue;
+      }
+      const stats = getUnitStats({ type: rec.type, armsLevel: effectiveLevel as 1 | 2 | 3 });
+      const gunL2Upkeep = (stats as { gunL2Upkeep?: number }).gunL2Upkeep ?? 0;
+      if (gunL2Upkeep > 0) {
         const totalGunsL2 = cities.filter(c => c.ownerId === aiPlayerId).reduce((sum, c) => sum + (c.storage.gunsL2 ?? 0), 0);
         if (totalGunsL2 < gunL2Upkeep) continue;
       }
@@ -510,7 +523,8 @@ export function stepSimulation(
         originCityId: city.id,
       };
       if (wantL2) newUnit.armsLevel = 2;
-      if (wantL2 && gunL2Upkeep > 0) {
+      if (wantL3 || rec.type === 'defender') newUnit.armsLevel = 3;
+      if (gunL2Upkeep > 0) {
         for (const oc of cities.filter(c => c.ownerId === aiPlayerId)) {
           if ((oc.storage.gunsL2 ?? 0) >= gunL2Upkeep) {
             oc.storage.gunsL2 = (oc.storage.gunsL2 ?? 0) - gunL2Upkeep;
@@ -518,8 +532,22 @@ export function stepSimulation(
           }
         }
       }
+      aiPlayer.gold -= goldCost;
+      if (stoneCost > 0 || ironCost > 0) {
+        const cityIdx = cities.indexOf(city);
+        if (cityIdx >= 0) {
+          const c = cities[cityIdx];
+          cities[cityIdx] = {
+            ...c,
+            storage: {
+              ...c.storage,
+              stone: Math.max(0, (c.storage.stone ?? 0) - stoneCost),
+              iron: Math.max(0, (c.storage.iron ?? 0) - ironCost),
+            },
+          };
+        }
+      }
       units.push(newUnit);
-      aiPlayer.gold -= cost.gold;
       aiTroopCount += 1;
     }
 
@@ -618,7 +646,7 @@ export function stepSimulation(
   for (const u of aliveUnits) {
     if (u.status === 'fighting') {
       const hasNearbyEnemy = aliveUnits.some(
-        e => e.ownerId !== u.ownerId && e.hp > 0 && hexDistance(u.q, u.r, e.q, e.r) <= UNIT_BASE_STATS[u.type].range
+        e => e.ownerId !== u.ownerId && e.hp > 0 && hexDistance(u.q, u.r, e.q, e.r) <= getUnitStats(u).range
       );
       if (!hasNearbyEnemy) u.status = 'idle';
     }
@@ -691,10 +719,11 @@ export function stepSimulation(
     lastWeatherEndCycle: lastWeatherEnd,
     scoutMissions,
     scoutedHexes,
+    scoutTowers: state.scoutTowers,
     wallSections: wallSectionsMut,
     cityCaptureHold: captureHoldNext,
     simTimeMs: newSimTimeMs,
-    heroes: movingHeroes,
+    heroes: movingHeroes.filter(h => !(combatResult.killedHeroIds ?? []).includes(h.id)),
     supplyCache: supplyCacheNext,
   };
 }

@@ -22,6 +22,13 @@ import {
   type SimResult,
   type RunSimulationDiagnostics,
 } from '../src/core/gameCore';
+import {
+  mutateParams as mutateParamsFromSchema,
+  SCALAR_PARAM_KEYS,
+  MUTATION_RANGES,
+  assertAiParamsConsistency,
+  getMutationSpaceSummary,
+} from '../src/lib/aiParamsSchema';
 import { parseScenarioMix, selectScenario, getScenarioMapOverride } from './lib/scenarios';
 import { FIXED_ARCHETYPES } from './lib/archetypes';
 
@@ -331,27 +338,9 @@ function compareForPromotion(a: Candidate, b: Candidate): number {
   return compareCandidates(a, b);
 }
 
-/** Bounded random perturbation; clamp to valid ranges (legacy). */
+/** Bounded random perturbation; all evolvable params, schema ranges. */
 function mutateParams(parent: AiParams, strength: number = 0.15): AiParams {
-  const m = (x: number, lo: number, hi: number) =>
-    Math.max(lo, Math.min(hi, x + (Math.random() - 0.5) * 2 * strength * (hi - lo) * 0.5));
-  return {
-    siegeChance: m(parent.siegeChance, 0.05, 0.5),
-    recruitGoldThreshold: Math.round(m(parent.recruitGoldThreshold, 100, 800)),
-    maxRecruitsWhenRich: Math.max(1, Math.min(5, Math.round(parent.maxRecruitsWhenRich + (Math.random() - 0.5) * 2))),
-    maxRecruitsWhenPoor: Math.max(1, Math.min(5, Math.round(parent.maxRecruitsWhenPoor + (Math.random() - 0.5) * 2))),
-    targetDefenderWeight: m(parent.targetDefenderWeight, 1, 8),
-    nearestTargetDistanceRatio: m(parent.nearestTargetDistanceRatio, 0.5, 1),
-    builderRecruitChance: m(parent.builderRecruitChance, 0.05, 0.5),
-    foodBufferThreshold: Math.max(0, Math.min(30, Math.round((parent.foodBufferThreshold ?? 10) + (Math.random() - 0.5) * 6))),
-    sustainableMilitaryMultiplier: m(parent.sustainableMilitaryMultiplier ?? 1, 0.6, 1.2),
-    farmFirstBias: m(parent.farmFirstBias ?? 0, 0, 1),
-    farmPriorityThreshold: Math.max(0, Math.min(30, Math.round((parent.farmPriorityThreshold ?? 15) + (Math.random() - 0.5) * 8))),
-    factoryUpgradePriority: m(parent.factoryUpgradePriority ?? 0.6, 0, 1),
-    scoutChance: m(parent.scoutChance ?? 1, 0, 1),
-    incorporateVillageChance: m(parent.incorporateVillageChance ?? 1, 0, 1),
-    targetPopWeight: m(parent.targetPopWeight ?? 1, 0.5, 2),
-  };
+  return mutateParamsFromSchema({ ...DEFAULT_AI_PARAMS, ...parent }, strength);
 }
 
 const TREND_REPORT_PATH = path.join(process.cwd(), 'artifacts', 'trend-report.json');
@@ -378,15 +367,7 @@ function mutateParamsTrend(parent: AiParams, strength: number = 0.15): AiParams 
   const params = report.params;
   const parentRecord = parent as unknown as Record<string, number>;
 
-  const numericKeys = [
-    'siegeChance', 'recruitGoldThreshold', 'maxRecruitsWhenRich', 'maxRecruitsWhenPoor',
-    'targetDefenderWeight', 'nearestTargetDistanceRatio', 'builderRecruitChance',
-    'foodBufferThreshold', 'sustainableMilitaryMultiplier', 'farmFirstBias',
-    'farmPriorityThreshold', 'factoryUpgradePriority', 'scoutChance',
-    'incorporateVillageChance', 'targetPopWeight',
-  ] as const;
-
-  for (const key of numericKeys) {
+  for (const key of SCALAR_PARAM_KEYS) {
     const entry = params[key];
     if (!entry || !Array.isArray(entry.recommendedMutationRange)) continue;
     const [lo, hi] = entry.recommendedMutationRange;
@@ -403,11 +384,9 @@ function mutateParamsTrend(parent: AiParams, strength: number = 0.15): AiParams 
     } else {
       v = v + delta;
     }
-    if (key === 'recruitGoldThreshold' || key === 'foodBufferThreshold' || key === 'farmPriorityThreshold' || key === 'maxRecruitsWhenRich' || key === 'maxRecruitsWhenPoor') {
-      (out as unknown as Record<string, number>)[key] = Math.round(Math.max(lo, Math.min(hi, v)));
-    } else {
-      (out as unknown as Record<string, number>)[key] = Math.max(lo, Math.min(hi, v));
-    }
+    const range = MUTATION_RANGES[key];
+    const clamped = Math.max(lo, Math.min(hi, v));
+    (out as unknown as Record<string, number>)[key] = range?.round ? Math.round(clamped) : clamped;
   }
   return out;
 }
@@ -559,6 +538,10 @@ type LeagueReport = {
 };
 
 function main() {
+  assertAiParamsConsistency();
+  const paramSummary = getMutationSpaceSummary();
+  console.log(`Params: ${paramSummary.totalParamCount} total, ${paramSummary.paramsInMutationSpace.length} in mutation space, ${paramSummary.excludedFromMutation.length} excluded (${paramSummary.excludedReason})`);
+
   const useSeedPool = LEAGUE_SEED_POOL.length > 0;
   const divLabel = useSeedPool ? '6/3/3 (seed pool)' : `${LEAGUE_DIV_SIZE} each`;
 
