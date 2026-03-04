@@ -9,6 +9,10 @@ export type SimSystemConfig = {
   tierSizeB: number;
   tierSizeA: number;
 
+  // Fixed movement quotas per season (competitive ladder: promote top N, relegate bottom N)
+  promoteCount: number;  // e.g. 2: top 2 from B→A, top 2 from C→B
+  relegateCount: number; // e.g. 2: bottom 2 from A→B, bottom 2 from B→C
+
   // Mutation portfolio (must sum to 1; guardrails enforce)
   mutationStableRatio: number;   // 0.65
   mutationMediumRatio: number;  // 0.25
@@ -86,6 +90,9 @@ export function loadSimSystemConfig(): SimSystemConfig {
     tierSizeC: parseEnvInt('SIM_TIER_SIZE_C', tierSize, 4, 24),
     tierSizeB: parseEnvInt('SIM_TIER_SIZE_B', tierSize, 4, 24),
     tierSizeA: parseEnvInt('SIM_TIER_SIZE_A', tierSize, 4, 24),
+
+    promoteCount: parseEnvInt('SIM_PROMOTE_COUNT', 2, 1, 8),
+    relegateCount: parseEnvInt('SIM_RELEGATE_COUNT', 2, 1, 8),
 
     mutationStableRatio: stable,
     mutationMediumRatio: medium,

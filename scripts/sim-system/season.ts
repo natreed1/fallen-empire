@@ -137,7 +137,7 @@ function compareByRobustness(a: SimAgent, b: SimAgent, config: SimSystemConfig):
   return (b.totalKills - b.noCombatGames) - (a.totalKills - a.noCombatGames);
 }
 
-/** Promote from B: prefer combat + scenario pass; respect lineage cap. */
+/** Promote from B: best-first by robustness; respect scenario gate + lineage cap. Fixed quota. */
 function selectForPromotionToA(
   agents: SimAgent[],
   config: SimSystemConfig,
@@ -146,9 +146,7 @@ function selectForPromotionToA(
   const B = agents.filter(a => a.tier === 'B' && !a.isAnchor).sort((a, b) => compareByRobustness(b, a, config));
   const atCapA = lineagesAtCap(agents, 'A', config.lineageCapPerTier);
   const promoted: SimAgent[] = [];
-  const targetSize = config.tierSizeA;
-  const currentA = agents.filter(a => a.tier === 'A' && !a.isAnchor).length;
-  const need = Math.max(0, targetSize - currentA);
+  const need = config.promoteCount;
   for (const b of B) {
     if (promoted.length >= need) break;
     const scenarioResults = scenarioResultsByAgentId.get(b.id) ?? [];
@@ -160,7 +158,7 @@ function selectForPromotionToA(
   return promoted;
 }
 
-/** Promote from C to B; respect lineage cap. */
+/** Promote from C to B: best-first by robustness; respect tier gate + lineage cap. Fixed quota. */
 function selectForPromotionToB(
   agents: SimAgent[],
   config: SimSystemConfig,
@@ -168,9 +166,7 @@ function selectForPromotionToB(
   const C = agents.filter(a => a.tier === 'C' && !a.isAnchor).sort((a, b) => compareByRobustness(b, a, config));
   const atCapB = lineagesAtCap(agents, 'B', config.lineageCapPerTier);
   const promoted: SimAgent[] = [];
-  const targetSize = config.tierSizeB;
-  const currentB = agents.filter(a => a.tier === 'B' && !a.isAnchor).length;
-  const need = Math.max(0, targetSize - currentB);
+  const need = config.promoteCount;
   for (const c of C) {
     if (promoted.length >= need) break;
     if (!passesTierCGate(c, config)) continue;
@@ -180,49 +176,45 @@ function selectForPromotionToB(
   return promoted;
 }
 
-/** Relegate from A to B (bottom by robustness). */
+/** Relegate from A to B: worst-first by robustness (bottom N). */
 function selectForRelegationToB(agents: SimAgent[], config: SimSystemConfig, count: number): SimAgent[] {
-  const A = agents.filter(a => a.tier === 'A' && !a.isAnchor).sort((a, b) => compareByRobustness(a, b, config));
+  const A = agents.filter(a => a.tier === 'A' && !a.isAnchor).sort((a, b) => compareByRobustness(b, a, config));
   return A.slice(0, count);
 }
 
-/** Relegate from B to C. */
+/** Relegate from B to C: worst-first by robustness (bottom N). */
 function selectForRelegationToC(agents: SimAgent[], config: SimSystemConfig, count: number): SimAgent[] {
-  const B = agents.filter(a => a.tier === 'B' && !a.isAnchor).sort((a, b) => compareByRobustness(a, b, config));
+  const B = agents.filter(a => a.tier === 'B' && !a.isAnchor).sort((a, b) => compareByRobustness(b, a, config));
   return B.slice(0, count);
 }
 
-/** Apply promotion/relegation and refill C with mutations. Fixed tier sizes; auto-rebalance. */
+/** Apply promotion/relegation and refill C with mutations. Fixed quotas: promote top N, relegate bottom N. */
 export function applyPromotionRelegation(
   agents: SimAgent[],
   config: SimSystemConfig,
   scenarioResultsByAgentId: Map<string, { score: number }[]>,
 ): void {
   const targetC = config.tierSizeC;
-  const targetB = config.tierSizeB;
-  const targetA = config.tierSizeA;
 
   const toA = selectForPromotionToA(agents, config, scenarioResultsByAgentId);
   const toBFromC = selectForPromotionToB(agents, config);
   const A = agents.filter(a => a.tier === 'A' && !a.isAnchor);
   const B = agents.filter(a => a.tier === 'B' && !a.isAnchor);
-  const C = agents.filter(a => a.tier === 'C' && !a.isAnchor);
 
-  const relegateA = Math.max(0, A.length + toA.length - targetA);
-  const toBFromA = relegateA > 0 ? selectForRelegationToB(agents, config, relegateA) : [];
-  const relegateB = Math.max(0, B.length - toA.length + toBFromC.length + toBFromA.length - targetB);
-  const toCFromB = relegateB > 0 ? selectForRelegationToC(agents, config, relegateB) : [];
+  const relegateCountA = Math.min(config.relegateCount, A.length);
+  const toBFromA = relegateCountA > 0 ? selectForRelegationToB(agents, config, relegateCountA) : [];
+  const relegateCountB = Math.min(config.relegateCount, B.length);
+  const toCFromB = relegateCountB > 0 ? selectForRelegationToC(agents, config, relegateCountB) : [];
 
   for (const a of toA) a.tier = 'A';
   for (const a of toBFromA) a.tier = 'B';
   for (const a of toBFromC) a.tier = 'B';
   for (const a of toCFromB) a.tier = 'C';
 
-  const remainingC = C.filter(c => !toBFromC.includes(c));
-  const inCAfterMoves = remainingC.length + toCFromB.length;
+  const remainingC = agents.filter(a => a.tier === 'C' && !a.isAnchor);
+  const inCAfterMoves = remainingC.length;
   const toReplace = Math.max(0, inCAfterMoves - targetC);
-  const allC = agents.filter(a => a.tier === 'C' && !a.isAnchor);
-  const bottomC = [...allC].sort((a, b) => compareByRobustness(a, b, config)).slice(0, toReplace);
+  const bottomC = [...remainingC].sort((a, b) => compareByRobustness(b, a, config)).slice(0, toReplace);
   const elites = agents.filter(a => (a.tier === 'A' || a.tier === 'B') && !a.isAnchor).sort((a, b) => compareByRobustness(b, a, config)).slice(0, 5);
   for (let i = 0; i < bottomC.length; i++) {
     const parent = elites[Math.min(i, elites.length - 1)];

@@ -71,6 +71,8 @@ SIM_SEASONS=20 SIM_TIER_SIZE=8 SIM_HOLDOUT_EVERY_N=3 npm run seasonal-sim
 | `SIM_SEASONS` | 12 | Number of seasons. |
 | `SIM_TIER_SIZE` | 8 | Default size per tier (C/B/A). |
 | `SIM_TIER_SIZE_C` / `_B` / `_A` | same | Override per tier. |
+| `SIM_PROMOTE_COUNT` | 2 | Fixed quota: promote top N from B→A and C→B each season. |
+| `SIM_RELEGATE_COUNT` | 2 | Fixed quota: relegate bottom N from A→B and B→C each season. |
 | `SIM_MUTATION_STABLE_RATIO` | 0.65 | Fraction of mutations that are stable. |
 | `SIM_MUTATION_MEDIUM_RATIO` | 0.25 | Medium exploration. |
 | `SIM_MUTATION_WILDCARD_RATIO` | 0.10 | Wildcard exploration. |
