@@ -334,6 +334,15 @@ export function stepSimulation(
 ): SimState {
   if (state.phase !== 'playing') return state;
 
+  if (diagnostics) {
+    diagnostics.buildsAi1 ??= {};
+    diagnostics.buildsAi2 ??= {};
+    diagnostics.buildsAi1Early ??= {};
+    diagnostics.buildsAi2Early ??= {};
+    diagnostics.buildsAi1Late ??= {};
+    diagnostics.buildsAi2Late ??= {};
+  }
+
   const newCycle = state.cycle + 1;
   const newSimTimeMs = state.simTimeMs + 30_000;
 

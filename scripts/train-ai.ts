@@ -69,7 +69,8 @@ function cloneParams(p: Partial<AiParams>): AiParams {
 }
 
 function mutateParams(p: Partial<AiParams>): AiParams {
-  return mutateParamsFromSchema(ensureFullParams(p), MUTATION_STRENGTH);
+  const mutated = mutateParamsFromSchema(ensureFullParams(p), MUTATION_STRENGTH);
+  return { ...DEFAULT_AI_PARAMS, ...mutated };
 }
 
 function scoreResult(
