@@ -10,8 +10,11 @@ import {
   MapConfig, DEFAULT_MAP_CONFIG, GamePhase, tileKey, generateId, hexDistance,
   City, Unit, Player, Hero, Tile, TerritoryInfo,
   CityBuilding, ScoutMission, WallSection, ScoutTower, WeatherEvent,
+  ConstructionSite, BuildingType,
   STARTING_GOLD, VILLAGE_CITY_TEMPLATE, CITY_CENTER_STORAGE,
-  BUILDING_COSTS, BUILDING_IRON_COSTS, WORKERS_PER_LEVEL,
+  BUILDING_COSTS, BUILDING_IRON_COSTS, BUILDING_BP_COST, BUILDING_JOBS, getBuildingJobs,
+  CITY_BUILDING_POWER, BUILDER_POWER, BP_RATE_BASE,
+  WORKERS_PER_LEVEL,
   BARACKS_UPGRADE_COST, FACTORY_UPGRADE_COST, FARM_UPGRADE_COST,
   UNIT_COSTS, UNIT_L2_COSTS, UNIT_L3_COSTS, getUnitStats,
   SCOUT_MISSION_COST, SCOUT_MISSION_DURATION_SEC, VILLAGE_INCORPORATE_COST,
@@ -48,6 +51,8 @@ export type SimState = {
   scoutedHexes: Set<string>;
   scoutTowers: ScoutTower[];
   wallSections: WallSection[];
+  /** Construction sites (buildings in progress); AI uses these instead of instant builds. */
+  constructions: ConstructionSite[];
   cityCaptureHold: Record<string, { attackerId: string; startedAt: number }>;
   /** Simulated time in ms; advances 30s per cycle for capture hold & scout completion */
   simTimeMs: number;
@@ -135,6 +140,7 @@ export function initBotVsBotGame(
     scoutedHexes: new Set(),
     scoutTowers: [],
     wallSections: [],
+    constructions: [],
     cityCaptureHold: {},
     simTimeMs: 0,
   };
@@ -395,6 +401,7 @@ export function stepSimulation(
   let scoutMissions = [...state.scoutMissions];
   let scoutedHexes = new Set(state.scoutedHexes);
   let tilesMut = state.tiles;
+  let constructions = [...state.constructions];
 
   const aiConfigs: { id: string; params: AiParams }[] = [
     { id: AI_ID, params: paramsA },
@@ -440,21 +447,41 @@ export function stepSimulation(
     if (!aiPlayer) continue;
 
     for (const build of aiPlan.builds) {
+      if (build.type === 'city_center') continue;
       const city = cities.find(c => c.id === build.cityId);
       if (!city || city.ownerId !== aiPlayerId) continue;
       if (aiPlayer.gold < BUILDING_COSTS[build.type]) continue;
       const ironCost = BUILDING_IRON_COSTS[build.type] ?? 0;
       if (ironCost > 0 && (city.storage.iron ?? 0) < ironCost) continue;
-      const b: CityBuilding = { type: build.type, q: build.q, r: build.r };
-      if (['quarry', 'mine', 'gold_mine', 'barracks', 'factory', 'academy', 'farm', 'market'].includes(build.type)) b.level = 1;
-      if (build.type === 'quarry' || build.type === 'mine' || build.type === 'gold_mine') {
-        const toAssign = Math.min(WORKERS_PER_LEVEL, Math.max(0, city.population - 1));
-        b.assignedWorkers = toAssign;
-        city.population -= toAssign;
-      }
-      city.buildings.push(b);
+      // Only start construction in own territory (city provides BP; outside territory would need builders)
+      const terr = state.territory.get(tileKey(build.q, build.r));
+      if (!terr || terr.playerId !== aiPlayerId) continue;
+      if (cities.some(c => c.buildings.some(b => b.q === build.q && b.r === build.r))) continue;
+      if (constructions.some(cs => cs.q === build.q && cs.r === build.r)) continue;
+
+      const bpRequired = BUILDING_BP_COST[build.type];
+      const site: ConstructionSite = {
+        id: generateId('con'),
+        type: build.type as BuildingType,
+        q: build.q,
+        r: build.r,
+        cityId: city.id,
+        ownerId: aiPlayerId,
+        bpRequired,
+        bpAccumulated: 0,
+      };
+      constructions.push(site);
       aiPlayer.gold -= BUILDING_COSTS[build.type];
-      if (ironCost > 0) city.storage.iron = (city.storage.iron ?? 0) - ironCost;
+      if (ironCost > 0) {
+        const cityIdx = cities.indexOf(city);
+        if (cityIdx >= 0) {
+          const c = cities[cityIdx];
+          cities[cityIdx] = {
+            ...c,
+            storage: { ...c.storage, iron: Math.max(0, (c.storage.iron ?? 0) - ironCost) },
+          };
+        }
+      }
 
       if (diagnostics) {
         const key = build.type;
@@ -598,6 +625,54 @@ export function stepSimulation(
     }
   }
 
+  // ── Construction tick (one cycle = 30s; same BP logic as live game) ──
+  if (constructions.length > 0) {
+    const remaining: ConstructionSite[] = [];
+    const updatedCities = cities.map(c => ({ ...c, buildings: [...c.buildings] }));
+
+    for (const site of constructions) {
+      let availBP = 0;
+      if (site.type !== 'trebuchet' && site.type !== 'scout_tower') {
+        const terr = state.territory.get(tileKey(site.q, site.r));
+        if (terr && terr.playerId === site.ownerId) availBP += CITY_BUILDING_POWER;
+      }
+      const builders = units.filter(
+        (u) => u.q === site.q && u.r === site.r && u.ownerId === site.ownerId && u.type === 'builder' && u.hp > 0
+      );
+      availBP += builders.length * BUILDER_POWER;
+
+      if (availBP === 0) {
+        remaining.push(site);
+        continue;
+      }
+
+      // One cycle = 30 seconds: gain 30 * (availBP / BP_RATE_BASE) = availBP
+      const bpGain = availBP;
+      const newAccum = site.bpAccumulated + bpGain;
+
+      if (newAccum >= site.bpRequired) {
+        if (site.type === 'trebuchet' || site.type === 'scout_tower') continue; // not used by AI in this path
+        const city = updatedCities.find((c) => c.id === site.cityId);
+        if (city) {
+          const b: CityBuilding = { type: site.type as BuildingType, q: site.q, r: site.r };
+          if (['quarry', 'mine', 'gold_mine', 'barracks', 'factory', 'academy', 'farm', 'market'].includes(site.type)) b.level = 1;
+          const jobs = BUILDING_JOBS[site.type as BuildingType] ?? 0;
+          if (jobs > 0) {
+            const totalEmployed = city.buildings.reduce((s, x) => s + ((x as CityBuilding).assignedWorkers ?? 0), 0);
+            const available = city.population - totalEmployed;
+            b.assignedWorkers = Math.min(jobs, Math.max(0, available));
+          }
+          city.buildings.push(b);
+        }
+      } else {
+        remaining.push({ ...site, bpAccumulated: newAccum });
+      }
+    }
+
+    constructions = remaining;
+    cities = updatedCities;
+  }
+
   // Complete scout missions that have passed
   const stillPending: ScoutMission[] = [];
   for (const m of scoutMissions) {
@@ -721,6 +796,7 @@ export function stepSimulation(
     scoutedHexes,
     scoutTowers: state.scoutTowers,
     wallSections: wallSectionsMut,
+    constructions,
     cityCaptureHold: captureHoldNext,
     simTimeMs: newSimTimeMs,
     heroes: movingHeroes.filter(h => !(combatResult.killedHeroIds ?? []).includes(h.id)),

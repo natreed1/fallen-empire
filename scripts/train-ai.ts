@@ -23,6 +23,7 @@ import {
   mutateParams as mutateParamsFromSchema,
   assertAiParamsConsistency,
   getMutationSpaceSummary,
+  EVOLVABLE_PARAM_KEYS,
 } from '../src/lib/aiParamsSchema';
 
 // ─── Config (env overrides for main knobs only) ────────────────────────
@@ -48,8 +49,14 @@ const LOST_SLOWLY_BONUS_PER_CYCLE = 0.03; // small bonus for lasting longer when
 const TRAIN_MAP = { width: MAP_SIZE, height: MAP_SIZE };
 const SIM_OPTS: RunSimulationOptions = { maxCycles: MAX_CYCLES, mapConfigOverride: TRAIN_MAP };
 
+/** Ensure params have all keys (merge with defaults). Use before sending to worker or evaluating. */
+function ensureFullParams(p: Partial<AiParams>): AiParams {
+  return { ...DEFAULT_AI_PARAMS, ...p };
+}
+
 function formatParamsShort(p: AiParams): string {
-  return JSON.stringify(p).slice(0, 120) + '…';
+  const k = EVOLVABLE_PARAM_KEYS.length;
+  return `[${k} params] ` + JSON.stringify(p).slice(0, 100) + '…';
 }
 
 function formatResult(r: SimResult): string {
@@ -57,12 +64,12 @@ function formatResult(r: SimResult): string {
   return `cycle ${r.cycle}, ${r.ai1Cities}-${r.ai2Cities} cities, ${r.ai1Pop}-${r.ai2Pop} pop → ${winner}`;
 }
 
-function cloneParams(p: AiParams): AiParams {
-  return { ...DEFAULT_AI_PARAMS, ...p };
+function cloneParams(p: Partial<AiParams>): AiParams {
+  return ensureFullParams(p);
 }
 
-function mutateParams(p: AiParams): AiParams {
-  return mutateParamsFromSchema({ ...DEFAULT_AI_PARAMS, ...p }, MUTATION_STRENGTH);
+function mutateParams(p: Partial<AiParams>): AiParams {
+  return mutateParamsFromSchema(ensureFullParams(p), MUTATION_STRENGTH);
 }
 
 function scoreResult(
@@ -183,6 +190,7 @@ async function main() {
   const summary = getMutationSpaceSummary();
   console.log('Training AI parameters (evolutionary + multi-game evaluation)...');
   console.log(`Param count: ${summary.totalParamCount}  In mutation space: ${summary.paramsInMutationSpace.length}  Excluded: ${summary.excludedFromMutation.length} (${summary.excludedReason})`);
+  console.log(`Evolvable params: ${EVOLVABLE_PARAM_KEYS.join(', ')}`);
   console.log(`Map: ${TRAIN_MAP.width}x${TRAIN_MAP.height}  maxCycles: ${MAX_CYCLES}  workers: ${NUM_WORKERS}`);
   console.log(`Gens: ${GENERATIONS}  population: ${POPULATION_SIZE}  matches/candidate: ${MATCHES_PER_PAIR}  elite: ${ELITE_COUNT}`);
   console.log('');

@@ -82,6 +82,8 @@ export interface AiParams {
   nearestTargetDistanceRatio: number;
   /** Builder recruit chance per cycle when academy and pop > 5 (0–1). */
   builderRecruitChance: number;
+  /** When building mines/quarries/gold_mine or recruiting siege, multiply builder recruit chance by (1 + this). Builders are required for out-of-territory mines and for field trebuchets (0–1). */
+  builderRecruitForMinesAndSiege: number;
   /** Min food surplus to allow more than 1 recruit per cycle (higher = more conservative). */
   foodBufferThreshold: number;
   /** Scale for max sustainable military (0.6–1.2: <1 = underfill cap, >1 = allow overfill). */
@@ -168,6 +170,7 @@ export const DEFAULT_AI_PARAMS: AiParams = {
   targetDefenderWeight: 3,
   nearestTargetDistanceRatio: 0.85,
   builderRecruitChance: 0.2,
+  builderRecruitForMinesAndSiege: 0.5,
   foodBufferThreshold: 14,
   sustainableMilitaryMultiplier: 0.9,
   farmFirstBias: 0,
@@ -409,10 +412,16 @@ export function planAiTurn(
       }
     }
 
-    // Recruit civilian: builders for roads/outlying buildings
+    // Recruit civilian: builders for roads, out-of-territory mines, and field trebuchets
     if (hasAcademy && city.population > 5) {
       const cost = UNIT_COSTS.builder;
-      if (goldBudget >= cost.gold && Math.random() < params.builderRecruitChance) {
+      const foodThreshold = params.foodBufferThreshold ?? 10;
+      const goingForSiege = hasBarracks && foodStats.surplus >= foodThreshold && (params.siegeChance ?? 0) >= 0.05;
+      const needBuildersForMinesOrSiege =
+        (toBuild === 'quarry' || toBuild === 'mine' || toBuild === 'gold_mine') || goingForSiege;
+      const boost = needBuildersForMinesOrSiege ? (params.builderRecruitForMinesAndSiege ?? 0) : 0;
+      const effectiveChance = Math.min(1, (params.builderRecruitChance ?? 0) * (1 + boost));
+      if (goldBudget >= cost.gold && Math.random() < effectiveChance) {
         actions.recruits.push({ cityId: city.id, type: 'builder' });
         goldBudget -= cost.gold;
       }

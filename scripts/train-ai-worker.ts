@@ -5,10 +5,15 @@
 import { parentPort } from 'worker_threads';
 import {
   runSimulation,
+  DEFAULT_AI_PARAMS,
   type AiParams,
   type SimResult,
   type RunSimulationOptions,
 } from '../src/core/gameCore';
+
+function ensureFullParams(p: Partial<AiParams>): AiParams {
+  return { ...DEFAULT_AI_PARAMS, ...p };
+}
 
 const DRAW_PENALTY = 10;
 const WON_QUICKLY_BONUS_PER_CYCLE = 0.05;
@@ -48,6 +53,8 @@ interface WorkerInput {
 }
 
 function evaluate(candidate: AiParams, baseline: AiParams, opts: WorkerInput): number[] {
+  const c = ensureFullParams(candidate);
+  const b = ensureFullParams(baseline);
   const simOpts: RunSimulationOptions = {
     maxCycles: opts.maxCycles,
     mapConfigOverride: opts.mapConfigOverride,
@@ -55,8 +62,8 @@ function evaluate(candidate: AiParams, baseline: AiParams, opts: WorkerInput): n
   const matchScores: number[] = [];
   for (let i = 0; i < opts.matchesPerPair; i++) {
     const seed = (Date.now() + i * 1000 + Math.floor(Math.random() * 1000)) % 1_000_000;
-    const asAi1 = runSimulation(candidate, baseline, seed, opts.maxCycles, simOpts);
-    const asAi2 = runSimulation(baseline, candidate, seed + 1, opts.maxCycles, simOpts);
+    const asAi1 = runSimulation(c, b, seed, opts.maxCycles, simOpts);
+    const asAi2 = runSimulation(b, c, seed + 1, opts.maxCycles, simOpts);
     matchScores.push(
       scoreResult(asAi1, 'ai1', opts.maxCycles) + scoreResult(asAi2, 'ai2', opts.maxCycles),
     );
