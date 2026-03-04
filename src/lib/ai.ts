@@ -94,21 +94,21 @@ export interface AiParams {
 }
 
 export const DEFAULT_AI_PARAMS: AiParams = {
-  siegeChance: 0.22,
-  recruitGoldThreshold: 400,
-  maxRecruitsWhenRich: 3,
-  maxRecruitsWhenPoor: 2,
-  targetDefenderWeight: 3,
-  nearestTargetDistanceRatio: 0.85,
-  builderRecruitChance: 0.2,
-  foodBufferThreshold: 14,
-  sustainableMilitaryMultiplier: 0.9,
+  siegeChance: 0.2604324738460518,
+  recruitGoldThreshold: 574,
+  maxRecruitsWhenRich: 5,
+  maxRecruitsWhenPoor: 3,
+  targetDefenderWeight: 2.002454414985417,
+  nearestTargetDistanceRatio: 0.8974484759321075,
+  builderRecruitChance: 0.30076342938205447,
+  foodBufferThreshold: 5,
+  sustainableMilitaryMultiplier: 0.8981775924328552,
   farmFirstBias: 0,
-  farmPriorityThreshold: 15,
-  factoryUpgradePriority: 0.6,
+  farmPriorityThreshold: 8,
+  factoryUpgradePriority: 0.5512785610145845,
   scoutChance: 1,
-  incorporateVillageChance: 1,
-  targetPopWeight: 1,
+  incorporateVillageChance: 0.9513629524907542,
+  targetPopWeight: 0.8099010091528773,
 };
 
 // ─── Food-aware recruit gating (avoid starvation lock in headless sim) ──
