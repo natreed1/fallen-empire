@@ -201,7 +201,7 @@ function nextHeroName(): string {
 
 export const useGameStore = create<GameState>((set, get) => ({
   tiles: new Map(), config: DEFAULT_MAP_CONFIG, provinceCenters: [], isGenerated: false,
-  phase: 'setup', cycle: 0, gameMode: 'human_vs_ai', players: [], cities: [], units: [], heroes: [], constructions: [], roadConstructions: [],
+  phase: 'setup', cycle: 0, gameMode: 'human_vs_ai', players: [], cities: [], units: [], heroes: [],   constructions: [], roadConstructions: [], scoutTowers: [],
   scoutMissions: [], scoutedHexes: new Set(),
   territory: new Map(), notifications: [],
   combatHexesThisCycle: new Set(),
@@ -236,7 +236,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         { id: HUMAN_ID, name: 'You', color: PLAYER_COLORS.human, gold: STARTING_GOLD, taxRate: 0.3, foodPriority: 'civilian', isHuman: true },
         { id: AI_ID, name: 'Rival Empire', color: PLAYER_COLORS.ai, gold: STARTING_GOLD, taxRate: 0.3, foodPriority: 'military', isHuman: false },
       ],
-      cities: [], units: [], heroes: [], constructions: [], roadConstructions: [], scoutMissions: [], scoutedHexes: new Set(),
+      cities: [], units: [], heroes: [], constructions: [], roadConstructions: [], scoutTowers: [], scoutMissions: [], scoutedHexes: new Set(),
       territory: new Map(), cycle: 0, notifications: [], wallSections: [], cityCaptureHold: {},
       combatHexesThisCycle: new Set(),
       activeWeather: null, lastWeatherEndCycle: -10,
@@ -394,7 +394,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     }
 
     // Compute initial vision from the player's capital + hero
-    const initVisible = computeVisibleHexes(HUMAN_ID, cities, testUnits, heroes, tiles);
+    const initVisible = computeVisibleHexes(HUMAN_ID, cities, testUnits, heroes, tiles, get().scoutTowers ?? []);
 
     set({
       phase: 'playing', cities, territory, heroes, wallSections: [], cityCaptureHold: {},
@@ -553,13 +553,14 @@ export const useGameStore = create<GameState>((set, get) => ({
           const completedNotifs: GameNotification[] = [];
           const updatedCities = st.cities.map(c => ({ ...c, buildings: [...c.buildings] }));
           const newUnitsFromField: Unit[] = [];
+          const newScoutTowers: ScoutTower[] = [];
 
           for (const site of st.constructions) {
             // Calculate available BP at this hex
             let availBP = 0;
 
-            // If in territory of owning player, city provides CITY_BUILDING_POWER (buildings only; trebuchet is builder-only)
-            if (site.type !== 'trebuchet') {
+            // If in territory of owning player, city provides CITY_BUILDING_POWER (buildings only; trebuchet/scout_tower are builder-only)
+            if (site.type !== 'trebuchet' && site.type !== 'scout_tower') {
               const terr = st.territory.get(tileKey(site.q, site.r));
               if (terr && terr.playerId === site.ownerId) {
                 availBP += CITY_BUILDING_POWER;
@@ -606,6 +607,18 @@ export const useGameStore = create<GameState>((set, get) => ({
                   message: `Trebuchet completed at (${site.q}, ${site.r})!`,
                   type: 'success',
                 });
+              } else if (site.type === 'scout_tower') {
+                newScoutTowers.push({
+                  id: generateId('scout_tower'),
+                  q: site.q,
+                  r: site.r,
+                  ownerId: site.ownerId,
+                });
+                completedNotifs.push({
+                  id: generateId('n'), turn: st.cycle,
+                  message: `Scout tower completed at (${site.q}, ${site.r})!`,
+                  type: 'success',
+                });
               } else {
                 // Building: add to city and auto-assign workers
                 const city = updatedCities.find(c => c.id === site.cityId);
@@ -639,6 +652,7 @@ export const useGameStore = create<GameState>((set, get) => ({
             constructions: remaining,
             cities: updatedCities,
             units: newUnitsFromField.length > 0 ? [...st.units, ...newUnitsFromField] : st.units,
+            scoutTowers: newScoutTowers.length > 0 ? [...st.scoutTowers, ...newScoutTowers] : st.scoutTowers,
             notifications: allNotifs,
           });
         }
@@ -1228,6 +1242,51 @@ export const useGameStore = create<GameState>((set, get) => ({
     get().addNotification(`Trebuchet construction started (${TREBUCHET_FIELD_GOLD_COST}g, ${TREBUCHET_FIELD_BP_COST} BP). Builder builds on this hex.`, 'info');
   },
 
+  buildScoutTowerInField: (q, r) => {
+    const s = get();
+    const player = s.players.find(p => p.id === HUMAN_ID);
+    if (!player || player.gold < SCOUT_TOWER_GOLD_COST) {
+      get().addNotification(`Need ${SCOUT_TOWER_GOLD_COST} gold to build scout tower!`, 'warning');
+      return;
+    }
+    const tile = s.tiles.get(tileKey(q, r));
+    if (!tile || tile.biome === 'water' || tile.biome === 'mountain') return;
+    if (s.cities.some(c => c.q === q && c.r === r)) {
+      get().addNotification('Cannot build scout tower on a city!', 'warning');
+      return;
+    }
+    if (s.constructions.some(cs => cs.q === q && cs.r === r)) {
+      get().addNotification('Already under construction here!', 'warning');
+      return;
+    }
+    if (s.scoutTowers.some(t => t.q === q && t.r === r)) {
+      get().addNotification('Scout tower already here!', 'warning');
+      return;
+    }
+    const buildersAtHex = s.units.filter(
+      u => u.q === q && u.r === r && u.ownerId === HUMAN_ID && u.type === 'builder' && u.hp > 0
+    );
+    if (buildersAtHex.length === 0) {
+      get().addNotification('Need a Builder on this hex to build scout tower!', 'warning');
+      return;
+    }
+    const site: ConstructionSite = {
+      id: generateId('con'),
+      type: 'scout_tower',
+      q,
+      r,
+      cityId: '',
+      ownerId: HUMAN_ID,
+      bpRequired: SCOUT_TOWER_BP_COST,
+      bpAccumulated: 0,
+    };
+    set({
+      players: s.players.map(p => p.id === HUMAN_ID ? { ...p, gold: p.gold - SCOUT_TOWER_GOLD_COST } : p),
+      constructions: [...s.constructions, site],
+    });
+    get().addNotification(`Scout tower construction started (${SCOUT_TOWER_GOLD_COST}g, ${SCOUT_TOWER_BP_COST} BP).`, 'info');
+  },
+
   buildRoad: (q, r) => {
     const s = get();
     const tile = s.tiles.get(tileKey(q, r));
@@ -1405,7 +1464,10 @@ export const useGameStore = create<GameState>((set, get) => ({
       if (!barracks) {
         get().addNotification('Build a Barracks to recruit military units!', 'warning'); return;
       }
-      if (wantL2 && barracksLvl < 2) {
+      if (type === 'defender' && barracksLvl < 2) {
+        get().addNotification('Upgrade barracks to L2 to recruit Defenders!', 'warning'); return;
+      }
+      if (wantL2 && type !== 'defender' && barracksLvl < 2) {
         get().addNotification('Upgrade barracks first to recruit L2 units!', 'warning'); return;
       }
     }
@@ -1416,6 +1478,13 @@ export const useGameStore = create<GameState>((set, get) => ({
     const cost = UNIT_COSTS[type];
     if (player.gold < cost.gold) {
       get().addNotification(`Need ${cost.gold} gold!`, 'warning'); return;
+    }
+    const ironCost = cost.iron ?? 0;
+    if (ironCost > 0) {
+      const cityIron = city.storage.iron ?? 0;
+      if (cityIron < ironCost) {
+        get().addNotification(`Need ${ironCost} iron to recruit ${UNIT_DISPLAY_NAMES[type]}! (Build a mine.)`, 'warning'); return;
+      }
     }
     // Troop limit: 1 per population; population is not deducted until unit dies (design doc §21–22)
     const playerCities = s.cities.filter(c => c.ownerId === player.id);
@@ -1447,12 +1516,19 @@ export const useGameStore = create<GameState>((set, get) => ({
     };
     if (wantL2) newUnit.armsLevel = 2;
 
+    const ironCost = cost.iron ?? 0;
+    const updatedCities = ironCost > 0
+      ? s.cities.map(c => c.id === cityId ? { ...c, storage: { ...c.storage, iron: Math.max(0, (c.storage.iron ?? 0) - ironCost) } } : c)
+      : s.cities;
+
     // Do not deduct population on recruit; population is lost when unit dies (design doc §22)
     set({
-      players: s.players.map(p => p.id === player.id ? { ...p, gold: p.gold - cost.gold } : { ...p }),
+      players: s.players.map(p => p.id === player.id ? { ...p, gold: p.gold - cost.gold } : p),
+      cities: updatedCities,
       units: [...s.units, newUnit],
     });
-    get().addNotification(`Recruited ${wantL2 ? 'L2 ' : ''}${UNIT_DISPLAY_NAMES[type]} (${cost.gold}g)`, 'success');
+    const costStr = ironCost > 0 ? `${cost.gold}g, ${ironCost} iron` : `${cost.gold}g`;
+    get().addNotification(`Recruited ${wantL2 ? 'L2 ' : ''}${UNIT_DISPLAY_NAMES[type]} (${costStr})`, 'success');
   },
 
   // ─── Recruit Hero ──────────────────────────────────────────
@@ -1938,7 +2014,7 @@ export const useGameStore = create<GameState>((set, get) => ({
 
     // Recalculate territory and vision
     const territory = calculateTerritory(newCities, newTiles);
-    const visibleHexes = computeVisibleHexes(HUMAN_ID, newCities, s.units, s.heroes, newTiles);
+    const visibleHexes = computeVisibleHexes(HUMAN_ID, newCities, s.units, s.heroes, newTiles, s.scoutTowers ?? []);
 
     set({
       players: newPlayers,
@@ -2146,7 +2222,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       s.tiles.forEach((_, key) => allKeys.add(key));
       set({ visibleHexes: allKeys });
     } else {
-      const newVisible = computeVisibleHexes(HUMAN_ID, s.cities, s.units, s.heroes, s.tiles);
+      const newVisible = computeVisibleHexes(HUMAN_ID, s.cities, s.units, s.heroes, s.tiles, s.scoutTowers ?? []);
       set({ visibleHexes: newVisible });
     }
   },

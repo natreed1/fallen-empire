@@ -6,6 +6,10 @@
  * Run: LEAGUE_SEASONS=12 LEAGUE_DIV_SIZE=8 npm run tournament-league
  * Seed pool (strong archetypes, avoid starvation lock):
  *   LEAGUE_SEED_POOL=artifacts/seed_pool_v1.json LEAGUE_MAX_CYCLES=300 npm run tournament-league
+ *
+ * Robust training (backward-compatible; all new behavior gated by flags):
+ *   LEAGUE_DOMAIN_RANDOMIZATION=1 LEAGUE_USE_ROBUST_SELECTION=1 LEAGUE_MUTATION_PROFILE=trend
+ *   LEAGUE_INCLUDE_ARCHETYPES=1 LEAGUE_SEASONS=30 npm run tournament-league
  */
 
 import * as path from 'path';
@@ -18,6 +22,12 @@ import {
   type SimResult,
   type RunSimulationDiagnostics,
 } from '../src/core/gameCore';
+import { parseScenarioMix, selectScenario, getScenarioMapOverride } from './lib/scenarios';
+import { FIXED_ARCHETYPES } from './lib/archetypes';
+
+/** Minimal shape for trend report (from optimize-trends output). */
+type TrendReportParams = Record<string, { recommendedMutationRange: [number, number]; suggestedCenter: number; classification: string }>;
+type TrendReportShape = { params: TrendReportParams };
 
 // ─── Config (top-level constants; env overrides for runtime knobs) ───────────
 const LEAGUE_SEASONS = parseInt(process.env.LEAGUE_SEASONS || '12', 10) || 12;
@@ -26,6 +36,18 @@ const LEAGUE_MAX_CYCLES = parseInt(process.env.LEAGUE_MAX_CYCLES || '500', 10) |
 const LEAGUE_MAP_SIZE = parseInt(process.env.LEAGUE_MAP_SIZE || '38', 10) || 38;
 const LEAGUE_WORKERS = parseInt(process.env.LEAGUE_WORKERS || '0', 10) || 0; // 0 = main thread only
 const LEAGUE_SEED_POOL = process.env.LEAGUE_SEED_POOL || ''; // e.g. artifacts/seed_pool_v1.json → 12 candidates, 6/3/3 divisions
+
+// Robust training feature flags (default off for backward compatibility)
+const LEAGUE_DOMAIN_RANDOMIZATION = process.env.LEAGUE_DOMAIN_RANDOMIZATION === '1';
+const LEAGUE_SCENARIO_MIX = process.env.LEAGUE_SCENARIO_MIX || 'balanced:0.4,tight:0.2,wide:0.2,lean-food:0.1,high-expansion:0.1';
+const LEAGUE_INCLUDE_ARCHETYPES = process.env.LEAGUE_INCLUDE_ARCHETYPES === '1'; // default off for backward compatibility
+const LEAGUE_ARCHETYPE_WEIGHT = parseFloat(process.env.LEAGUE_ARCHETYPE_WEIGHT || '0.35') || 0.35;
+const LEAGUE_USE_ROBUST_SELECTION = process.env.LEAGUE_USE_ROBUST_SELECTION === '1';
+const LEAGUE_ROBUST_LAMBDA = parseFloat(process.env.LEAGUE_ROBUST_LAMBDA || '0.35') || 0.35;
+const LEAGUE_TAIL_PENALTY = parseFloat(process.env.LEAGUE_TAIL_PENALTY || '0.25') || 0.25;
+const LEAGUE_MUTATION_PROFILE = (process.env.LEAGUE_MUTATION_PROFILE || 'legacy') as 'legacy' | 'trend';
+const CHAMPION_LIBRARY_CAP = parseInt(process.env.CHAMPION_LIBRARY_CAP || '50', 10) || 50;
+const CHAMPION_LIBRARY_PARAM_DISTANCE_THRESHOLD = parseFloat(process.env.CHAMPION_LIBRARY_PARAM_DISTANCE_THRESHOLD || '0.05') || 0.05;
 
 const POPULATION_SIZE = LEAGUE_DIV_SIZE * 3; // 24 = 8 per division (ignored when seed pool)
 const TOP_K = LEAGUE_SEED_POOL ? 1 : 2;
@@ -44,10 +66,24 @@ const KILL_W = 2;
 const NO_COMBAT_PENALTY = -25; // both sides if totalKills === 0
 const STARVING_LOCK_PENALTY = -35; // side-specific if all-starving detected
 
-const SIM_OPTS: RunSimulationOptions = {
+const BASE_SIM_OPTS: RunSimulationOptions = {
   maxCycles: LEAGUE_MAX_CYCLES,
   mapConfigOverride: { width: LEAGUE_MAP_SIZE, height: LEAGUE_MAP_SIZE },
 };
+
+/** Scenario mix for domain randomization (parsed once). */
+const SCENARIO_MIX = LEAGUE_DOMAIN_RANDOMIZATION ? parseScenarioMix(LEAGUE_SCENARIO_MIX) : [];
+
+/** Get sim options for a match; when domain randomization is on, pick scenario deterministically from seed. */
+function getSimOpts(matchSeed: number): RunSimulationOptions {
+  if (!LEAGUE_DOMAIN_RANDOMIZATION) return BASE_SIM_OPTS;
+  const scenarioName = selectScenario(SCENARIO_MIX, matchSeed);
+  const mapOverride = getScenarioMapOverride(scenarioName);
+  return {
+    maxCycles: LEAGUE_MAX_CYCLES,
+    mapConfigOverride: { width: LEAGUE_MAP_SIZE, height: LEAGUE_MAP_SIZE, ...mapOverride },
+  };
+}
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 export type Division = 'A' | 'B' | 'C';
@@ -73,6 +109,8 @@ export type Stats = {
   factoriesBuilt: number;
   academiesBuilt: number;
   goldMinesBuilt: number;
+  /** Points from matches vs fixed archetypes only (when LEAGUE_INCLUDE_ARCHETYPES=1). */
+  archetypePoints?: number;
 };
 
 export type Candidate = {
@@ -81,12 +119,16 @@ export type Candidate = {
   division: Division;
   seasonStats: Stats;
   rating?: number;
+  /** Per-game scores for robust selection (when LEAGUE_USE_ROBUST_SELECTION=1). */
+  gameScores?: number[];
+  /** True if this candidate is a fixed archetype (excluded from promotion/relegation). */
+  isArchetype?: boolean;
 };
 
 type GameResult = SimResult & { diagnostics: RunSimulationDiagnostics };
 
 function emptyStats(): Stats {
-  return {
+  const s: Stats = {
     points: 0,
     wins: 0,
     losses: 0,
@@ -108,6 +150,8 @@ function emptyStats(): Stats {
     academiesBuilt: 0,
     goldMinesBuilt: 0,
   };
+  if (LEAGUE_INCLUDE_ARCHETYPES) s.archetypePoints = 0;
+  return s;
 }
 
 /** Deterministic seed for reproducibility. */
@@ -159,6 +203,7 @@ function applyScores(
   c2: Candidate,
   result: GameResult,
   c1PlayedAs: 'ai1' | 'ai2',
+  isArchetypeMatch?: boolean,
 ): void {
   const c2PlayedAs = c1PlayedAs === 'ai1' ? 'ai2' : 'ai1';
   const pts1 = scoreGame(result, c1PlayedAs);
@@ -166,6 +211,18 @@ function applyScores(
 
   c1.seasonStats.points += pts1;
   c2.seasonStats.points += pts2;
+  if (isArchetypeMatch && c2.isArchetype) {
+    c1.seasonStats.archetypePoints = (c1.seasonStats.archetypePoints ?? 0) + pts1;
+  }
+  if (isArchetypeMatch && c1.isArchetype) {
+    c2.seasonStats.archetypePoints = (c2.seasonStats.archetypePoints ?? 0) + pts2;
+  }
+  if (LEAGUE_USE_ROBUST_SELECTION) {
+    if (!c1.gameScores) c1.gameScores = [];
+    if (!c2.gameScores) c2.gameScores = [];
+    c1.gameScores.push(pts1);
+    c2.gameScores.push(pts2);
+  }
 
   if (result.winner === c1PlayedAs) {
     c1.seasonStats.wins += 1;
@@ -232,9 +289,31 @@ function roundRobinPairings<T>(candidates: T[]): [T, T][] {
   return pairs;
 }
 
+/** Robust score: mean - lambda*std - tailPenalty*worstDecile (only when gameScores present). */
+function robustScore(c: Candidate): number {
+  const scores = c.gameScores;
+  if (!scores || scores.length === 0) return c.seasonStats.points;
+  const mean = scores.reduce((a, b) => a + b, 0) / scores.length;
+  const variance = scores.reduce((s, x) => s + (x - mean) ** 2, 0) / scores.length;
+  const std = Math.sqrt(variance);
+  const sorted = [...scores].sort((x, y) => x - y);
+  const decileIdx = Math.floor(sorted.length * 0.1);
+  const worstDecile = decileIdx < sorted.length ? sorted[decileIdx] : sorted[0] ?? 0;
+  return mean - LEAGUE_ROBUST_LAMBDA * std - LEAGUE_TAIL_PENALTY * worstDecile;
+}
+
+/** Combined points when archetypes included: (1-w)*divisionPoints + w*archetypePoints. */
+function combinedPoints(c: Candidate): number {
+  if (!LEAGUE_INCLUDE_ARCHETYPES || c.seasonStats.archetypePoints == null) return c.seasonStats.points;
+  const w = LEAGUE_ARCHETYPE_WEIGHT;
+  return (1 - w) * c.seasonStats.points + w * c.seasonStats.archetypePoints;
+}
+
 /** Tie-breaker order: wins, then head-to-head (we don't track h2h here; use points), killsDiff, cityDiff, popDiff. */
 function compareCandidates(a: Candidate, b: Candidate): number {
-  if (b.seasonStats.points !== a.seasonStats.points) return b.seasonStats.points - a.seasonStats.points;
+  const scoreA = LEAGUE_USE_ROBUST_SELECTION ? robustScore(a) : combinedPoints(a);
+  const scoreB = LEAGUE_USE_ROBUST_SELECTION ? robustScore(b) : combinedPoints(b);
+  if (scoreB !== scoreA) return scoreB - scoreA;
   if (b.seasonStats.wins !== a.seasonStats.wins) return b.seasonStats.wins - a.seasonStats.wins;
   const killsDiffA = a.seasonStats.killsFor - a.seasonStats.killsAgainst;
   const killsDiffB = b.seasonStats.killsFor - b.seasonStats.killsAgainst;
@@ -252,7 +331,7 @@ function compareForPromotion(a: Candidate, b: Candidate): number {
   return compareCandidates(a, b);
 }
 
-/** Bounded random perturbation; clamp to valid ranges. */
+/** Bounded random perturbation; clamp to valid ranges (legacy). */
 function mutateParams(parent: AiParams, strength: number = 0.15): AiParams {
   const m = (x: number, lo: number, hi: number) =>
     Math.max(lo, Math.min(hi, x + (Math.random() - 0.5) * 2 * strength * (hi - lo) * 0.5));
@@ -273,6 +352,69 @@ function mutateParams(parent: AiParams, strength: number = 0.15): AiParams {
     incorporateVillageChance: m(parent.incorporateVillageChance ?? 1, 0, 1),
     targetPopWeight: m(parent.targetPopWeight ?? 1, 0.5, 2),
   };
+}
+
+const TREND_REPORT_PATH = path.join(process.cwd(), 'artifacts', 'trend-report.json');
+
+/** Load trend report if present and valid. */
+function loadTrendReport(): TrendReportShape | null {
+  if (!fs.existsSync(TREND_REPORT_PATH)) return null;
+  try {
+    const raw = fs.readFileSync(TREND_REPORT_PATH, 'utf8');
+    const data = JSON.parse(raw) as TrendReportShape;
+    if (data && typeof data.params === 'object') return data;
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+/** Trend-shaped mutation: narrow for stable-good, medium for exploratory, corrective for unstable-bad. */
+function mutateParamsTrend(parent: AiParams, strength: number = 0.15): AiParams {
+  const report = loadTrendReport();
+  if (!report) return mutateParams(parent, strength);
+
+  const out: AiParams = { ...DEFAULT_AI_PARAMS, ...parent };
+  const params = report.params;
+  const parentRecord = parent as unknown as Record<string, number>;
+
+  const numericKeys = [
+    'siegeChance', 'recruitGoldThreshold', 'maxRecruitsWhenRich', 'maxRecruitsWhenPoor',
+    'targetDefenderWeight', 'nearestTargetDistanceRatio', 'builderRecruitChance',
+    'foodBufferThreshold', 'sustainableMilitaryMultiplier', 'farmFirstBias',
+    'farmPriorityThreshold', 'factoryUpgradePriority', 'scoutChance',
+    'incorporateVillageChance', 'targetPopWeight',
+  ] as const;
+
+  for (const key of numericKeys) {
+    const entry = params[key];
+    if (!entry || !Array.isArray(entry.recommendedMutationRange)) continue;
+    const [lo, hi] = entry.recommendedMutationRange;
+    const center = typeof entry.suggestedCenter === 'number' ? entry.suggestedCenter : parentRecord[key];
+    const classification = entry.classification;
+    let halfWidth: number;
+    if (classification === 'stable-good') halfWidth = (hi - lo) * 0.4;
+    else if (classification === 'unstable-bad') halfWidth = (hi - lo) * 0.6;
+    else halfWidth = (hi - lo) * 0.5;
+    const delta = (Math.random() - 0.5) * 2 * halfWidth * strength;
+    let v = parentRecord[key] ?? center;
+    if (classification === 'unstable-bad') {
+      v = center + delta;
+    } else {
+      v = v + delta;
+    }
+    if (key === 'recruitGoldThreshold' || key === 'foodBufferThreshold' || key === 'farmPriorityThreshold' || key === 'maxRecruitsWhenRich' || key === 'maxRecruitsWhenPoor') {
+      (out as unknown as Record<string, number>)[key] = Math.round(Math.max(lo, Math.min(hi, v)));
+    } else {
+      (out as unknown as Record<string, number>)[key] = Math.max(lo, Math.min(hi, v));
+    }
+  }
+  return out;
+}
+
+/** Mutation entry point: trend profile when LEAGUE_MUTATION_PROFILE=trend, else legacy. */
+function mutateParamsForLeague(parent: AiParams, strength: number = 0.15): AiParams {
+  return LEAGUE_MUTATION_PROFILE === 'trend' ? mutateParamsTrend(parent, strength) : mutateParams(parent, strength);
 }
 
 function cloneParams(p: AiParams): AiParams {
@@ -377,8 +519,8 @@ function promoteRelegateAndReplace(
   const toCFromB = B.slice(-BOT_K);
   const bottomC = C.slice(-BOT_K);
   const newC = elites.length >= 1
-    ? bottomC.map((_, i) => mutateParams(elites[Math.min(i, elites.length - 1)].params))
-    : bottomC.map(() => mutateParams(DEFAULT_AI_PARAMS));
+    ? bottomC.map((_, i) => mutateParamsForLeague(elites[Math.min(i, elites.length - 1)].params))
+    : bottomC.map(() => mutateParamsForLeague(DEFAULT_AI_PARAMS));
 
   for (const c of toA) c.division = 'A';
   for (const c of toBFromA) c.division = 'B';
@@ -399,7 +541,7 @@ function selectChampion(divisionA: Candidate[]): Candidate {
 }
 
 // ─── Main ─────────────────────────────────────────────────────────────────
-type DivisionStanding = { id: string; points: number; wins: number; losses: number; draws: number; killsFor: number; killsAgainst: number; cityDiff: number; popDiff: number; decisiveGames: number; noCombatGames: number; farmsBuiltEarly: number; farmsBuiltLate: number; marketsBuilt: number; minesBuilt: number; quarriesBuilt: number; barracksBuilt: number; factoriesBuilt: number; academiesBuilt: number; goldMinesBuilt: number };
+type DivisionStanding = { id: string; points: number; wins: number; losses: number; draws: number; killsFor: number; killsAgainst: number; cityDiff: number; popDiff: number; decisiveGames: number; noCombatGames: number; farmsBuiltEarly: number; farmsBuiltLate: number; marketsBuilt: number; minesBuilt: number; quarriesBuilt: number; barracksBuilt: number; factoriesBuilt: number; academiesBuilt: number; goldMinesBuilt: number; archetypePoints?: number; params?: AiParams };
 
 type LeagueReport = {
   seasons: number;
@@ -413,7 +555,7 @@ type LeagueReport = {
     promotionsRelegations: string[];
   }[];
   champion: { id: string; division: string };
-  finalStandingsA: { id: string; points: number; wins: number }[];
+  finalStandingsA: { id: string; points: number; wins: number; params?: AiParams }[];
 };
 
 function main() {
@@ -436,7 +578,10 @@ function main() {
   };
 
   for (let season = 1; season <= LEAGUE_SEASONS; season++) {
-    for (const c of candidates) c.seasonStats = emptyStats();
+    for (const c of candidates) {
+      c.seasonStats = emptyStats();
+      if (LEAGUE_USE_ROBUST_SELECTION) c.gameScores = [];
+    }
 
     for (const div of ['A', 'B', 'C'] as Division[]) {
       const divCandidates = candidates.filter(c => c.division === div);
@@ -446,12 +591,31 @@ function main() {
         const [c1, c2] = pairs[pi];
         const seed1 = deterministicSeed(season, div, pi, 0, 0);
         const seed2 = deterministicSeed(season, div, pi, 1, 0);
+        const opts1 = getSimOpts(seed1);
+        const opts2 = getSimOpts(seed2);
 
-        const r1 = runSimulationWithDiagnostics(c1.params, c2.params, seed1, LEAGUE_MAX_CYCLES, SIM_OPTS) as GameResult;
-        applyScores(c1, c2, r1, 'ai1');
+        const r1 = runSimulationWithDiagnostics(c1.params, c2.params, seed1, LEAGUE_MAX_CYCLES, opts1) as GameResult;
+        applyScores(c1, c2, r1, 'ai1', false);
 
-        const r2 = runSimulationWithDiagnostics(c2.params, c1.params, seed2, LEAGUE_MAX_CYCLES, SIM_OPTS) as GameResult;
-        applyScores(c2, c1, r2, 'ai1');
+        const r2 = runSimulationWithDiagnostics(c2.params, c1.params, seed2, LEAGUE_MAX_CYCLES, opts2) as GameResult;
+        applyScores(c2, c1, r2, 'ai1', false);
+      }
+    }
+
+    // Fixed archetype matches: each candidate plays vs each archetype (both sides), deterministic seeds
+    if (LEAGUE_INCLUDE_ARCHETYPES) {
+      for (let ai = 0; ai < FIXED_ARCHETYPES.length; ai++) {
+        const arch = FIXED_ARCHETYPES[ai];
+        for (const c of candidates) {
+          const seed1 = deterministicSeed(season, 'arch', ai, 0, 0) + (c.id.length + c.id.split('').reduce((a, ch) => a + ch.charCodeAt(0), 0));
+          const seed2 = deterministicSeed(season, 'arch', ai, 1, 0) + (c.id.length + c.id.split('').reduce((a, ch) => a + ch.charCodeAt(0), 0));
+          const opts1 = getSimOpts(seed1);
+          const opts2 = getSimOpts(seed2);
+          const r1 = runSimulationWithDiagnostics(c.params, arch.params, seed1, LEAGUE_MAX_CYCLES, opts1) as GameResult;
+          const r2 = runSimulationWithDiagnostics(arch.params, c.params, seed2, LEAGUE_MAX_CYCLES, opts2) as GameResult;
+          applyScores(c, { id: arch.id, params: arch.params, division: 'A', seasonStats: emptyStats(), isArchetype: true } as Candidate, r1, 'ai1', true);
+          applyScores(c, { id: arch.id, params: arch.params, division: 'A', seasonStats: emptyStats(), isArchetype: true } as Candidate, r2, 'ai2', true);
+        }
       }
     }
 
@@ -462,28 +626,33 @@ function main() {
     const elites = A.slice(0, Math.max(ELITES_UNCHANGED, 2));
     promoteRelegateAndReplace(candidates, elites);
 
-    const toStanding = (c: Candidate): DivisionStanding => ({
-      id: c.id,
-      points: c.seasonStats.points,
-      wins: c.seasonStats.wins,
-      losses: c.seasonStats.losses,
-      draws: c.seasonStats.draws,
-      killsFor: c.seasonStats.killsFor,
-      killsAgainst: c.seasonStats.killsAgainst,
-      cityDiff: c.seasonStats.cityDiff,
-      popDiff: c.seasonStats.popDiff,
-      decisiveGames: c.seasonStats.decisiveGames,
-      noCombatGames: c.seasonStats.noCombatGames,
-      farmsBuiltEarly: c.seasonStats.farmsBuiltEarly,
-      farmsBuiltLate: c.seasonStats.farmsBuiltLate,
-      marketsBuilt: c.seasonStats.marketsBuilt,
-      minesBuilt: c.seasonStats.minesBuilt,
-      quarriesBuilt: c.seasonStats.quarriesBuilt,
-      barracksBuilt: c.seasonStats.barracksBuilt,
-      factoriesBuilt: c.seasonStats.factoriesBuilt,
-      academiesBuilt: c.seasonStats.academiesBuilt,
-      goldMinesBuilt: c.seasonStats.goldMinesBuilt,
-    });
+    const toStanding = (c: Candidate): DivisionStanding => {
+      const s: DivisionStanding = {
+        id: c.id,
+        points: c.seasonStats.points,
+        wins: c.seasonStats.wins,
+        losses: c.seasonStats.losses,
+        draws: c.seasonStats.draws,
+        killsFor: c.seasonStats.killsFor,
+        killsAgainst: c.seasonStats.killsAgainst,
+        cityDiff: c.seasonStats.cityDiff,
+        popDiff: c.seasonStats.popDiff,
+        decisiveGames: c.seasonStats.decisiveGames,
+        noCombatGames: c.seasonStats.noCombatGames,
+        farmsBuiltEarly: c.seasonStats.farmsBuiltEarly,
+        farmsBuiltLate: c.seasonStats.farmsBuiltLate,
+        marketsBuilt: c.seasonStats.marketsBuilt,
+        minesBuilt: c.seasonStats.minesBuilt,
+        quarriesBuilt: c.seasonStats.quarriesBuilt,
+        barracksBuilt: c.seasonStats.barracksBuilt,
+        factoriesBuilt: c.seasonStats.factoriesBuilt,
+        academiesBuilt: c.seasonStats.academiesBuilt,
+        goldMinesBuilt: c.seasonStats.goldMinesBuilt,
+        params: c.params,
+      };
+      if (c.seasonStats.archetypePoints != null) s.archetypePoints = c.seasonStats.archetypePoints;
+      return s;
+    };
     const standingsA = A.map(toStanding);
     const standingsB = B.map(toStanding);
     const standingsC = C.map(toStanding);
@@ -510,10 +679,18 @@ function main() {
   const finalA = candidates.filter(c => c.division === 'A').sort(compareCandidates);
   const champion = selectChampion(finalA);
   report.champion = { id: champion.id, division: champion.division };
-  report.finalStandingsA = finalA.map(c => ({ id: c.id, points: c.seasonStats.points, wins: c.seasonStats.wins }));
+  report.finalStandingsA = finalA.map(c => ({
+    id: c.id,
+    points: c.seasonStats.points,
+    wins: c.seasonStats.wins,
+    params: c.params,
+  }));
 
+  const championScore = LEAGUE_USE_ROBUST_SELECTION ? robustScore(champion) : combinedPoints(champion);
   console.log('');
   console.log('Champion:', champion.id, '  points:', champion.seasonStats.points, '  wins:', champion.seasonStats.wins);
+  if (LEAGUE_INCLUDE_ARCHETYPES) console.log('  archetypePoints:', champion.seasonStats.archetypePoints ?? 0);
+  if (LEAGUE_USE_ROBUST_SELECTION) console.log('  robustScore:', championScore.toFixed(2));
   console.log('Promotion/relegation applied each season; bottom 2 in C replaced by mutations of elites.');
 
   const publicDir = path.join(process.cwd(), 'public');
@@ -528,6 +705,44 @@ function main() {
   const reportPath = path.join(artifactsDir, 'league-last.json');
   fs.writeFileSync(reportPath, JSON.stringify(report, null, 2), 'utf8');
   console.log('Saved league report to', reportPath);
+
+  // Champion library: append, dedupe by param distance, cap
+  const championLibraryPath = path.join(artifactsDir, 'champion-library.json');
+  type LibraryEntry = { id: string; params: AiParams; points: number; robustScore?: number; addedAt: string };
+  let library: LibraryEntry[] = [];
+  if (fs.existsSync(championLibraryPath)) {
+    try {
+      library = JSON.parse(fs.readFileSync(championLibraryPath, 'utf8')) as LibraryEntry[];
+      if (!Array.isArray(library)) library = [];
+    } catch {
+      library = [];
+    }
+  }
+  function paramDistance(a: AiParams, b: AiParams): number {
+    const ar = a as unknown as Record<string, number>;
+    const br = b as unknown as Record<string, number>;
+    const keys = ['siegeChance', 'recruitGoldThreshold', 'maxRecruitsWhenRich', 'maxRecruitsWhenPoor', 'targetDefenderWeight', 'nearestTargetDistanceRatio', 'builderRecruitChance', 'foodBufferThreshold', 'sustainableMilitaryMultiplier', 'farmFirstBias', 'farmPriorityThreshold', 'factoryUpgradePriority', 'scoutChance', 'incorporateVillageChance', 'targetPopWeight'] as const;
+    let sum = 0;
+    for (const k of keys) {
+      const va = ar[k] ?? 0;
+      const vb = br[k] ?? 0;
+      const scale = k === 'recruitGoldThreshold' || k === 'foodBufferThreshold' || k === 'farmPriorityThreshold' ? 1 / 500 : 1;
+      sum += ((va - vb) * scale) ** 2;
+    }
+    return Math.sqrt(sum);
+  }
+  const newEntry: LibraryEntry = {
+    id: champion.id,
+    params: champion.params,
+    points: champion.seasonStats.points,
+    addedAt: new Date().toISOString(),
+  };
+  if (LEAGUE_USE_ROBUST_SELECTION) newEntry.robustScore = championScore;
+  library = library.filter(e => paramDistance(e.params, champion.params) > CHAMPION_LIBRARY_PARAM_DISTANCE_THRESHOLD);
+  library.unshift(newEntry);
+  if (library.length > CHAMPION_LIBRARY_CAP) library = library.slice(0, CHAMPION_LIBRARY_CAP);
+  fs.writeFileSync(championLibraryPath, JSON.stringify(library, null, 2), 'utf8');
+  console.log('Updated champion library at', championLibraryPath);
 }
 
 main();

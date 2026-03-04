@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect, useMemo, useCallback, useRef } from 'react';
+import { useEffect, useMemo, useCallback, useRef, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { Canvas, ThreeEvent, useThree } from '@react-three/fiber';
 import { OrthographicCamera } from '@react-three/drei';
 import * as THREE from 'three';
@@ -10,6 +11,9 @@ import GameHUD from '../ui/GameHUD';
 import { useGameStore } from '@/store/useGameStore';
 import { setAiParams } from '@/lib/aiParams';
 import { axialToWorld, worldToAxial, HEX_RADIUS } from '@/types/game';
+
+/** Match scripts/train-ai.ts default (TRAIN_MAP_SIZE / TRAIN_MAP) so watch mode uses same small map. */
+const TRAIN_MAP_SIZE = 38;
 
 // ─── Scene Lighting ────────────────────────────────────────────────
 
@@ -81,11 +85,15 @@ function useCameraTarget(): [number, number, number] {
   const gameMode = useGameStore(s => s.gameMode);
 
   return useMemo(() => {
-    // Bot-vs-bot: center camera between both capitals so both are visible
-    if (gameMode === 'bot_vs_bot' && cities.length >= 2) {
-      const [x1, z1] = axialToWorld(cities[0].q, cities[0].r, HEX_RADIUS);
-      const [x2, z2] = axialToWorld(cities[1].q, cities[1].r, HEX_RADIUS);
-      return [(x1 + x2) / 2, 0, (z1 + z2) / 2];
+    // Bot-vs-bot (2 or 4): center camera on capitals so all are visible
+    if ((gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4') && cities.length >= 2) {
+      let sumX = 0, sumZ = 0;
+      for (const c of cities) {
+        const [x, z] = axialToWorld(c.q, c.r, HEX_RADIUS);
+        sumX += x;
+        sumZ += z;
+      }
+      return [sumX / cities.length, 0, sumZ / cities.length];
     }
     const humanCity = cities.find(c => c.ownerId.includes('human'));
     if (humanCity) {
@@ -118,14 +126,14 @@ function CameraZoomController() {
 
   useEffect(() => {
     const cam = camera as THREE.OrthographicCamera;
-    if (phase === 'playing' && gameMode === 'bot_vs_bot' && !botZoomSet.current) {
+    if (phase === 'playing' && (gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4') && !botZoomSet.current) {
       botZoomSet.current = true;
-      cam.zoom = 14;
+      cam.zoom = gameMode === 'bot_vs_bot_4' ? 10 : 14;
       cam.updateProjectionMatrix();
     }
     if (phase !== 'playing') botZoomSet.current = false;
 
-    if (prevPhaseRef.current === 'place_city' && phase === 'playing' && gameMode !== 'bot_vs_bot') {
+    if (prevPhaseRef.current === 'place_city' && phase === 'playing' && gameMode === 'human_vs_ai') {
       const targetZoom = 35;
       const startZoom = cam.zoom;
       const duration = 1200;
@@ -171,23 +179,46 @@ function useEscapeKey() {
 // ─── Main Scene ────────────────────────────────────────────────────
 
 export default function GameScene() {
+  const searchParams = useSearchParams();
   const generateWorld = useGameStore(s => s.generateWorld);
   const isGenerated = useGameStore(s => s.isGenerated);
+  const phase = useGameStore(s => s.phase);
   const target = useCameraTarget();
+  const [aiParamsLoadAttempted, setAiParamsLoadAttempted] = useState(false);
 
   useEscapeKey();
 
-  useEffect(() => {
-    if (!isGenerated) generateWorld();
-  }, [isGenerated, generateWorld]);
+  const watchParam = searchParams.get('watch') ?? searchParams.get('mode');
+  const watchMode = watchParam != null;
+  const watchFour = watchParam === '4';
 
-  // Load trained AI params from public/ai-params.json if present (written by npm run train-ai)
+  // Generate map: 38x38 for ?watch (2 bot), skip for ?watch=4 (4-bot generates its own 52x52)
+  useEffect(() => {
+    if (!isGenerated && !watchFour) {
+      generateWorld(watchMode ? { width: TRAIN_MAP_SIZE, height: TRAIN_MAP_SIZE } : undefined);
+    }
+  }, [isGenerated, generateWorld, watchMode, watchFour]);
+
+  // Load champion AI params from public/ai-params.json (written by npm run train-ai)
   useEffect(() => {
     fetch('/ai-params.json')
       .then(r => r.ok ? r.json() : null)
-      .then(data => { if (data) setAiParams(data); })
-      .catch(() => {});
+      .then(data => {
+        if (data) setAiParams(data);
+        setAiParamsLoadAttempted(true);
+      })
+      .catch(() => setAiParamsLoadAttempted(true));
   }, []);
+
+  // ?watch: auto-start 2-bot after map ready; ?watch=4: auto-start 4-bot (generates its own map)
+  useEffect(() => {
+    if (!aiParamsLoadAttempted || phase !== 'setup') return;
+    if (watchFour) {
+      useGameStore.getState().startFourBotVsBot();
+      return;
+    }
+    if (watchMode && isGenerated) useGameStore.getState().startBotVsBot();
+  }, [watchMode, watchFour, isGenerated, phase, aiParamsLoadAttempted]);
 
   const cameraPosition: [number, number, number] = [
     target[0] + 60, 80, target[2] + 60,

@@ -1,6 +1,6 @@
 import {
-  Tile, City, Unit, Hero,
-  VISION_RANGE, CITY_VISION_RANGE, BUILDING_VISION_RANGE, SCOUT_VISION_RANGE,
+  Tile, City, Unit, Hero, ScoutTower,
+  VISION_RANGE, CITY_VISION_RANGE, BUILDING_VISION_RANGE, SCOUT_TOWER_VISION_RANGE,
   hexDistance, tileKey,
 } from '@/types/game';
 
@@ -12,7 +12,7 @@ interface VisionSource {
 
 /**
  * Compute the set of hex keys currently visible to the given player.
- * Vision sources: units, cities, buildings, heroes.
+ * Vision sources: units, cities, buildings, heroes, scout towers.
  */
 export function computeVisibleHexes(
   playerId: string,
@@ -20,6 +20,7 @@ export function computeVisibleHexes(
   units: Unit[],
   heroes: Hero[],
   tiles: Map<string, Tile>,
+  scoutTowers: ScoutTower[] = [],
 ): Set<string> {
   const sources: VisionSource[] = [];
 
@@ -46,6 +47,13 @@ export function computeVisibleHexes(
       for (const b of c.buildings) {
         sources.push({ q: b.q, r: b.r, range: BUILDING_VISION_RANGE });
       }
+    }
+  }
+
+  // Scout towers grant SCOUT_TOWER_VISION_RANGE
+  for (const t of scoutTowers) {
+    if (t.ownerId === playerId) {
+      sources.push({ q: t.q, r: t.r, range: SCOUT_TOWER_VISION_RANGE });
     }
   }
 

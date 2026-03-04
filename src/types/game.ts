@@ -31,6 +31,8 @@ export type MapConfig = {
   provinceDensity: number;
   ruinDensity: number;
   villageDensity: number;
+  /** When true, elevation is boosted near all 4 corners so they stay land (for 4-bot maps). */
+  ensureCornerLand?: boolean;
 };
 
 export const DEFAULT_MAP_CONFIG: MapConfig = {
@@ -79,9 +81,9 @@ export type GamePhase = 'setup' | 'place_city' | 'playing' | 'victory';
 export type UIMode = 'normal' | 'move' | 'build' | 'build_mine' | 'build_quarry' | 'build_gold_mine' | 'build_road' | 'defend' | 'intercept';
 export type FoodPriority = 'civilian' | 'military';
 export type BuildingType = 'city_center' | 'farm' | 'factory' | 'barracks' | 'academy' | 'market' | 'quarry' | 'mine' | 'gold_mine';
-/** Construction site type: buildings (in city) or field-built siege (builder on hex). */
-export type ConstructionSiteType = BuildingType | 'trebuchet';
-export type UnitType = 'infantry' | 'cavalry' | 'ranged' | 'builder' | 'trebuchet' | 'battering_ram';
+/** Construction site type: buildings (in city) or field-built siege/scout (builder on hex). */
+export type ConstructionSiteType = BuildingType | 'trebuchet' | 'scout_tower';
+export type UnitType = 'infantry' | 'cavalry' | 'ranged' | 'builder' | 'trebuchet' | 'battering_ram' | 'defender';
 export type UnitStatus = 'idle' | 'moving' | 'fighting' | 'starving';
 export type ArmyStance = 'aggressive' | 'defensive' | 'passive';
 export type HeroType = 'general' | 'logistician';
@@ -208,6 +210,17 @@ export interface WallSection {
 
 /** Default HP for a new wall section (low so it must be defended). */
 export const WALL_SECTION_HP = 50;
+
+// ─── Scout Towers (field-built by builders; vision only) ───────────
+export interface ScoutTower {
+  id: string;
+  q: number;
+  r: number;
+  ownerId: string;
+}
+export const SCOUT_TOWER_VISION_RANGE = 4;
+export const SCOUT_TOWER_BP_COST = 40;
+export const SCOUT_TOWER_GOLD_COST = 5;
 
 // ─── Scout Missions ───────────────────────────────────────────────
 
@@ -354,14 +367,17 @@ export const UNEMPLOYMENT_MORALE_PENALTY_CAP = 5;
 /** Scale for productivity term in migration pull (foodProduced / this = multiplier component). */
 export const PRODUCTIVITY_NORMALIZE = 50;
 
-export const UNIT_COSTS: Record<UnitType, { gold: number }> = {
+export const UNIT_COSTS: Record<UnitType, { gold: number; iron?: number }> = {
   infantry:       { gold: 1 },
   cavalry:        { gold: 3 },
   ranged:         { gold: 2 },
   builder:        { gold: 2 },
   trebuchet:      { gold: 8 },
   battering_ram:  { gold: 6 },
+  defender:       { gold: 4, iron: 2 },
 };
+/** Defender requires L2 barracks and this much iron (from city storage). */
+export const DEFENDER_IRON_COST = 2;
 
 export const UNIT_DISPLAY_NAMES: Record<UnitType, string> = {
   infantry:       'Infantry',
@@ -370,6 +386,7 @@ export const UNIT_DISPLAY_NAMES: Record<UnitType, string> = {
   builder:        'Builder',
   trebuchet:      'Trebuchet',
   battering_ram:  'Battering Ram',
+  defender:       'Defender',
 };
 
 export const UNIT_BASE_STATS: Record<UnitType, {
@@ -377,6 +394,10 @@ export const UNIT_BASE_STATS: Record<UnitType, {
   speed: number; foodUpkeep: number; gunUpkeep: number; gunL2Upkeep?: number;
   /** Siege damage vs wall sections (trebuchet 3 hex, ram melee). */
   siegeAttack?: number;
+  /** 0–1; reduces incoming damage. */
+  damageResist?: number;
+  /** When on friendly city hex (defender only). */
+  damageResistOnCityHex?: number;
 }> = {
   infantry:       { maxHp: 100, attack: 15, range: 1, speed: 1.0, foodUpkeep: 1, gunUpkeep: 0 },
   cavalry:        { maxHp: 75,  attack: 20, range: 1, speed: 1.5, foodUpkeep: 2, gunUpkeep: 0 },
@@ -384,13 +405,16 @@ export const UNIT_BASE_STATS: Record<UnitType, {
   builder:        { maxHp: 40,  attack: 0,  range: 0, speed: 1.0, foodUpkeep: 1, gunUpkeep: 0 },
   trebuchet:      { maxHp: 60,  attack: 5,  range: 3, speed: 0.6, foodUpkeep: 2, gunUpkeep: 0, siegeAttack: 25 },
   battering_ram:  { maxHp: 120, attack: 10, range: 1, speed: 0.5, foodUpkeep: 2, gunUpkeep: 0, siegeAttack: 40 },
+  defender:       { maxHp: 130, attack: 8,  range: 1, speed: 0.9, foodUpkeep: 1, gunUpkeep: 0, damageResist: 0.25, damageResistOnCityHex: 0.4 },
 };
 
-// Level 2 unit stats (require L2 arms); siege units have no L2 variant
+// Level 2 unit stats (require L2 arms); siege and defender have no L2 variant
 export const UNIT_L2_STATS: Record<UnitType, {
   maxHp: number; attack: number; range: number;
   speed: number; foodUpkeep: number; gunUpkeep: number; gunL2Upkeep: number;
   siegeAttack?: number;
+  damageResist?: number;
+  damageResistOnCityHex?: number;
 }> = {
   infantry:       { maxHp: 120, attack: 18, range: 1, speed: 1.0, foodUpkeep: 1, gunUpkeep: 0, gunL2Upkeep: 1 },
   cavalry:        { maxHp: 90,  attack: 24, range: 1, speed: 1.5, foodUpkeep: 2, gunUpkeep: 0, gunL2Upkeep: 1 },
@@ -398,6 +422,7 @@ export const UNIT_L2_STATS: Record<UnitType, {
   builder:        { maxHp: 40,  attack: 0,  range: 0, speed: 1.0, foodUpkeep: 1, gunUpkeep: 0, gunL2Upkeep: 0 },
   trebuchet:      { maxHp: 60,  attack: 5,  range: 3, speed: 0.6, foodUpkeep: 2, gunUpkeep: 0, gunL2Upkeep: 0, siegeAttack: 25 },
   battering_ram:  { maxHp: 120, attack: 10, range: 1, speed: 0.5, foodUpkeep: 2, gunUpkeep: 0, gunL2Upkeep: 0, siegeAttack: 40 },
+  defender:       { maxHp: 130, attack: 8,  range: 1, speed: 0.9, foodUpkeep: 1, gunUpkeep: 0, gunL2Upkeep: 0, damageResist: 0.25, damageResistOnCityHex: 0.4 },
 };
 
 export const HERO_BUFFS: Record<HeroType, { label: string; desc: string }> = {
@@ -423,7 +448,7 @@ export const POP_EXPECTED_K_ALPHA = 0.25;
 /** Extra deaths per cycle when city has no food in storage (starvation) */
 export const STARVATION_DEATHS = 2;
 
-export const PLAYER_COLORS = { human: '#55aaee', ai: '#ee5555', ai2: '#eebb44' };
+export const PLAYER_COLORS = { human: '#55aaee', ai: '#ee5555', ai2: '#eebb44', ai3: '#55cc88', ai4: '#aa66dd' };
 
 // ─── Weather / Natural Disasters ──────────────────────────────────
 

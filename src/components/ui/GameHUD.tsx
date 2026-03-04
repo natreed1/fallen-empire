@@ -46,10 +46,19 @@ function SetupScreen() {
             onClick={() => useGameStore.getState().startBotVsBot()}
             className="px-8 py-3 bg-empire-dark border border-empire-gold/40 rounded-lg text-empire-parchment font-medium tracking-wide hover:bg-empire-gold/10 transition-colors"
           >
-            Watch Bot vs Bot
+            Watch 2 Bot
+          </button>
+          <button
+            type="button"
+            onClick={() => useGameStore.getState().startFourBotVsBot()}
+            className="px-8 py-3 bg-empire-dark border border-empire-gold/40 rounded-lg text-empire-parchment font-medium tracking-wide hover:bg-empire-gold/10 transition-colors"
+          >
+            Watch 4 Bot
           </button>
           <p className="text-empire-parchment/40 text-xs">
-            Bot vs Bot: two AIs fight using full features (economy, siege, scouts, villages, L2 units).
+            2 Bot: two AIs on small map. 4 Bot: four kingdoms, one per corner (52×52, land in all corners).
+            <br />
+            <span className="text-empire-gold/70">?watch</span> = 2 bot (38×38), <span className="text-empire-gold/70">?watch=4</span> = 4 bot.
           </p>
         </div>
       </div>
@@ -145,27 +154,34 @@ function PlayingHUD() {
 // ─── City Modal (opens when clicking city hex) ────────────────────────
 
 function CityModal() {
-  const getSelectedCity = useGameStore(s => s.getSelectedCity);
+  const getSelectedCityForDisplay = useGameStore(s => s.getSelectedCityForDisplay);
+  const gameMode = useGameStore(s => s.gameMode);
   const deselectAll = useGameStore(s => s.deselectAll);
-  const city = getSelectedCity();
+  const city = getSelectedCityForDisplay();
   if (!city) return null;
+
+  const isObserver = gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4';
+
+  const handleBackdropClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (e.target === e.currentTarget) deselectAll();
+  };
 
   return (
     <div
       className="absolute inset-0 flex items-center justify-center bg-black/60 pointer-events-auto z-20"
-      onClick={e => { if (e.target === e.currentTarget) deselectAll(); }}
+      onClick={handleBackdropClick}
     >
       <div
-        className="bg-empire-dark/95 border border-empire-gold/50 rounded-xl p-6 max-w-md w-full mx-4 shadow-2xl"
+        className="bg-empire-dark/95 border border-empire-gold/50 rounded-xl p-6 max-w-md w-full mx-4 shadow-2xl relative"
         onClick={e => e.stopPropagation()}
       >
-        <CityModalContent city={city} onClose={deselectAll} />
+        <CityModalContent city={city} onClose={deselectAll} isObserver={isObserver} />
       </div>
     </div>
   );
 }
 
-function CityModalContent({ city, onClose }: { city: import('@/types/game').City; onClose: () => void }) {
+function CityModalContent({ city, onClose, isObserver = false }: { city: import('@/types/game').City; onClose: () => void; isObserver?: boolean }) {
   const [showPopulationMechanics, setShowPopulationMechanics] = useState(false);
   const setFoodPriority = useGameStore(s => s.setFoodPriority);
   const setTaxRate = useGameStore(s => s.setTaxRate);
@@ -179,7 +195,8 @@ function CityModalContent({ city, onClose }: { city: import('@/types/game').City
   const harvestMult = getWeatherHarvestMultiplier(activeWeather);
   const localProd = computeCityProductionRate(city, tiles, territory, harvestMult);
   const clusters = computeTradeClusters(cities, tiles, units, territory);
-  const playerClusters = human ? clusters.get(human.id) ?? [] : [];
+  const ownerForCluster = isObserver ? players.find(p => p.id === city.ownerId) : human;
+  const playerClusters = ownerForCluster ? clusters.get(ownerForCluster.id) ?? [] : [];
   const cluster = playerClusters.find(c => c.cityIds.includes(city.id));
   const clusterTotal = cluster
     ? cluster.cities.reduce(
@@ -215,9 +232,23 @@ function CityModalContent({ city, onClose }: { city: import('@/types/game').City
           onClose={() => setShowPopulationMechanics(false)}
         />
       )}
-      <div className="flex justify-between items-center">
-        <h2 className="text-xl font-bold text-empire-gold">{city.name}</h2>
-        <button onClick={onClose} className="text-empire-parchment/50 hover:text-empire-parchment text-lg leading-none">×</button>
+      <div className="flex justify-between items-center gap-3">
+        <div className="min-w-0">
+          {isObserver && (
+            <p className="text-xs text-empire-parchment/50 uppercase tracking-wide mb-0.5">
+              Observing {players.find(p => p.id === city.ownerId)?.name ?? 'AI'}
+            </p>
+          )}
+          <h2 className="text-xl font-bold text-empire-gold truncate">{city.name}</h2>
+        </div>
+        <button
+          type="button"
+          onClick={(e) => { e.preventDefault(); e.stopPropagation(); onClose(); }}
+          className="shrink-0 w-10 h-10 flex items-center justify-center rounded-lg border border-empire-stone/40 bg-empire-stone/20 text-empire-parchment/70 hover:bg-empire-gold/20 hover:text-empire-gold hover:border-empire-gold/50 active:scale-95 text-xl font-bold leading-none transition-colors cursor-pointer select-none"
+          aria-label="Close"
+        >
+          ×
+        </button>
       </div>
       {(city.frontierCity ?? 0) > 0 && (
         <div className="px-3 py-1.5 bg-amber-900/30 border border-amber-500/50 rounded text-amber-300 text-xs font-semibold">
@@ -294,26 +325,35 @@ function CityModalContent({ city, onClose }: { city: import('@/types/game').City
           })}
         </div>
       </div>
-      <div>
-        <label className="text-xs text-empire-parchment/50 block mb-1">Food Priority</label>
-        <div className="flex gap-1">
-          {(['civilian', 'military'] as const).map(p => (
-            <button key={p} onClick={() => setFoodPriority(p)}
-              className={`flex-1 px-2 py-1 text-xs rounded border transition-colors ${
-                human?.foodPriority === p ? 'border-empire-gold/60 bg-empire-gold/20 text-empire-gold' : 'border-empire-stone/30 text-empire-parchment/50 hover:border-empire-stone/50'
-              }`}>
-              {p === 'civilian' ? 'Feed People' : 'Feed Army'}
-            </button>
-          ))}
+      {!isObserver && (
+        <>
+          <div>
+            <label className="text-xs text-empire-parchment/50 block mb-1">Food Priority</label>
+            <div className="flex gap-1">
+              {(['civilian', 'military'] as const).map(p => (
+                <button key={p} onClick={() => setFoodPriority(p)}
+                  className={`flex-1 px-2 py-1 text-xs rounded border transition-colors ${
+                    human?.foodPriority === p ? 'border-empire-gold/60 bg-empire-gold/20 text-empire-gold' : 'border-empire-stone/30 text-empire-parchment/50 hover:border-empire-stone/50'
+                  }`}>
+                  {p === 'civilian' ? 'Feed People' : 'Feed Army'}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div>
+            <label className="text-xs text-empire-parchment/50 block mb-1">Tax Rate: {Math.round((human?.taxRate ?? 0) * 100)}%</label>
+            <input type="range" min="0" max="100" step="10"
+              value={(human?.taxRate ?? 0.3) * 100}
+              onChange={e => setTaxRate(Number(e.target.value) / 100)}
+              className="w-full h-1 bg-empire-stone/30 rounded-lg appearance-none cursor-pointer accent-empire-gold" />
+          </div>
+        </>
+      )}
+      {isObserver && (
+        <div className="text-xs text-empire-parchment/50 border-t border-empire-stone/30 pt-3">
+          Tax: {Math.round((players.find(p => p.id === city.ownerId)?.taxRate ?? 0.3) * 100)}% · Food: {(players.find(p => p.id === city.ownerId)?.foodPriority ?? 'military').replace('_', ' ')}
         </div>
-      </div>
-      <div>
-        <label className="text-xs text-empire-parchment/50 block mb-1">Tax Rate: {Math.round((human?.taxRate ?? 0) * 100)}%</label>
-        <input type="range" min="0" max="100" step="10"
-          value={(human?.taxRate ?? 0.3) * 100}
-          onChange={e => setTaxRate(Number(e.target.value) / 100)}
-          className="w-full h-1 bg-empire-stone/30 rounded-lg appearance-none cursor-pointer accent-empire-gold" />
-      </div>
+      )}
     </div>
   );
 }
@@ -541,12 +581,20 @@ function TopBar() {
   const uiMode = useGameStore(s => s.uiMode);
   const tiles = useGameStore(s => s.tiles);
   const activeWeather = useGameStore(s => s.activeWeather);
+  const gameMode = useGameStore(s => s.gameMode);
+  const getSelectedCityForDisplay = useGameStore(s => s.getSelectedCityForDisplay);
+
   const human = players.find(p => p.isHuman);
-  const humanCities = cities.filter(c => c.ownerId === human?.id);
+  const isObserverMode = gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4';
+  const observedCity = isObserverMode ? getSelectedCityForDisplay() : null;
+  const displayPlayer = isObserverMode
+    ? (observedCity ? players.find(p => p.id === observedCity.ownerId) : players[0]) ?? null
+    : human ?? null;
+  const humanCities = cities.filter(c => c.ownerId === (displayPlayer?.id ?? human?.id));
 
   const clusters = computeTradeClusters(cities, tiles, units, territory);
-  const humanClusters = human ? clusters.get(human.id) ?? [] : [];
-  // Show resources from ALL human cities — isolated cities' production was hidden when using capital cluster only
+  const humanClusters = displayPlayer ? clusters.get(displayPlayer.id) ?? [] : [];
+  // Show resources from ALL display player cities — isolated cities' production was hidden when using capital cluster only
   const citiesForResources = humanCities;
   const networkCount = humanClusters.filter(c => c.cities.length > 1).length;
   const isolatedCount = humanClusters.filter(c => c.cities.length === 1).length;
@@ -567,7 +615,7 @@ function TopBar() {
   const totalStone = citiesForResources.reduce((s, c) => s + (c.storage.stone ?? 0), 0);
   const totalIron = citiesForResources.reduce((s, c) => s + (c.storage.iron ?? 0), 0);
   const totalGunsL2 = citiesForResources.reduce((s, c) => s + (c.storage.gunsL2 ?? 0), 0);
-  const totalUnits = units.filter(u => u.ownerId === human?.id && u.hp > 0).length;
+  const totalUnits = units.filter(u => u.ownerId === (displayPlayer?.id ?? human?.id) && u.hp > 0).length;
 
   const harvestMult = getWeatherHarvestMultiplier(activeWeather);
   let grainPerCycle = 0;
@@ -581,7 +629,7 @@ function TopBar() {
     armsPerCycle += prod.guns;
     stonePerCycle += prod.stone;
     ironPerCycle += prod.iron;
-    const taxRate = human?.taxRate ?? 0.3;
+    const taxRate = (displayPlayer ?? human)?.taxRate ?? 0.3;
     const baseTax = Math.floor(city.population * taxRate);
     const marketCount = city.buildings.filter(b => b.type === 'market').length;
     const moraleMod = city.morale / 100;
@@ -594,10 +642,11 @@ function TopBar() {
   // Military upkeep: food + guns per supplied cluster (upkeepTick)
   let militaryFoodDemand = 0;
   let militaryGunDemand = 0;
-  const humanUnits = units.filter(u => u.ownerId === human?.id && u.hp > 0);
+  const displayPlayerId = displayPlayer?.id ?? human?.id ?? '';
+  const humanUnits = units.filter(u => u.ownerId === displayPlayerId && u.hp > 0);
   const unitsByCluster = new Map<string | null, typeof humanUnits>();
   for (const u of humanUnits) {
-    const key = getSupplyingClusterKey(u, humanClusters, tiles, units, human?.id ?? '');
+    const key = getSupplyingClusterKey(u, humanClusters, tiles, units, displayPlayerId);
     if (!unitsByCluster.has(key ?? null)) unitsByCluster.set(key ?? null, []);
     unitsByCluster.get(key ?? null)!.push(u);
   }
@@ -636,6 +685,9 @@ function TopBar() {
         <span className={`font-mono font-bold text-base ${urgent ? 'text-red-400 animate-pulse' : 'text-empire-parchment'}`}>
           {formatTime(gameTimeRemaining)}
         </span>
+        {(gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4') && displayPlayer && (
+          <span className="text-empire-gold/80 text-xs font-medium">Observing: {displayPlayer.name}</span>
+        )}
         <div className="w-px h-5 bg-empire-stone/30" />
 
         <div className="flex items-center gap-1.5">
@@ -649,7 +701,7 @@ function TopBar() {
         {/* Gold */}
         <div className="flex items-center gap-1.5">
           <span className="text-empire-parchment/50 text-xs">Gold</span>
-          <span className="text-yellow-400 font-bold text-xs">{human?.gold ?? 0}</span>
+          <span className="text-yellow-400 font-bold text-xs">{(displayPlayer ?? human)?.gold ?? 0}</span>
           <span className="text-yellow-300/70 text-[10px]">+{goldPerCycle}/c</span>
         </div>
         <div className="w-px h-5 bg-empire-stone/30" />

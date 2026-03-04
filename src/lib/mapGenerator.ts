@@ -164,6 +164,21 @@ function sampleElevation(
   const falloff = 1.0 - Math.pow(distFromCenter, 1.8);
   e = e * 0.7 + falloff * 0.3;
 
+  // Ensure land in all 4 corners (for 4-bot maps)
+  if (config.ensureCornerLand) {
+    const w = config.width;
+    const h = config.height;
+    const cornerRadius = Math.min(14, Math.floor(Math.min(w, h) * 0.22));
+    const corners: [number, number][] = [[0, 0], [w - 1, 0], [0, h - 1], [w - 1, h - 1]];
+    for (const [cq, cr] of corners) {
+      const d = hexDistance(q, r, cq, cr);
+      if (d <= cornerRadius) {
+        const boost = 0.25 * (1 - d / cornerRadius);
+        e = Math.max(e, -0.05 + boost);
+      }
+    }
+  }
+
   return Math.max(-1, Math.min(1, e));
 }
 

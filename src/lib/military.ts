@@ -3,7 +3,6 @@ import {
   UNIT_BASE_STATS, UNIT_L2_STATS, ROAD_SPEED_BONUS,
   hexDistance, hexNeighbors, tileKey, generateId,
   RETREAT_DELAY_MS, ASSAULT_ATTACK_DEBUFF,
-  SUPPLY_VICINITY_RADIUS,
 } from '@/types/game';
 import { getUnitAttack, awardXp } from './combat';
 import { computeTradeClusters, getSupplyingClusterKey, TradeCluster } from '@/lib/logistics';
@@ -76,18 +75,9 @@ export function movementTick(
       continue;
     }
 
-    // Status/supply gating: if unit is out of supply, do not advance further from any friendly city (so they can be re-tasked or retreat)
-    const friendlyCities = cities.filter(c => c.ownerId === leader.ownerId);
-    const distToNearestNow = friendlyCities.length > 0
-      ? Math.min(...friendlyCities.map(c => hexDistance(leader.q, leader.r, c.q, c.r)))
-      : 0;
-    const distToNearestAfter = friendlyCities.length > 0
-      ? Math.min(...friendlyCities.map(c => hexDistance(next[0], next[1], c.q, c.r)))
-      : 0;
-    if (distToNearestNow > SUPPLY_VICINITY_RADIUS && distToNearestAfter > distToNearestNow) {
-      for (const u of army) { u.status = 'idle'; u.targetQ = undefined; u.targetR = undefined; }
-      continue;
-    }
+    // Allow movement toward target even when out of supply (attack/expand); upkeepTick still applies HP loss for unsupplied units.
+    // Previously we idled units here when beyond SUPPLY_VICINITY_RADIUS and the next step was further from any friendly city,
+    // which stopped armies from ever reaching the enemy on 38x38 (enemy ~30+ hexes away, radius 24).
 
     const enemiesAtNext = units.some(u => u.q === next[0] && u.r === next[1] && u.ownerId !== leader.ownerId && u.hp > 0);
     if (enemiesAtNext) {
