@@ -49,6 +49,8 @@ export function computeTradeClusters(
   for (const [playerId, playerCities] of byPlayer) {
     const clusters: TradeCluster[] = [];
     const assigned = new Set<string>();
+    const cityByHex = new Map<string, City>();
+    for (const c of playerCities) cityByHex.set(tileKey(c.q, c.r), c);
 
     for (const startCity of playerCities) {
       if (assigned.has(startCity.id)) continue;
@@ -65,7 +67,7 @@ export function computeTradeClusters(
         const tile = tiles.get(key);
         if (!tile || tile.biome === 'water') continue;
 
-        const cityHere = playerCities.find(c => c.q === q && c.r === r);
+        const cityHere = cityByHex.get(key);
         if (cityHere) {
           clusterCities.push(cityHere);
           assigned.add(cityHere.id);

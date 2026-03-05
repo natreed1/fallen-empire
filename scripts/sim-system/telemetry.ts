@@ -1,6 +1,6 @@
 /**
  * Automated telemetry and rollback triggers.
- * Track draw rate, starvation-lock frequency, decisiveness, holdout delta, lineage concentration.
+ * Track draw rate, total-starvation abort frequency, decisiveness, holdout delta, lineage concentration.
  * If thresholds regress, auto-rollback to last stable checkpoint.
  */
 
@@ -19,17 +19,17 @@ export function buildTelemetrySnapshot(
   const nonAnchor = agents.filter(a => !a.isAnchor);
   let totalGames = 0;
   let draws = 0;
-  let starvationLocks = 0;
+  let totalStarvationCount = 0;
   let decisive = 0;
   for (const a of nonAnchor) {
     const g = a.wins + a.losses + a.draws;
     totalGames += g;
     draws += a.draws;
-    starvationLocks += a.starvationLockGames;
+    totalStarvationCount += a.totalStarvationGames;
     decisive += a.decisiveGames;
   }
   const drawRate = totalGames > 0 ? draws / totalGames : 0;
-  const starvationLockRate = totalGames > 0 ? starvationLocks / totalGames : 0;
+  const totalStarvationRate = totalGames > 0 ? totalStarvationCount / totalGames : 0;
   const decisiveness = totalGames > 0 ? decisive / totalGames : 0;
 
   let holdoutDelta: number | undefined;
@@ -45,7 +45,7 @@ export function buildTelemetrySnapshot(
   return {
     season,
     drawRate,
-    starvationLockRate,
+    totalStarvationRate,
     decisiveness,
     holdoutDelta,
     lineageConcentration,
@@ -58,7 +58,7 @@ export function shouldRollback(
   config: SimSystemConfig,
 ): boolean {
   if (snapshot.drawRate > config.maxDrawRateTrigger) return true;
-  if (snapshot.starvationLockRate > config.maxStarvationLockRateTrigger) return true;
+  if (snapshot.totalStarvationRate > config.maxTotalStarvationRateTrigger) return true;
   if (snapshot.decisiveness < config.minDecisivenessTrigger) return true;
   if (snapshot.holdoutDelta != null && snapshot.holdoutDelta < config.maxHoldoutDeltaRegressTrigger) return true;
   if (snapshot.lineageConcentration > config.maxLineageConcentrationTrigger) return true;

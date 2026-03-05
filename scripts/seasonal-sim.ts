@@ -60,7 +60,7 @@ function createInitialAgents(config: ReturnType<typeof loadSimSystemConfig>): Si
       draws: 0,
       totalKills: 0,
       noCombatGames: 0,
-      starvationLockGames: 0,
+      totalStarvationGames: 0,
       decisiveGames: 0,
     });
   }
@@ -79,7 +79,7 @@ function createInitialAgents(config: ReturnType<typeof loadSimSystemConfig>): Si
       draws: 0,
       totalKills: 0,
       noCombatGames: 0,
-      starvationLockGames: 0,
+      totalStarvationGames: 0,
       decisiveGames: 0,
     });
   }
@@ -98,7 +98,7 @@ function createInitialAgents(config: ReturnType<typeof loadSimSystemConfig>): Si
       draws: 0,
       totalKills: 0,
       noCombatGames: 0,
-      starvationLockGames: 0,
+      totalStarvationGames: 0,
       decisiveGames: 0,
     });
   }
@@ -126,7 +126,7 @@ function loadCheckpoint(): SimCheckpoint | null {
   }
 }
 
-function appendTelemetry(snapshot: { season: number; drawRate: number; starvationLockRate: number; decisiveness: number; lineageConcentration: number }): void {
+function appendTelemetry(snapshot: { season: number; drawRate: number; totalStarvationRate: number; decisiveness: number; lineageConcentration: number }): void {
   ensureArtifactsDir();
   fs.appendFileSync(TELEMETRY_PATH, JSON.stringify(snapshot) + '\n', 'utf8');
 }
@@ -169,7 +169,7 @@ function main(): void {
       holdoutResult = runHoldoutSuite(agents, season, config);
       const keys = Object.keys(holdoutResult.scoresByAgentId);
       currentHoldoutMean = keys.length ? keys.reduce((s, id) => s + holdoutResult!.scoresByAgentId[id], 0) / keys.length : 0;
-      console.log(`  Holdout: drawRate=${(holdoutResult.drawRate * 100).toFixed(1)}% decisiveness=${(holdoutResult.decisiveness * 100).toFixed(1)}%`);
+      console.log(`  Holdout: drawRate=${(holdoutResult.drawRate * 100).toFixed(1)}% totalStarvation=${(holdoutResult.totalStarvationRate * 100).toFixed(1)}% decisiveness=${(holdoutResult.decisiveness * 100).toFixed(1)}%`);
     }
     const snapshot = buildTelemetrySnapshot(season, agents, holdoutResult, lastHoldoutMean);
     if (currentHoldoutMean != null) lastHoldoutMean = currentHoldoutMean;

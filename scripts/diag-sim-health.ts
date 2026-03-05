@@ -42,6 +42,7 @@ function main() {
   let totalUnitsAtEnd = 0;
   let draws = 0;
   let gamesWithAllStarvingLock = 0;
+  let gamesWithTotalStarvationAbort = 0;
   const firstAnyStarvation: number[] = [];
   const firstAllStarving: number[] = [];
   const firstFoodZeroAi1: number[] = [];
@@ -72,6 +73,7 @@ function main() {
     totalUnitsAtEnd += diagnostics.unitsAtEnd;
     if (winner === null) draws++;
     if (diagnostics.firstCycleAllStarving != null) gamesWithAllStarvingLock++;
+    if (diagnostics.totalStarvationAbort) gamesWithTotalStarvationAbort++;
     if (diagnostics.firstCycleAnyStarvation != null) firstAnyStarvation.push(diagnostics.firstCycleAnyStarvation);
     if (diagnostics.firstCycleAllStarving != null) firstAllStarving.push(diagnostics.firstCycleAllStarving);
     if (diagnostics.firstCycleFoodZeroAi1 != null) firstFoodZeroAi1.push(diagnostics.firstCycleFoodZeroAi1);
@@ -107,7 +109,9 @@ function main() {
   console.log(`  total_kills: ${totalKillsAll}`);
   console.log(`  avg_units_at_end: ${avgUnits.toFixed(1)}`);
   console.log(`  draw_rate_pct: ${drawRate.toFixed(1)} (${draws}/${n})`);
+  const totalStarvationAbortFreq = (gamesWithTotalStarvationAbort / n) * 100;
   console.log(`  starvation_lock_frequency_pct: ${starvationLockFreq.toFixed(1)} (${gamesWithAllStarvingLock}/${n} games with all-starving)`);
+  console.log(`  total_starvation_abort_frequency_pct: ${totalStarvationAbortFreq.toFixed(1)} (${gamesWithTotalStarvationAbort}/${n} games aborted both irrecoverable)`);
   console.log(`  final_pop_min: ${minPop}`);
   console.log(`  final_pop_median: ${medianPop}`);
   console.log(`  builds_per_game_avg: farms_early=${(sumFarmsEarly / n).toFixed(1)} farms_late=${(sumFarmsLate / n).toFixed(1)} markets=${(sumMarkets / n).toFixed(1)} mines=${(sumMines / n).toFixed(1)} quarries=${(sumQuarries / n).toFixed(1)} barracks=${(sumBarracks / n).toFixed(1)} factories=${(sumFactories / n).toFixed(1)} academies=${(sumAcademies / n).toFixed(1)} gold_mines=${(sumGoldMines / n).toFixed(1)}`);

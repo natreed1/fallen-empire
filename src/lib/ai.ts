@@ -349,25 +349,26 @@ export function planAiTurn(
       }
     }
 
-    // Recruit military: food-aware gating + sustainable army cap to avoid starvation lock in headless sims
+    // Recruit military: hard execution-level food control (maxSustainableMilitary cap, foodBufferThreshold hard gate)
     const barracks = city.buildings.find(b => b.type === 'barracks');
     const barracksLvl = barracks ? (barracks.level ?? 1) : 1;
     const hasGunsL2 = (city.storage.gunsL2 ?? 0) >= 1;
     const foodThreshold = params.foodBufferThreshold ?? 10;
-    const sustainableArmyCap = Math.max(0, Math.floor(foodStats.maxSustainableMilitary * (params.sustainableMilitaryMultiplier ?? 1)));
+    // Hard cap: never exceed food-sustainable military; multiplier can only reduce cap (e.g. 0.8 = recruit up to 80%)
+    const sustainableArmyCap = Math.max(0, Math.floor(foodStats.maxSustainableMilitary * Math.min(1, params.sustainableMilitaryMultiplier ?? 1)));
     if (hasBarracks && city.population > 3) {
       const goldBasedMax = goldBudget > params.recruitGoldThreshold ? params.maxRecruitsWhenRich : params.maxRecruitsWhenPoor;
       let maxRecruits = goldBasedMax;
       if (foodStats.surplus < 0) maxRecruits = 0;
+      else if (foodStats.surplus < foodThreshold) maxRecruits = 0; // hard: no recruits when surplus below threshold
       else if (militaryCount >= sustainableArmyCap) maxRecruits = 0;
-      else if (foodStats.surplus < foodThreshold) maxRecruits = Math.min(maxRecruits, 1);
       maxRecruits = Math.min(maxRecruits, Math.max(0, sustainableArmyCap - militaryCount));
 
       const unitChoices: UnitType[] = barracksLvl >= 2
         ? ['infantry', 'infantry', 'cavalry', 'ranged', 'defender']
         : ['infantry', 'infantry', 'cavalry', 'ranged'];
       const siegeChoices: UnitType[] = ['trebuchet', 'battering_ram'];
-      const allowSiege = foodStats.surplus >= foodThreshold;
+      const allowSiege = foodStats.surplus >= foodThreshold; // hard: siege only when surplus >= threshold
       let stoneBudget = city.storage.stone ?? 0;
       let ironBudget = city.storage.iron ?? 0;
       for (let i = 0; i < maxRecruits; i++) {
@@ -412,11 +413,10 @@ export function planAiTurn(
       }
     }
 
-    // Recruit civilian: builders for roads, out-of-territory mines, and field trebuchets
-    if (hasAcademy && city.population > 5) {
+    // Recruit civilian: builders (hard: only when surplus >= foodBufferThreshold)
+    if (hasAcademy && city.population > 5 && foodStats.surplus >= foodThreshold) {
       const cost = UNIT_COSTS.builder;
-      const foodThreshold = params.foodBufferThreshold ?? 10;
-      const goingForSiege = hasBarracks && foodStats.surplus >= foodThreshold && (params.siegeChance ?? 0) >= 0.05;
+      const goingForSiege = hasBarracks && (params.siegeChance ?? 0) >= 0.05;
       const needBuildersForMinesOrSiege =
         (toBuild === 'quarry' || toBuild === 'mine' || toBuild === 'gold_mine') || goingForSiege;
       const boost = needBuildersForMinesOrSiege ? (params.builderRecruitForMinesAndSiege ?? 0) : 0;

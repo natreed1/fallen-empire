@@ -11,12 +11,12 @@ import type { SimSystemConfig } from './config';
 import { robustnessScore } from './scoring';
 import { maxLineageConcentration } from './lineage';
 
-/** Tier C gate: economy/survival — not in starvation lock in majority of games. */
+/** Tier C gate: economy/survival — not in total-starvation abort in majority of games. */
 export function passesTierCGate(agent: SimAgent, _config: SimSystemConfig): boolean {
   const total = agent.wins + agent.losses + agent.draws;
   if (total === 0) return true;
-  const starvationRate = agent.starvationLockGames / total;
-  return starvationRate <= 0.5;
+  const totalStarvationRate = agent.totalStarvationGames / total;
+  return totalStarvationRate <= 0.5;
 }
 
 /** Tier B gate: combat proficiency — has wins and some decisive/combat games. */

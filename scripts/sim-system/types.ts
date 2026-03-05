@@ -26,7 +26,7 @@ export type SimAgent = {
   draws: number;
   totalKills: number;
   noCombatGames: number;
-  starvationLockGames: number;
+  totalStarvationGames: number;
   decisiveGames: number;
 };
 
@@ -60,7 +60,7 @@ export type HoldoutResult = {
   scoresByAgentId: Record<string, number>;
   /** Aggregate: draw rate, starvation rate, etc. */
   drawRate: number;
-  starvationLockRate: number;
+  totalStarvationRate: number;
   decisiveness: number; // fraction of games with a winner
 }
 
@@ -68,7 +68,7 @@ export type HoldoutResult = {
 export type TelemetrySnapshot = {
   season: number;
   drawRate: number;
-  starvationLockRate: number;
+  totalStarvationRate: number;
   decisiveness: number;
   /** Holdout delta vs previous run (if any). */
   holdoutDelta?: number;

@@ -156,6 +156,7 @@ function PlayingHUD() {
       <SupplyClusterSidePanel />
       <SupplyViewPanel />
       <MoveConfirmPopup />
+      <CombatPopup />
       <NotificationLog />
     </>
   );
@@ -494,6 +495,51 @@ function DroughtParticles() {
   );
 }
 
+// ─── Combat Popup (retreat from battle) ─────────────────────────────
+
+function CombatPopup() {
+  const units = useGameStore(s => s.units);
+  const setRetreatStack = useGameStore(s => s.setRetreatStack);
+  const gameMode = useGameStore(s => s.gameMode);
+
+  const fightingUnits = units.filter(
+    u => u.ownerId.includes('human') && u.hp > 0 && u.status === 'fighting'
+  );
+  const fightingHexKeys = [...new Set(fightingUnits.map(u => tileKey(u.q, u.r)))];
+  const fightingHexes = fightingHexKeys.map(key => {
+    const [q, r] = key.split(',').map(Number);
+    const count = fightingUnits.filter(u => u.q === q && u.r === r).length;
+    return { q, r, count };
+  });
+
+  if (fightingHexes.length === 0 || gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4') return null;
+
+  return (
+    <div className="absolute top-24 left-1/2 -translate-x-1/2 pointer-events-auto z-20">
+      <div className="bg-empire-dark/95 border border-red-500/60 rounded-lg px-5 py-4 shadow-xl min-w-[260px]">
+        <p className="text-red-400 font-bold tracking-wide text-sm mb-3">COMBAT</p>
+        <p className="text-empire-parchment/60 text-xs mb-3">Your units are in combat. Retreat to disengage (2s delay).</p>
+        <div className="space-y-2">
+          {fightingHexes.map(({ q, r, count }) => (
+            <div key={`${q},${r}`} className="flex items-center justify-between gap-3 py-1.5 px-2 rounded bg-empire-stone/20">
+              <span className="text-empire-parchment text-xs">
+                ({q}, {r}) — {count} unit{count !== 1 ? 's' : ''}
+              </span>
+              <button
+                type="button"
+                onClick={() => setRetreatStack(q, r)}
+                className="px-3 py-1.5 text-xs font-bold rounded border border-amber-600/50 bg-amber-950/30 text-amber-400 hover:bg-amber-900/40 transition-colors"
+              >
+                Retreat
+              </button>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Move Confirmation Popup ──────────────────────────────────────
 
 function MoveConfirmPopup() {
@@ -593,6 +639,8 @@ function TopBar() {
   const activeWeather = useGameStore(s => s.activeWeather);
   const gameMode = useGameStore(s => s.gameMode);
   const getSelectedCityForDisplay = useGameStore(s => s.getSelectedCityForDisplay);
+  const pendingTacticalOrders = useGameStore(s => s.pendingTacticalOrders);
+  const openTacticalMode = useGameStore(s => s.openTacticalMode);
 
   const human = players.find(p => p.isHuman);
   const isObserverMode = gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4';
@@ -808,8 +856,20 @@ function TopBar() {
         >
           Workflow
         </Link>
-        {uiMode === 'move' && (
+        {pendingTacticalOrders !== null && (
+          <span className="text-xs text-empire-gold bg-empire-gold/10 px-2 py-1 rounded">Tactical — Assign orders then Confirm</span>
+        )}
+        {uiMode === 'move' && pendingTacticalOrders === null && (
           <span className="text-xs text-green-400 bg-green-400/10 px-2 py-1 rounded">MOVE — Click destination</span>
+        )}
+        {!isObserverMode && (
+          <button
+            type="button"
+            onClick={openTacticalMode}
+            className="text-[10px] uppercase text-empire-gold/90 hover:text-empire-gold border border-empire-gold/40 hover:border-empire-gold/60 px-2 py-1 rounded transition-colors"
+          >
+            Tactical
+          </button>
         )}
         <div className="flex items-center gap-2">
           <span className="text-[10px] text-empire-parchment/40 uppercase">Next cycle</span>
@@ -835,10 +895,170 @@ function Stat({ label, value, color = 'text-empire-parchment' }: { label: string
   );
 }
 
+// ─── Tactical Panel (batch orders for all stacks) ───────────────────
+
+function TacticalPanel() {
+  const units = useGameStore(s => s.units);
+  const cities = useGameStore(s => s.cities);
+  const pendingTacticalOrders = useGameStore(s => s.pendingTacticalOrders);
+  const assigningTacticalForStack = useGameStore(s => s.assigningTacticalForStack);
+  const setTacticalOrder = useGameStore(s => s.setTacticalOrder);
+  const startTacticalMoveForStack = useGameStore(s => s.startTacticalMoveForStack);
+  const confirmTacticalOrders = useGameStore(s => s.confirmTacticalOrders);
+  const cancelTacticalMode = useGameStore(s => s.cancelTacticalMode);
+
+  const humanStacks = (() => {
+    const byKey: Record<string, { q: number; r: number; units: import('@/types/game').Unit[] }> = {};
+    for (const u of units) {
+      if (u.ownerId !== 'player_human' || u.hp <= 0) continue;
+      const key = tileKey(u.q, u.r);
+      if (!byKey[key]) byKey[key] = { q: u.q, r: u.r, units: [] };
+      byKey[key].units.push(u);
+    }
+    return Object.values(byKey);
+  })();
+
+  const friendlyCities = cities.filter(c => c.ownerId === 'player_human');
+
+  return (
+    <div className="absolute top-14 right-2 w-80 pointer-events-auto max-h-[85vh] overflow-y-auto">
+      <div className="bg-empire-dark/95 border border-empire-gold/40 rounded-lg p-3 space-y-3">
+        <div className="flex justify-between items-center">
+          <h3 className="text-empire-gold font-bold text-sm">Tactical Orders</h3>
+          <button
+            type="button"
+            onClick={cancelTacticalMode}
+            className="w-8 h-8 flex items-center justify-center rounded text-empire-parchment/50 hover:text-empire-parchment hover:bg-empire-stone/20 text-lg leading-none"
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </div>
+        <p className="text-empire-parchment/50 text-[10px]">
+          Assign Move, Defend, or Intercept per stack. Then Confirm to execute all.
+        </p>
+
+        {assigningTacticalForStack && (
+          <div className="px-2 py-1.5 bg-amber-900/30 border border-amber-500/40 rounded text-xs text-amber-300">
+            Click map to choose destination for this stack.
+          </div>
+        )}
+
+        <div className="space-y-2 max-h-60 overflow-y-auto">
+          {humanStacks.map(({ q, r, units: stackUnits }) => {
+            const stackKey = tileKey(q, r);
+            const order = pendingTacticalOrders?.[stackKey];
+            const isAssigning = assigningTacticalForStack === stackKey;
+            const counts: Record<string, number> = {};
+            let status = 'idle';
+            for (const u of stackUnits) {
+              counts[u.type] = (counts[u.type] ?? 0) + 1;
+              if (u.status === 'fighting') status = 'fighting';
+              else if (u.status === 'moving' && status !== 'fighting') status = 'moving';
+            }
+            const comp = Object.entries(counts)
+              .map(([t, n]) => `${n} ${t.slice(0, 3)}`)
+              .join(', ');
+            return (
+              <div
+                key={stackKey}
+                className={`rounded border p-2 space-y-1.5 ${isAssigning ? 'border-amber-500/60 bg-amber-900/20' : 'border-empire-stone/30 bg-empire-stone/10'}`}
+              >
+                <div className="flex justify-between items-start gap-2">
+                  <div className="text-xs">
+                    <span className="text-empire-parchment font-medium">({q}, {r})</span>
+                    <span className="text-empire-parchment/50 ml-1">— {stackUnits.length} unit{stackUnits.length !== 1 ? 's' : ''}</span>
+                    <div className="text-[10px] text-empire-parchment/60 truncate" title={comp}>{comp}</div>
+                    <span className={`text-[10px] ${status === 'fighting' ? 'text-red-400' : status === 'moving' ? 'text-green-400' : 'text-empire-parchment/50'}`}>
+                      {status}
+                    </span>
+                  </div>
+                </div>
+                {order && (
+                  <div className="text-[10px] text-empire-gold/80">
+                    {order.type === 'defend' && order.cityId
+                      ? `Defend ${friendlyCities.find(c => c.id === order.cityId)?.name ?? 'city'}`
+                      : order.type === 'move' || order.type === 'intercept'
+                        ? `→ (${order.toQ}, ${order.toR})`
+                        : ''}
+                  </div>
+                )}
+                <div className="flex flex-wrap gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setTacticalOrder(stackKey, null)}
+                    className="px-1.5 py-0.5 text-[10px] rounded border border-empire-stone/40 text-empire-parchment/70 hover:bg-empire-stone/20"
+                  >
+                    None
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => startTacticalMoveForStack(stackKey)}
+                    disabled={!!assigningTacticalForStack}
+                    className="px-1.5 py-0.5 text-[10px] rounded border border-green-500/40 text-green-300 hover:bg-green-900/30 disabled:opacity-50"
+                  >
+                    Move
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => startTacticalMoveForStack(stackKey, 'intercept')}
+                    disabled={!!assigningTacticalForStack}
+                    className="px-1.5 py-0.5 text-[10px] rounded border border-amber-500/40 text-amber-300 hover:bg-amber-900/30 disabled:opacity-50"
+                  >
+                    Intercept
+                  </button>
+                  {friendlyCities.length > 0 && (
+                    <select
+                      className="px-1.5 py-0.5 text-[10px] rounded border border-blue-500/40 bg-empire-dark text-blue-300 focus:outline-none"
+                      value={order?.type === 'defend' ? order.cityId ?? '' : ''}
+                      onChange={(e) => {
+                        const cityId = e.target.value;
+                        if (cityId) setTacticalOrder(stackKey, { type: 'defend', cityId });
+                        else setTacticalOrder(stackKey, null);
+                      }}
+                    >
+                      <option value="">Defend...</option>
+                      {friendlyCities.map(c => (
+                        <option key={c.id} value={c.id}>{c.name}</option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {humanStacks.length === 0 && (
+          <p className="text-empire-parchment/50 text-xs">No units on the map.</p>
+        )}
+
+        <div className="flex gap-2 pt-2 border-t border-empire-stone/30">
+          <button
+            type="button"
+            onClick={confirmTacticalOrders}
+            className="flex-1 px-3 py-2 text-xs font-bold rounded border border-green-500/50 bg-green-900/30 text-green-300 hover:bg-green-800/40"
+          >
+            Confirm orders
+          </button>
+          <button
+            type="button"
+            onClick={cancelTacticalMode}
+            className="px-3 py-2 text-xs font-bold rounded border border-empire-stone/40 text-empire-parchment/80 hover:bg-empire-stone/20"
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Side Panel ────────────────────────────────────────────────────
 
 function SidePanel() {
   const selectedHex = useGameStore(s => s.selectedHex);
+  const pendingTacticalOrders = useGameStore(s => s.pendingTacticalOrders);
   const uiMode = useGameStore(s => s.uiMode);
   const allUnits = useGameStore(s => s.units);
   const players = useGameStore(s => s.players);
@@ -874,6 +1094,7 @@ function SidePanel() {
   const sendScout = useGameStore(s => s.sendScout);
   const deselectAll = useGameStore(s => s.deselectAll);
 
+  if (pendingTacticalOrders !== null) return <TacticalPanel />;
   if (!selectedHex) return null;
 
   const city = getSelectedCity();

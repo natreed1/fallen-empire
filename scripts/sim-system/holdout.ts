@@ -62,8 +62,8 @@ export function runHoldoutSuite(
 
       totalDraws += (asAi1.winner === null ? 1 : 0) + (asAi2.winner === null ? 1 : 0);
       totalDecisive += (asAi1.winner !== null ? 1 : 0) + (asAi2.winner !== null ? 1 : 0);
-      if (asAi1.diagnostics.firstCycleAllStarving != null) totalStarvation++;
-      if (asAi2.diagnostics.firstCycleAllStarving != null) totalStarvation++;
+      if (asAi1.diagnostics.totalStarvationAbort) totalStarvation++;
+      if (asAi2.diagnostics.totalStarvationAbort) totalStarvation++;
       totalGames += 2;
     }
   }
@@ -77,7 +77,7 @@ export function runHoldoutSuite(
     season,
     scoresByAgentId: scoresByAgentIdMean,
     drawRate: totalGames > 0 ? totalDraws / totalGames : 0,
-    starvationLockRate: totalGames > 0 ? totalStarvation / totalGames : 0,
+    totalStarvationRate: totalGames > 0 ? totalStarvation / totalGames : 0,
     decisiveness: totalGames > 0 ? totalDecisive / totalGames : 0,
   };
 }

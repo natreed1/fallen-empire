@@ -29,7 +29,7 @@ const SCENARIO_MIX = parseScenarioMix(process.env.LEAGUE_SCENARIO_MIX || 'balanc
 const MIN_GAMES_WITH_DEATHS = 1;
 const MAX_DRAW_RATE = 0.95;
 const MIN_OWNER_FLIP_RATE = 0.01;
-const MAX_STARVATION_LOCK_RATE = 0.7;
+const MAX_TOTAL_STARVATION_RATE = 0.7;
 
 const WIN_POINTS = 100;
 const LOSS_POINTS = -30;
@@ -38,7 +38,7 @@ const CITY_W = 15;
 const POP_W = 0.2;
 const KILL_W = 2;
 const NO_COMBAT_PENALTY = -25;
-const STARVING_LOCK_PENALTY = -35;
+const TOTAL_STARVATION_PENALTY = -50;
 
 function scoreGame(
   result: { winner: 'ai1' | 'ai2' | null; ai1Cities: number; ai2Cities: number; ai1Pop: number; ai2Pop: number },
@@ -59,10 +59,7 @@ function scoreGame(
   s += POP_W * (myPop - oppPop);
   s += KILL_W * (myKills - oppKills);
   if (diagnostics.totalKills === 0) s += NO_COMBAT_PENALTY;
-  const myAllStarvingLock =
-    (side === 'ai1' && diagnostics.firstCycleAllStarving != null && diagnostics.firstCycleFoodZeroAi1 != null) ||
-    (side === 'ai2' && diagnostics.firstCycleAllStarving != null && diagnostics.firstCycleFoodZeroAi2 != null);
-  if (myAllStarvingLock) s += STARVING_LOCK_PENALTY;
+  if (diagnostics.totalStarvationAbort) s += TOTAL_STARVATION_PENALTY;
   return s;
 }
 
@@ -76,7 +73,7 @@ function main() {
   let gamesWithOwnerFlip = 0;
   let draws = 0;
   let noCombatGames = 0;
-  let starvationLockGames = 0;
+  let totalStarvationGames = 0;
   const baselineScores: number[] = [];
   const candidateScores: number[] = [];
 
@@ -115,7 +112,7 @@ function main() {
     if (diagnostics.hadOwnerFlip) gamesWithOwnerFlip++;
     if (winner === null) draws++;
     if (diagnostics.totalKills === 0) noCombatGames++;
-    if (diagnostics.firstCycleAllStarving != null) starvationLockGames++;
+    if (diagnostics.totalStarvationAbort) totalStarvationGames++;
 
     const scoreAi1 = scoreGame(
       { winner, ai1Cities, ai2Cities, ai1Pop, ai2Pop },
@@ -134,7 +131,7 @@ function main() {
   const drawRate = draws / n;
   const ownerFlipRate = gamesWithOwnerFlip / n;
   const noCombatRate = noCombatGames / n;
-  const starvationLockRate = starvationLockGames / n;
+  const totalStarvationRate = totalStarvationGames / n;
 
   const mean = (arr: number[]) => arr.reduce((a, b) => a + b, 0) / arr.length;
   const std = (arr: number[]) => {
@@ -157,7 +154,7 @@ function main() {
   console.log('  drawRate:', drawRate.toFixed(3));
   console.log('  ownerFlipRate:', ownerFlipRate.toFixed(3));
   console.log('  noCombatRate:', noCombatRate.toFixed(3));
-  console.log('  starvationLockRate:', starvationLockRate.toFixed(3));
+  console.log('  totalStarvationRate:', totalStarvationRate.toFixed(3));
   console.log('  candidateRobustScore:', candidateRobust.toFixed(2));
   console.log('  baselineRobustScore:', baselineRobust.toFixed(2));
   console.log('');
@@ -175,8 +172,8 @@ function main() {
     console.error(`Regression: ownerFlipRate ${ownerFlipRate.toFixed(3)} < ${MIN_OWNER_FLIP_RATE}`);
     failed = true;
   }
-  if (starvationLockRate > MAX_STARVATION_LOCK_RATE) {
-    console.error(`Regression: starvationLockRate ${starvationLockRate.toFixed(3)} > ${MAX_STARVATION_LOCK_RATE}`);
+  if (totalStarvationRate > MAX_TOTAL_STARVATION_RATE) {
+    console.error(`Regression: totalStarvationRate ${totalStarvationRate.toFixed(3)} > ${MAX_TOTAL_STARVATION_RATE}`);
     failed = true;
   }
 

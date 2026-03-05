@@ -276,6 +276,8 @@ export function runSimulationWithDiagnostics(
     else if (ai2Cities.length === 0) winner = 'ai1';
   }
   const unitsAtEnd = state.units.filter(u => u.hp > 0).length;
+  const totalStarvationAbort = state.phase === 'total_starvation';
+  if (totalStarvationAbort) diag.totalStarvationAbort = true;
   return {
     winner,
     cycle: state.cycle,
@@ -283,7 +285,7 @@ export function runSimulationWithDiagnostics(
     ai2Cities: ai2Cities.length,
     ai1Pop,
     ai2Pop,
-    diagnostics: { ...diag, unitsAtEnd },
+    diagnostics: { ...diag, unitsAtEnd, totalStarvationAbort },
   };
 }
 
@@ -307,6 +309,8 @@ export type SimDiagnostics = {
   firstCycleFoodZeroAi1?: number;
   /** First cycle when AI2 had zero total food in cities. */
   firstCycleFoodZeroAi2?: number;
+  /** True when game aborted: both sides irrecoverable (all military starving + zero food). Both AIs get massive penalty. */
+  totalStarvationAbort?: boolean;
   /** Unit status counts (last cycle) for instrumentation. */
   unitStatusCountsAi1?: { idle: number; moving: number; fighting: number; starving: number };
   unitStatusCountsAi2?: { idle: number; moving: number; fighting: number; starving: number };
@@ -388,16 +392,17 @@ export function stepSimulation(
     return { idle, moving, fighting, starving };
   };
 
+  const ai1Military = units.filter(u => u.ownerId === AI_ID && u.type !== 'builder');
+  const ai2Military = units.filter(u => u.ownerId === AI_ID_2 && u.type !== 'builder');
+  const allStarving1 = ai1Military.length > 0 && ai1Military.every(u => u.status === 'starving');
+  const allStarving2 = ai2Military.length > 0 && ai2Military.every(u => u.status === 'starving');
+  const foodAi1 = cities.filter(c => c.ownerId === AI_ID).reduce((s, c) => s + c.storage.food, 0);
+  const foodAi2 = cities.filter(c => c.ownerId === AI_ID_2).reduce((s, c) => s + c.storage.food, 0);
+
   if (diagnostics) {
     const anyStarving = units.some(u => u.status === 'starving');
     if (anyStarving && diagnostics.firstCycleAnyStarvation == null) diagnostics.firstCycleAnyStarvation = newCycle;
-    const ai1Military = units.filter(u => u.ownerId === AI_ID && u.type !== 'builder');
-    const ai2Military = units.filter(u => u.ownerId === AI_ID_2 && u.type !== 'builder');
-    const allStarving1 = ai1Military.length > 0 && ai1Military.every(u => u.status === 'starving');
-    const allStarving2 = ai2Military.length > 0 && ai2Military.every(u => u.status === 'starving');
     if ((allStarving1 || allStarving2) && diagnostics.firstCycleAllStarving == null) diagnostics.firstCycleAllStarving = newCycle;
-    const foodAi1 = cities.filter(c => c.ownerId === AI_ID).reduce((s, c) => s + c.storage.food, 0);
-    const foodAi2 = cities.filter(c => c.ownerId === AI_ID_2).reduce((s, c) => s + c.storage.food, 0);
     if (foodAi1 <= 0 && diagnostics.firstCycleFoodZeroAi1 == null) diagnostics.firstCycleFoodZeroAi1 = newCycle;
     if (foodAi2 <= 0 && diagnostics.firstCycleFoodZeroAi2 == null) diagnostics.firstCycleFoodZeroAi2 = newCycle;
     const ai1Units = units.filter(u => u.ownerId === AI_ID);
@@ -761,17 +766,20 @@ export function stepSimulation(
   }
   const territory = calculateTerritory(citiesToSet, tilesMut);
 
+  // Build city id -> owner map once for O(1) lookups (avoids O(cities²) per step)
+  const newCityOwnerById = new Map<string, string>();
+  for (const c of citiesToSet) newCityOwnerById.set(c.id, c.ownerId);
+
   if (diagnostics) {
     const killsThisStep = combatResult.killedUnitIds.length;
     diagnostics.totalKills += killsThisStep;
+    const unitById = new Map(units.map(u => [u.id, u]));
     for (const uid of combatResult.killedUnitIds) {
-      const u = units.find(unit => unit.id === uid);
+      const u = unitById.get(uid);
       if (u?.ownerId === AI_ID) diagnostics.killsByAi2 = (diagnostics.killsByAi2 ?? 0) + 1;
       else if (u?.ownerId === AI_ID_2) diagnostics.killsByAi1 = (diagnostics.killsByAi1 ?? 0) + 1;
     }
-    const hadFlip = state.cities.some(
-      c => citiesToSet.find(n => n.id === c.id)?.ownerId !== c.ownerId,
-    );
+    const hadFlip = state.cities.some(c => newCityOwnerById.get(c.id) !== c.ownerId);
     if (hadFlip) {
       diagnostics.hadOwnerFlip = true;
       if (diagnostics.firstOwnerFlipCycle == null) diagnostics.firstOwnerFlipCycle = newCycle;
@@ -779,16 +787,27 @@ export function stepSimulation(
     if (killsThisStep > 0 && diagnostics.firstCombatCycle == null) diagnostics.firstCombatCycle = newCycle;
   }
 
-  // ── Victory ──
+  // ── Victory / total-starvation abort ──
   let phase: GamePhase = 'playing';
   const ai1Cities = citiesToSet.filter(c => c.ownerId === AI_ID);
   const ai2Cities = citiesToSet.filter(c => c.ownerId === AI_ID_2);
-  if (ai1Cities.length === 0 || ai2Cities.length === 0) phase = 'victory';
+  const finalAi1Military = aliveUnits.filter(u => u.ownerId === AI_ID && u.type !== 'builder');
+  const finalAi2Military = aliveUnits.filter(u => u.ownerId === AI_ID_2 && u.type !== 'builder');
+  const finalAllStarving1 = finalAi1Military.length > 0 && finalAi1Military.every(u => u.status === 'starving');
+  const finalAllStarving2 = finalAi2Military.length > 0 && finalAi2Military.every(u => u.status === 'starving');
+  const finalFoodAi1 = ai1Cities.reduce((s, c) => s + c.storage.food, 0);
+  const finalFoodAi2 = ai2Cities.reduce((s, c) => s + c.storage.food, 0);
+  if (finalAllStarving1 && finalAllStarving2 && finalFoodAi1 <= 0 && finalFoodAi2 <= 0) {
+    phase = 'total_starvation';
+    if (diagnostics) diagnostics.totalStarvationAbort = true;
+  } else if (ai1Cities.length === 0 || ai2Cities.length === 0) {
+    phase = 'victory';
+  }
 
   // Invalidate supply cache when city ownership or count changed (capture/new city) so next step recomputes
   const citiesChanged =
     state.cities.length !== citiesToSet.length ||
-    state.cities.some(c => citiesToSet.find(n => n.id === c.id)?.ownerId !== c.ownerId);
+    state.cities.some(c => newCityOwnerById.get(c.id) !== c.ownerId);
   const supplyCacheNext = state.supplyCache != null && !citiesChanged ? state.supplyCache : undefined;
 
   return {

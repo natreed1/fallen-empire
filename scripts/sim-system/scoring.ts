@@ -34,10 +34,8 @@ export function scoreGame(
   s += KILL_W * myKills;
 
   if (result.diagnostics.totalKills === 0) s += config.noCombatPenalty;
-  const myStarvingLock =
-    (side === 'ai1' && result.diagnostics.firstCycleAllStarving != null && result.diagnostics.firstCycleFoodZeroAi1 != null) ||
-    (side === 'ai2' && result.diagnostics.firstCycleAllStarving != null && result.diagnostics.firstCycleFoodZeroAi2 != null);
-  if (myStarvingLock) s += config.starvationLockPenalty;
+  // Total-starvation abort: both sides irrecoverable → game aborted, both get massive penalty
+  if (result.diagnostics.totalStarvationAbort) s += config.totalStarvationPenalty;
 
   return s;
 }

@@ -77,7 +77,7 @@ export const QUARRY_DEPOSIT_COLOR = '#6b7280';  // gray for stone deposits
 
 // ─── Game Phase & UI ───────────────────────────────────────────────
 
-export type GamePhase = 'setup' | 'place_city' | 'playing' | 'victory';
+export type GamePhase = 'setup' | 'place_city' | 'playing' | 'victory' | 'total_starvation';
 export type UIMode = 'normal' | 'move' | 'build' | 'build_mine' | 'build_quarry' | 'build_gold_mine' | 'build_road' | 'defend' | 'intercept';
 export type FoodPriority = 'civilian' | 'military';
 export type BuildingType = 'city_center' | 'farm' | 'factory' | 'barracks' | 'academy' | 'market' | 'quarry' | 'mine' | 'gold_mine';

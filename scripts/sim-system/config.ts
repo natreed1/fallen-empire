@@ -30,7 +30,8 @@ export type SimSystemConfig = {
   // Anti-degenerate penalties
   drawPenalty: number;
   noCombatPenalty: number;
-  starvationLockPenalty: number;
+  /** Penalty when game aborted (both sides irrecoverable starvation). Both AIs get this. */
+  totalStarvationPenalty: number;
 
   // Holdout
   holdoutEveryNSeasons: number;
@@ -46,7 +47,7 @@ export type SimSystemConfig = {
 
   // Telemetry rollback triggers (regression => rollback to last checkpoint)
   maxDrawRateTrigger: number;
-  maxStarvationLockRateTrigger: number;
+  maxTotalStarvationRateTrigger: number;
   minDecisivenessTrigger: number;
   maxHoldoutDeltaRegressTrigger: number; // if holdout delta drops below this (negative = regression)
   maxLineageConcentrationTrigger: number;
@@ -107,7 +108,7 @@ export function loadSimSystemConfig(): SimSystemConfig {
 
     drawPenalty: parseEnvFloat('SIM_DRAW_PENALTY', 10, 0, 50),
     noCombatPenalty: parseEnvFloat('SIM_NO_COMBAT_PENALTY', 25, 0, 80),
-    starvationLockPenalty: parseEnvFloat('SIM_STARVATION_LOCK_PENALTY', 35, 0, 80),
+    totalStarvationPenalty: parseEnvFloat('SIM_TOTAL_STARVATION_PENALTY', 50, 0, 100),
 
     holdoutEveryNSeasons: parseEnvInt('SIM_HOLDOUT_EVERY_N', 3, 1, 20),
     holdoutNumGames: parseEnvInt('SIM_HOLDOUT_NUM_GAMES', 20, 5, 100),
@@ -119,7 +120,7 @@ export function loadSimSystemConfig(): SimSystemConfig {
     lineageCapPerTier: parseEnvFloat('SIM_LINEAGE_CAP_PER_TIER', 0.4, 0.2, 0.8),
 
     maxDrawRateTrigger: parseEnvFloat('SIM_ROLLBACK_MAX_DRAW_RATE', 0.92, 0.5, 1),
-    maxStarvationLockRateTrigger: parseEnvFloat('SIM_ROLLBACK_MAX_STARVATION_RATE', 0.6, 0.2, 1),
+    maxTotalStarvationRateTrigger: parseEnvFloat('SIM_ROLLBACK_MAX_TOTAL_STARVATION_RATE', 0.6, 0.2, 1),
     minDecisivenessTrigger: parseEnvFloat('SIM_ROLLBACK_MIN_DECISIVENESS', 0.08, 0, 0.5),
     maxHoldoutDeltaRegressTrigger: parseEnvFloat('SIM_ROLLBACK_HOLDOUT_DELTA_REGRESS', -15, -50, 0),
     maxLineageConcentrationTrigger: parseEnvFloat('SIM_ROLLBACK_MAX_LINEAGE_CONCENTRATION', 0.85, 0.5, 1),

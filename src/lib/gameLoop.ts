@@ -206,6 +206,23 @@ function autoAssignWorkersPhase(cities: City[]) {
 
 // ─── Phase 1: Production ───────────────────────────────────────────
 
+/** One pass over territory → cityId → terrain food (avoids O(cities * territory) per cycle). */
+function computeTerrainFoodByCity(
+  tiles: Map<string, Tile>,
+  territory: Map<string, TerritoryInfo>,
+): Map<string, number> {
+  const byCity = new Map<string, number>();
+  for (const [key, info] of territory) {
+    const tile = tiles.get(key);
+    if (!tile) continue;
+    const food = TERRAIN_FOOD_YIELD[tile.biome as Biome];
+    if (food <= 0) continue;
+    const cur = byCity.get(info.cityId) ?? 0;
+    byCity.set(info.cityId, cur + food);
+  }
+  return byCity;
+}
+
 /**
  * Returns a map of cityId → food produced this cycle (before consumption).
  */
@@ -217,19 +234,11 @@ function productionPhase(
   harvestMultiplier: number = 1.0,
 ): Record<string, number> {
   const foodProduced: Record<string, number> = {};
+  const terrainFoodByCity = computeTerrainFoodByCity(tiles, territory);
 
   for (const city of cities) {
     const moraleMod = city.morale / 100;
-
-    let terrainFood = 0;
-    for (const [key, info] of territory) {
-      if (info.cityId !== city.id) continue;
-      const [q, r] = parseTileKey(key);
-      const tile = tiles.get(tileKey(q, r));
-      if (tile) {
-        terrainFood += TERRAIN_FOOD_YIELD[tile.biome as Biome];
-      }
-    }
+    const terrainFood = terrainFoodByCity.get(city.id) ?? 0;
 
     let buildingFood = 0;
     let buildingGuns = 0;

@@ -51,7 +51,7 @@ export function resetSeasonStats(agents: SimAgent[]): void {
     a.draws = 0;
     a.totalKills = 0;
     a.noCombatGames = 0;
-    a.starvationLockGames = 0;
+    a.totalStarvationGames = 0;
     a.decisiveGames = 0;
   }
 }
@@ -88,8 +88,7 @@ export function runSeasonGames(
         else if (r1.winner === 'ai2') { c2.wins++; c1.losses++; c2.decisiveGames++; }
         else { c1.draws++; c2.draws++; }
         if (r1.diagnostics.totalKills === 0) { c1.noCombatGames++; c2.noCombatGames++; }
-        if (r1.diagnostics.firstCycleAllStarving != null && r1.diagnostics.firstCycleFoodZeroAi1 != null) c1.starvationLockGames++;
-        if (r1.diagnostics.firstCycleAllStarving != null && r1.diagnostics.firstCycleFoodZeroAi2 != null) c2.starvationLockGames++;
+        if (r1.diagnostics.totalStarvationAbort) { c1.totalStarvationGames++; c2.totalStarvationGames++; }
         c1.totalKills += r1.diagnostics.killsByAi1 ?? 0;
         c2.totalKills += r1.diagnostics.killsByAi2 ?? 0;
         c2.totalKills += r2.diagnostics.killsByAi1 ?? 0;
@@ -118,8 +117,8 @@ export function runSeasonGames(
           else candidate.draws++;
           if (r1.diagnostics.totalKills === 0) candidate.noCombatGames++;
           if (r2.diagnostics.totalKills === 0) candidate.noCombatGames++;
-          if (r1.diagnostics.firstCycleAllStarving != null && r1.diagnostics.firstCycleFoodZeroAi1 != null) candidate.starvationLockGames++;
-          if (r2.diagnostics.firstCycleAllStarving != null && r2.diagnostics.firstCycleFoodZeroAi2 != null) candidate.starvationLockGames++;
+          if (r1.diagnostics.totalStarvationAbort) candidate.totalStarvationGames++;
+          if (r2.diagnostics.totalStarvationAbort) candidate.totalStarvationGames++;
           candidate.totalKills += r1.diagnostics.killsByAi1 ?? 0;
           candidate.totalKills += r2.diagnostics.killsByAi2 ?? 0;
         }
@@ -257,7 +256,7 @@ export function createNewAgentsForCUnderflow(
       draws: 0,
       totalKills: 0,
       noCombatGames: 0,
-      starvationLockGames: 0,
+      totalStarvationGames: 0,
       decisiveGames: 0,
     });
   }

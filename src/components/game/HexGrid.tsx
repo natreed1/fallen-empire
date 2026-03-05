@@ -11,7 +11,7 @@ import {
   WeatherEventType,
   BIOME_COLORS, BIOME_COLORS_DARK, ROAD_COLOR, RUINS_COLOR,
   MOUNTAIN_SNOW_COLOR, PLAYER_COLORS,
-  HEX_RADIUS, HEX_INNER_RATIO, axialToWorld, tileKey,
+  HEX_RADIUS, HEX_INNER_RATIO, axialToWorld, tileKey, parseTileKey,
   ANCIENT_CITY_COLOR, GOLD_MINE_DEPOSIT_COLOR, QUARRY_DEPOSIT_COLOR,
 } from '@/types/game';
 
@@ -721,8 +721,8 @@ function ConstructionMarkers({ sites, tiles }: { sites: ConstructionSite[]; tile
 
 const MOVE_RADIUS = 10;
 
-function MoveRangeOverlay({ fromQ, fromR, tiles }: {
-  fromQ: number; fromR: number; tiles: Map<string, Tile>;
+function MoveRangeOverlay({ fromQ, fromR, tiles, color = '#44ff88' }: {
+  fromQ: number; fromR: number; tiles: Map<string, Tile>; color?: string;
 }) {
   const meshRef = useRef<THREE.InstancedMesh>(null);
 
@@ -745,8 +745,8 @@ function MoveRangeOverlay({ fromQ, fromR, tiles }: {
 
   const geometry = useMemo(() => makeHexGeo(HEX_RADIUS * HEX_INNER_RATIO * 0.95, 0.03), []);
   const material = useMemo(() => new THREE.MeshBasicMaterial({
-    color: '#44ff88', transparent: true, opacity: 0.18, depthWrite: false,
-  }), []);
+    color, transparent: true, opacity: 0.22, depthWrite: false,
+  }), [color]);
 
   useEffect(() => {
     if (!meshRef.current || reachableTiles.length === 0) return;
@@ -1189,6 +1189,7 @@ export default function HexGrid() {
   const scoutTowers = useGameStore(s => s.scoutTowers);
   const supplyViewTab = useGameStore(s => s.supplyViewTab);
   const getSupplyClustersWithHealth = useGameStore(s => s.getSupplyClustersWithHealth);
+  const assigningTacticalForStack = useGameStore(s => s.assigningTacticalForStack);
 
   const visionActive = phase === 'playing';
 
@@ -1292,9 +1293,14 @@ export default function HexGrid() {
       )}
 
       {/* Move range highlight when unit is selected */}
-      {uiMode === 'move' && selectedHex && (
+      {uiMode === 'move' && selectedHex && !assigningTacticalForStack && (
         <MoveRangeOverlay fromQ={selectedHex.q} fromR={selectedHex.r} tiles={tiles} />
       )}
+      {/* Tactical: valid destination hexes when assigning move/intercept for a stack */}
+      {assigningTacticalForStack && (() => {
+        const [tq, tr] = parseTileKey(assigningTacticalForStack);
+        return <MoveRangeOverlay fromQ={tq} fromR={tr} tiles={tiles} color="#e4b44c" />;
+      })()}
 
       {/* Pending move destination marker */}
       {pendingMove && <PendingCityRing q={pendingMove.toQ} r={pendingMove.toR} tiles={tiles} />}

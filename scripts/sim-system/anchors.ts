@@ -23,7 +23,7 @@ export function getAnchors(): SimAgent[] {
     draws: 0,
     totalKills: 0,
     noCombatGames: 0,
-    starvationLockGames: 0,
+    totalStarvationGames: 0,
     decisiveGames: 0,
   }));
 }
