@@ -188,7 +188,7 @@ function main(): void {
     lastStableCheckpoint = { season, agents: agents.map(a => ({ ...a })), telemetry: snapshot, timestamp: new Date().toISOString() };
     saveCheckpoint(agents, snapshot, season);
 
-    applyPromotionRelegation(agents, config, scenarioResultsByAgentId);
+    applyPromotionRelegation(agents, config, scenarioResultsByAgentId, season);
     const inC = agents.filter(a => a.tier === 'C' && !a.isAnchor).length;
     if (inC < config.tierSizeC) {
       const newAgents = createNewAgentsForCUnderflow(agents, config.tierSizeC - inC, config, () => `c_${nextAgentId++}`);

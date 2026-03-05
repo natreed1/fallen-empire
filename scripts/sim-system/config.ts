@@ -42,6 +42,11 @@ export type SimSystemConfig = {
   scenarioMinScoreForPromotion: number;
   scenarioMinScoreForChampion: number;
 
+  // Probation: fallback-promoted bots must improve within N seasons or auto-relegate
+  probationSeasonsBeforeRelegate: number;
+  // Gate scheduling: seasons 1..gateLenientUntilSeason use lenient gates; then tighten
+  gateLenientUntilSeason: number;
+
   // Lineage diversity: max fraction of a tier that can be one lineage
   lineageCapPerTier: number; // e.g. 0.4 = at most 40% of tier from one lineage
 
@@ -116,6 +121,9 @@ export function loadSimSystemConfig(): SimSystemConfig {
 
     scenarioMinScoreForPromotion: parseEnvFloat('SIM_SCENARIO_MIN_PROMOTION', 0, -50, 100),
     scenarioMinScoreForChampion: parseEnvFloat('SIM_SCENARIO_MIN_CHAMPION', 10, -50, 100),
+
+    probationSeasonsBeforeRelegate: parseEnvInt('SIM_PROBATION_SEASONS', 2, 1, 8),
+    gateLenientUntilSeason: parseEnvInt('SIM_GATE_LENIENT_UNTIL_SEASON', 3, 1, 20),
 
     lineageCapPerTier: parseEnvFloat('SIM_LINEAGE_CAP_PER_TIER', 0.4, 0.2, 0.8),
 

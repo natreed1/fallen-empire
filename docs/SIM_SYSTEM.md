@@ -36,9 +36,11 @@ Target: **95+ reliability** through seasonal simulation alone (no human eval loo
   - Prevent single-family collapse of meta diversity.
 
 - **Strict tier integrity**
-  - Fixed tier sizes every season.
-  - Non-overlapping promotion/relegation sets.
-  - Auto-rebalance if underflow/overflow.
+  - **Hard tier-size invariants**: After each season, exact counts are enforced: |A|=tierSizeA, |B|=tierSizeB, |C|=tierSizeC (C overflow → replace bottom with mutations; C underflow → new agents by caller).
+  - **Two-stage promotion**: Stage 1 = strict passers (gates + scenario min); Stage 2 = fill remaining slots with best robustness from the tier below (tagged probation).
+  - **Non-overlap**: Promote/relegate sets are disjoint and applied atomically (single new-tier map then apply).
+  - **Probation**: Fallback-promoted bots get probation; after N seasons without improvement they are auto-relegated.
+  - **Gate scheduling**: Gates start lenient (seasons 1..gateLenientUntilSeason) and tighten afterward to avoid early lockout.
 
 - **Anti-degenerate behavior penalties**
   - Penalize draw, no-combat score farming, starvation-lock, non-interactive exploit policies.
@@ -82,6 +84,8 @@ SIM_SEASONS=20 SIM_TIER_SIZE=8 SIM_HOLDOUT_EVERY_N=3 npm run seasonal-sim
 | `SIM_HOLDOUT_NUM_GAMES` | 20 | Games per holdout run. |
 | `SIM_SCENARIO_MIN_PROMOTION` | 0 | Min scenario score for promotion. |
 | `SIM_SCENARIO_MIN_CHAMPION` | 10 | Min scenario score for champion. |
+| `SIM_PROBATION_SEASONS` | 2 | Seasons before auto-relegate for fallback-promoted (probation) bots. |
+| `SIM_GATE_LENIENT_UNTIL_SEASON` | 3 | Seasons 1..N use lenient gates; then tighten. |
 | `SIM_LINEAGE_CAP_PER_TIER` | 0.4 | Max fraction of a tier from one lineage. |
 | `SIM_ROLLBACK_MAX_DRAW_RATE` | 0.92 | Rollback if draw rate exceeds. |
 | `SIM_ROLLBACK_MAX_STARVATION_RATE` | 0.6 | Rollback if starvation-lock rate exceeds. |

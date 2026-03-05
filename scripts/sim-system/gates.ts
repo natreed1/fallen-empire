@@ -11,35 +11,48 @@ import type { SimSystemConfig } from './config';
 import { robustnessScore } from './scoring';
 import { maxLineageConcentration } from './lineage';
 
+/** Lenient gate thresholds when season <= config.gateLenientUntilSeason. */
+function isLenientSeason(season: number, config: SimSystemConfig): boolean {
+  return season <= config.gateLenientUntilSeason;
+}
+
 /** Tier C gate: economy/survival — not in total-starvation abort in majority of games. */
-export function passesTierCGate(agent: SimAgent, _config: SimSystemConfig): boolean {
+export function passesTierCGate(agent: SimAgent, config: SimSystemConfig, season: number = 999): boolean {
   const total = agent.wins + agent.losses + agent.draws;
   if (total === 0) return true;
   const totalStarvationRate = agent.totalStarvationGames / total;
-  return totalStarvationRate <= 0.5;
+  const maxRate = isLenientSeason(season, config) ? 0.7 : 0.5;
+  return totalStarvationRate <= maxRate;
 }
 
 /** Tier B gate: combat proficiency — has wins and some decisive/combat games. */
-export function passesTierBGate(agent: SimAgent, _config: SimSystemConfig): boolean {
+export function passesTierBGate(agent: SimAgent, config: SimSystemConfig, season: number = 999): boolean {
   const total = agent.wins + agent.losses + agent.draws;
   if (total === 0) return false;
-  if (agent.wins === 0) return false;
+  const lenient = isLenientSeason(season, config);
+  if (agent.wins === 0 && !lenient) return false;
   const noCombatRate = agent.noCombatGames / total;
-  return noCombatRate <= 0.7;
+  const maxRate = lenient ? 0.85 : 0.7;
+  return noCombatRate <= maxRate;
 }
 
 /** Tier A: full strategic — robustness score above threshold (handled by ranking). */
-export function passesTierAGate(agent: SimAgent, config: SimSystemConfig): boolean {
+export function passesTierAGate(agent: SimAgent, config: SimSystemConfig, season: number = 999): boolean {
   const score = robustnessScore(agent.gameScores, config);
-  return score > -20; // avoid clearly broken agents
+  const minScore = isLenientSeason(season, config) ? -30 : -20;
+  return score > minScore;
 }
 
-/** Scenario battery pass for promotion: all scenario scores >= min. */
+/** Scenario battery pass for promotion: all scenario scores >= min. Lenient early seasons use lower min. */
 export function passesScenarioMinimumForPromotion(
   scenarioResults: { score: number }[],
   config: SimSystemConfig,
+  season: number = 999,
 ): boolean {
-  return scenarioResults.every(r => r.score >= config.scenarioMinScoreForPromotion);
+  const min = isLenientSeason(season, config)
+    ? Math.max(-50, config.scenarioMinScoreForPromotion - 10)
+    : config.scenarioMinScoreForPromotion;
+  return scenarioResults.every(r => r.score >= min);
 }
 
 /** Scenario battery pass for champion: all >= champion threshold. */

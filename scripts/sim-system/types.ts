@@ -28,6 +28,11 @@ export type SimAgent = {
   noCombatGames: number;
   totalStarvationGames: number;
   decisiveGames: number;
+  /**
+   * Probation: seasons left before auto-relegate if not improved.
+   * Set when promoted via fallback (stage-2 fill). Undefined = not on probation.
+   */
+  probationRemaining?: number;
 };
 
 /** Result of one game with diagnostics (for scoring and anti-degenerate). */
