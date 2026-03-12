@@ -1,0 +1,250 @@
+{
+  "generatedAt": "2026-03-04T01:15:10.048Z",
+  "source": "league-last.json",
+  "sampleCount": 7,
+  "topK": 3,
+  "params": {
+    "siegeChance": {
+      "mean": 0.1870713074224755,
+      "variance": 0.000041643488337756,
+      "spread": 0.01452046625973577,
+      "correlationWithPerformance": 0.9931221440173792,
+      "classification": "stable-good",
+      "recommendedMutationRange": [
+        0.1510713074224755,
+        0.2230713074224755
+      ],
+      "suggestedCenter": 0.1870713074224755
+    },
+    "recruitGoldThreshold": {
+      "mean": 436.6666666666667,
+      "variance": 1642.888888888889,
+      "spread": 99,
+      "correlationWithPerformance": 0.9013456132437374,
+      "classification": "exploratory",
+      "recommendedMutationRange": [
+        331.6666666666667,
+        541.6666666666667
+      ],
+      "suggestedCenter": 436.6666666666667
+    },
+    "maxRecruitsWhenRich": {
+      "mean": 2.3333333333333335,
+      "variance": 0.22222222222222224,
+      "spread": 1,
+      "correlationWithPerformance": 0.5,
+      "classification": "exploratory",
+      "recommendedMutationRange": [
+        1.6583333333333337,
+        3.0083333333333333
+      ],
+      "suggestedCenter": 2.3333333333333335
+    },
+    "maxRecruitsWhenPoor": {
+      "mean": 1.6666666666666667,
+      "variance": 0.2222222222222222,
+      "spread": 1,
+      "correlationWithPerformance": -0.49999999999999994,
+      "classification": "exploratory",
+      "recommendedMutationRange": [
+        0.9916666666666668,
+        2.341666666666667
+      ],
+      "suggestedCenter": 1.6666666666666667
+    },
+    "targetDefenderWeight": {
+      "mean": 3.110308675413465,
+      "variance": 0.021522935178299674,
+      "spread": 0.32757808352026396,
+      "correlationWithPerformance": -0.9950160254663345,
+      "classification": "exploratory",
+      "recommendedMutationRange": [
+        2.885308675413465,
+        2
+      ],
+      "suggestedCenter": 3.110308675413465
+    },
+    "nearestTargetDistanceRatio": {
+      "mean": 0.8557716031374959,
+      "variance": 0.0009490181024059745,
+      "spread": 0.07434546314990886,
+      "correlationWithPerformance": 0.17118440103970986,
+      "classification": "stable-good",
+      "recommendedMutationRange": [
+        0.7357716031374959,
+        0.9757716031374959
+      ],
+      "suggestedCenter": 0.8557716031374959
+    },
+    "builderRecruitChance": {
+      "mean": 0.19989589231798885,
+      "variance": 0.000864024593468531,
+      "spread": 0.07152166296165269,
+      "correlationWithPerformance": -0.917859768153546,
+      "classification": "exploratory",
+      "recommendedMutationRange": [
+        0.5,
+        0.42489589231798885
+      ],
+      "suggestedCenter": 0.19989589231798885
+    },
+    "foodBufferThreshold": {
+      "mean": 15.333333333333334,
+      "variance": 2.8888888888888893,
+      "spread": 4,
+      "correlationWithPerformance": 0.9707253433941511,
+      "classification": "exploratory",
+      "recommendedMutationRange": [
+        10.833333333333334,
+        19.833333333333336
+      ],
+      "suggestedCenter": 15.333333333333334
+    },
+    "sustainableMilitaryMultiplier": {
+      "mean": 0.9132501710522994,
+      "variance": 0.00048374520304802983,
+      "spread": 0.05282410162000761,
+      "correlationWithPerformance": 0.7508826220235859,
+      "classification": "stable-good",
+      "recommendedMutationRange": [
+        0.7932501710522994,
+        1.0332501710522994
+      ],
+      "suggestedCenter": 0.9132501710522994
+    },
+    "farmFirstBias": {
+      "mean": 0.06501187153183689,
+      "variance": 0.0010887049479660555,
+      "spread": 0.07186490944465171,
+      "correlationWithPerformance": -0.4575715987007848,
+      "classification": "exploratory",
+      "recommendedMutationRange": [
+        0.5,
+        0.2900118715318369
+      ],
+      "suggestedCenter": 0.06501187153183689
+    },
+    "farmPriorityThreshold": {
+      "mean": 13.666666666666666,
+      "variance": 4.222222222222222,
+      "spread": 5,
+      "correlationWithPerformance": -0.11470786693528089,
+      "classification": "unstable-bad",
+      "recommendedMutationRange": [
+        9,
+        21
+      ],
+      "suggestedCenter": 15
+    },
+    "factoryUpgradePriority": {
+      "mean": 0.5549048246578984,
+      "variance": 0.0033639884664540295,
+      "spread": 0.14206970764154742,
+      "correlationWithPerformance": 0.002527786638738352,
+      "classification": "exploratory",
+      "recommendedMutationRange": [
+        0.5,
+        0.7799048246578983
+      ],
+      "suggestedCenter": 0.5549048246578984
+    },
+    "scoutChance": {
+      "mean": 0.9885162733132601,
+      "variance": 0.00025083680061258826,
+      "spread": 0.03387936488619203,
+      "correlationWithPerformance": 0.9998913668324555,
+      "classification": "stable-good",
+      "recommendedMutationRange": [
+        0.8685162733132601,
+        1.10851627331326
+      ],
+      "suggestedCenter": 0.9885162733132601
+    },
+    "incorporateVillageChance": {
+      "mean": 0.9618420419161536,
+      "variance": 0.0018372221213926912,
+      "spread": 0.0980267748092245,
+      "correlationWithPerformance": 0.9876540383166951,
+      "classification": "stable-good",
+      "recommendedMutationRange": [
+        0.8418420419161536,
+        1.0818420419161536
+      ],
+      "suggestedCenter": 0.9618420419161536
+    },
+    "targetPopWeight": {
+      "mean": 1.0552790537918249,
+      "variance": 0.004193839921801842,
+      "spread": 0.15565379340757002,
+      "correlationWithPerformance": -0.9461628083853815,
+      "classification": "exploratory",
+      "recommendedMutationRange": [
+        0.8302790537918249,
+        1.280279053791825
+      ],
+      "suggestedCenter": 1.0552790537918249
+    }
+  },
+  "recommendedMutationRanges": {
+    "siegeChance": [
+      0.1510713074224755,
+      0.2230713074224755
+    ],
+    "recruitGoldThreshold": [
+      331.6666666666667,
+      541.6666666666667
+    ],
+    "maxRecruitsWhenRich": [
+      1.6583333333333337,
+      3.0083333333333333
+    ],
+    "maxRecruitsWhenPoor": [
+      0.9916666666666668,
+      2.341666666666667
+    ],
+    "targetDefenderWeight": [
+      2.885308675413465,
+      2
+    ],
+    "nearestTargetDistanceRatio": [
+      0.7357716031374959,
+      0.9757716031374959
+    ],
+    "builderRecruitChance": [
+      0.5,
+      0.42489589231798885
+    ],
+    "foodBufferThreshold": [
+      10.833333333333334,
+      19.833333333333336
+    ],
+    "sustainableMilitaryMultiplier": [
+      0.7932501710522994,
+      1.0332501710522994
+    ],
+    "farmFirstBias": [
+      0.5,
+      0.2900118715318369
+    ],
+    "farmPriorityThreshold": [
+      9,
+      21
+    ],
+    "factoryUpgradePriority": [
+      0.5,
+      0.7799048246578983
+    ],
+    "scoutChance": [
+      0.8685162733132601,
+      1.10851627331326
+    ],
+    "incorporateVillageChance": [
+      0.8418420419161536,
+      1.0818420419161536
+    ],
+    "targetPopWeight": [
+      0.8302790537918249,
+      1.280279053791825
+    ]
+  }
+}

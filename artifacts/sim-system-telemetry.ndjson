@@ -1,0 +1,15 @@
+{"season":1,"drawRate":0.31527777777777777,"starvationLockRate":0.7368055555555556,"decisiveness":0.3993055555555556,"lineageConcentration":0.125}
+{"season":1,"drawRate":0.26666666666666666,"starvationLockRate":0.8034722222222223,"decisiveness":0.4173611111111111,"lineageConcentration":0.125}
+{"season":2,"drawRate":0.2847222222222222,"starvationLockRate":0.8472222222222222,"decisiveness":0.38055555555555554,"lineageConcentration":0.125}
+{"season":3,"drawRate":0.29791666666666666,"starvationLockRate":0.8131944444444444,"decisiveness":0.40694444444444444,"lineageConcentration":0.125}
+{"season":4,"drawRate":0.3076388888888889,"starvationLockRate":0.8673611111111111,"decisiveness":0.36944444444444446,"lineageConcentration":0.125}
+{"season":5,"drawRate":0.2673611111111111,"starvationLockRate":0.8381944444444445,"decisiveness":0.4375,"lineageConcentration":0.125}
+{"season":6,"drawRate":0.26944444444444443,"starvationLockRate":0.8479166666666667,"decisiveness":0.4131944444444444,"holdoutDelta":-21.127499999999884,"lineageConcentration":0.125}
+{"season":7,"drawRate":0.25,"starvationLockRate":0.8215277777777777,"decisiveness":0.42916666666666664,"lineageConcentration":0.125}
+{"season":8,"drawRate":0.24027777777777778,"starvationLockRate":0.8493055555555555,"decisiveness":0.43680555555555556,"lineageConcentration":0.125}
+{"season":1,"drawRate":0.28680555555555554,"totalStarvationRate":0,"decisiveness":0.4027777777777778,"lineageConcentration":0.125}
+{"season":9,"drawRate":0.2743055555555556,"starvationLockRate":0.8180555555555555,"decisiveness":0.38819444444444445,"holdoutDelta":21.971249999999998,"lineageConcentration":0.125}
+{"season":2,"drawRate":0.2875,"totalStarvationRate":0,"decisiveness":0.38680555555555557,"lineageConcentration":0.125}
+{"season":10,"drawRate":0.24930555555555556,"starvationLockRate":0.8104166666666667,"decisiveness":0.3798611111111111,"lineageConcentration":0.125}
+{"season":11,"drawRate":0.26944444444444443,"starvationLockRate":0.8041666666666667,"decisiveness":0.38819444444444445,"lineageConcentration":0.125}
+{"season":12,"drawRate":0.30277777777777776,"starvationLockRate":0.8631944444444445,"decisiveness":0.38125,"holdoutDelta":-35.511250000000075,"lineageConcentration":0.125}

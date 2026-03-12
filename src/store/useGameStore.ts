@@ -75,6 +75,8 @@ interface GameState {
   nextCycleTime: number;
   gameTimeRemaining: number;
   cycleTimeRemaining: number;
+  /** Simulation speed in AI-vs-AI modes only (1, 2, or 4). */
+  simSpeedMultiplier: 1 | 2 | 4;
 
   // Two-tier vision: visibleHexes = active vision (enemy units only shown here)
   visibleHexes: Set<string>;
@@ -95,10 +97,16 @@ interface GameState {
 
   /** Tactical panel: key = tileKey(q,r) of stack; null = tactical mode off */
   pendingTacticalOrders: Record<string, { type: 'move' | 'defend' | 'intercept'; toQ?: number; toR?: number; cityId?: string }> | null;
-  /** When set, next valid hex click sets this stack's move/intercept destination */
+  /** Stacks selected in tactical panel (for batch orders from bottom bar) */
+  tacticalSelectedStackKeys: string[];
+  /** When set, next map click sets move/intercept destination for all these stacks */
+  assigningTacticalForSelectedStacks: { orderType: 'move' | 'intercept'; stackKeys: string[] } | null;
+  /** When set, next valid hex click sets this stack's move/intercept destination (legacy single-stack) */
   assigningTacticalForStack: string | null;
   /** Type of order when assigning destination (move vs intercept) */
   assigningTacticalOrderType: 'move' | 'intercept' | null;
+  /** Split stack: from hex + count to move; next adjacent hex click completes split */
+  splitStackPending: { fromQ: number; fromR: number; count: number } | null;
 
   // Map
   generateWorld: (config?: Partial<MapConfig>) => void;
@@ -115,8 +123,10 @@ interface GameState {
   confirmCityPlacement: () => void;
   cancelCityPlacement: () => void;
   placeStartingCity: (q: number, r: number) => void;
-  startRealTimeLoop: () => void;
+  startRealTimeLoop: (opts?: { preserveTimes?: boolean }) => void;
   stopRealTimeLoop: () => void;
+  /** Set sim speed (1x, 2x, 4x) for bot-vs-bot modes only; restarts tick interval. */
+  setSimSpeedMultiplier: (speed: 1 | 2 | 4) => void;
   runCycle: () => void;
   recomputeVision: () => void;
 
@@ -166,9 +176,18 @@ interface GameState {
   setTacticalOrder: (stackKey: string, order: { type: 'move' | 'defend' | 'intercept'; toQ?: number; toR?: number; cityId?: string } | null) => void;
   startTacticalMoveForStack: (stackKey: string, orderType?: 'move' | 'intercept') => void;
   setTacticalMoveTarget: (toQ: number, toR: number) => void;
+  setTacticalSelectedStackKeys: (keys: string[]) => void;
+  toggleTacticalStack: (stackKey: string) => void;
+  startTacticalOrderForSelected: (orderType: 'move' | 'intercept') => void;
+  setTacticalMoveTargetForSelected: (toQ: number, toR: number) => void;
+  setTacticalDefendForSelected: (cityId: string) => void;
+  clearTacticalOrdersForSelected: () => void;
   confirmTacticalOrders: () => void;
   disbandSelectedUnits: () => void;
   setSiegeAssault: (assault: boolean) => void;
+  startSplitStack: (count: number) => void;
+  cancelSplitStack: () => void;
+  splitStackToHex: (toQ: number, toR: number) => void;
   burnCity: (cityId: string) => void;
   captureCity: (cityId: string) => void;
   incorporateVillage: (q: number, r: number) => void;
@@ -231,6 +250,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   combatHexesThisCycle: new Set(),
   activeWeather: null, lastWeatherEndCycle: -10,
   gameEndTime: 0, nextCycleTime: 0, gameTimeRemaining: GAME_DURATION_SEC, cycleTimeRemaining: CYCLE_INTERVAL_SEC,
+  simSpeedMultiplier: 1,
   visibleHexes: new Set(), pendingCityHex: null,
   selectedHex: null, uiMode: 'normal', pendingMove: null, wallSections: [], roadPathSelection: [],
   supplyViewTab: 'normal',
@@ -239,8 +259,11 @@ export const useGameStore = create<GameState>((set, get) => ({
   lastClickTime: 0,
   cityCaptureHold: {},
   pendingTacticalOrders: null,
+  tacticalSelectedStackKeys: [],
+  assigningTacticalForSelectedStacks: null,
   assigningTacticalForStack: null,
   assigningTacticalOrderType: null,
+  splitStackPending: null,
 
   // ─── Map ────────────────────────────────────────────────────
   generateWorld: (ov) => {
@@ -408,56 +431,40 @@ export const useGameStore = create<GameState>((set, get) => ({
       heroes.push(createAiHero(aiCity.q, aiCity.r, AI_ID));
     }
 
-    // ── Spawn AI attack force: army approaching for combat/siege testing ──
-    const testUnits: Unit[] = [];
-    const cavalryStats = UNIT_BASE_STATS.cavalry;
-    const infantryStats = UNIT_BASE_STATS.infantry;
-    const spawnOffsets = [4, 5, 6, 7];
-    for (let i = 0; i < spawnOffsets.length; i++) {
-      const offset = spawnOffsets[i];
-      const testQ = q + offset;
-      const testR = r;
-      const testTile = tiles.get(tileKey(testQ, testR));
-      if (testTile && testTile.biome !== 'water' && testTile.biome !== 'mountain') {
-        const isCavalry = i === 1;
-        const stats = isCavalry ? cavalryStats : infantryStats;
-        testUnits.push({
-          id: generateId('unit'), type: isCavalry ? 'cavalry' : 'infantry',
-          q: testQ, r: testR, ownerId: AI_ID,
-          hp: stats.maxHp, maxHp: stats.maxHp,
-          xp: 0, level: 0, status: 'idle', stance: 'aggressive',
-          nextMoveAt: 0,
-        });
-      }
-    }
-
-    // Compute initial vision from the player's capital + hero
-    const initVisible = computeVisibleHexes(HUMAN_ID, cities, testUnits, heroes, tiles, get().scoutTowers ?? []);
+    // Human vs AI: no pre-spawned AI army. AI uses champion params (from ai-params.json) and builds up from its city on the opposite side.
+    const initVisible = computeVisibleHexes(HUMAN_ID, cities, [], heroes, tiles, get().scoutTowers ?? []);
 
     set({
       phase: 'playing', cities, territory, heroes, wallSections: [], cityCaptureHold: {},
-      units: testUnits,
+      units: [],
       visibleHexes: initVisible,
       notifications: [
         { id: generateId('n'), turn: 0, message: `${humanCity.name} founded! The empire rises.`, type: 'success' },
-        { id: generateId('n'), turn: 0, message: `Enemy army spotted! Prepare your defenses!`, type: 'warning' },
+        { id: generateId('n'), turn: 0, message: `A rival empire stirs across the land.`, type: 'warning' },
       ],
     });
 
     get().startRealTimeLoop();
   },
 
-  startRealTimeLoop: () => {
+  startRealTimeLoop: (opts?: { preserveTimes?: boolean }) => {
     clearAllTimers();
-    const now = Date.now();
-    set({
-      gameEndTime: now + GAME_DURATION_SEC * 1000,
-      nextCycleTime: now + CYCLE_INTERVAL_SEC * 1000,
-      gameTimeRemaining: GAME_DURATION_SEC,
-      cycleTimeRemaining: CYCLE_INTERVAL_SEC,
-    });
+    const s = get();
+    const isBot = s.gameMode === 'bot_vs_bot' || s.gameMode === 'bot_vs_bot_4';
+    const speed = isBot ? (s.simSpeedMultiplier || 1) : 1;
+    const intervalMs = 1000 / speed;
 
-    // 1-second tick: timers + movement + combat
+    if (!opts?.preserveTimes) {
+      const now = Date.now();
+      set({
+        gameEndTime: now + (GAME_DURATION_SEC * 1000) / speed,
+        nextCycleTime: now + (CYCLE_INTERVAL_SEC * 1000) / speed,
+        gameTimeRemaining: GAME_DURATION_SEC,
+        cycleTimeRemaining: CYCLE_INTERVAL_SEC,
+      });
+    }
+
+    // Tick: timers + movement + combat (interval = 1000/speed in bot mode)
     _tickInterval = setInterval(() => {
       const s = get();
       if (s.phase !== 'playing') { clearAllTimers(); return; }
@@ -799,7 +806,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       // Run economy cycle?
       if (now >= s.nextCycleTime) {
         get().runCycle();
-        set({ nextCycleTime: now + CYCLE_INTERVAL_SEC * 1000 });
+        const speedForCycle = (s.gameMode === 'bot_vs_bot' || s.gameMode === 'bot_vs_bot_4') ? (s.simSpeedMultiplier || 1) : 1;
+        set({ nextCycleTime: now + (CYCLE_INTERVAL_SEC * 1000) / speedForCycle });
       }
 
       // Game over?
@@ -836,7 +844,23 @@ export const useGameStore = create<GameState>((set, get) => ({
           });
         }
       }
-    }, 1000);
+    }, intervalMs);
+  },
+
+  setSimSpeedMultiplier: (speed: 1 | 2 | 4) => {
+    const s = get();
+    if (s.phase !== 'playing' || (s.gameMode !== 'bot_vs_bot' && s.gameMode !== 'bot_vs_bot_4')) return;
+    const now = Date.now();
+    const curSpeed = s.simSpeedMultiplier || 1;
+    const gameRemSec = Math.max(0, (s.gameEndTime - now) / 1000) * curSpeed;
+    const cycleRemSec = Math.max(0, (s.nextCycleTime - now) / 1000) * curSpeed;
+    set({
+      simSpeedMultiplier: speed,
+      gameEndTime: now + (gameRemSec * 1000) / speed,
+      nextCycleTime: now + (cycleRemSec * 1000) / speed,
+    });
+    clearAllTimers();
+    get().startRealTimeLoop({ preserveTimes: true });
   },
 
   stopRealTimeLoop: () => clearAllTimers(),
@@ -1107,13 +1131,38 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   selectHex: (q, r) => {
     const s = get();
-    // Tactical panel: assigning move/intercept destination for a stack
+    // Tactical: assigning move/intercept destination for selected stacks (bottom-bar flow)
+    if (s.assigningTacticalForSelectedStacks !== null) {
+      const tile = s.tiles.get(tileKey(q, r));
+      if (tile && tile.biome !== 'water') {
+        get().setTacticalMoveTargetForSelected(q, r);
+      } else {
+        get().addNotification('Invalid destination (water). Click land.', 'warning');
+      }
+      return;
+    }
+    // Tactical panel: assigning move/intercept destination for a single stack (legacy)
     if (s.assigningTacticalForStack !== null) {
       const tile = s.tiles.get(tileKey(q, r));
       if (tile && tile.biome !== 'water') {
         get().setTacticalMoveTarget(q, r);
       } else {
         get().addNotification('Invalid destination (water). Click land.', 'warning');
+      }
+      return;
+    }
+    // Split stack: click adjacent land hex to place the split-off units
+    if (s.splitStackPending !== null) {
+      const { fromQ, fromR, count } = s.splitStackPending;
+      const dist = hexDistance(fromQ, fromR, q, r);
+      const isSame = fromQ === q && fromR === r;
+      const tile = s.tiles.get(tileKey(q, r));
+      if (!isSame && dist === 1 && tile && tile.biome !== 'water') {
+        get().splitStackToHex(q, r);
+      } else if (isSame) {
+        get().cancelSplitStack();
+      } else {
+        get().addNotification('Click an adjacent land hex to place the split stack.', 'warning');
       }
       return;
     }
@@ -1150,6 +1199,20 @@ export const useGameStore = create<GameState>((set, get) => ({
     if (s.selectedHex && s.selectedHex.q === q && s.selectedHex.r === r) {
       set({ selectedHex: null, uiMode: 'normal', pendingMove: null, selectedClusterKey: s.supplyViewTab === 'supply' ? null : s.selectedClusterKey });
       return;
+    }
+
+    // Click-to-move: selected stack + click empty/valid destination → set move (smoother than using Move button)
+    if (s.selectedHex && s.uiMode === 'normal') {
+      const stack = s.units.filter(u => u.q === s.selectedHex!.q && u.r === s.selectedHex!.r && u.ownerId === HUMAN_ID && u.hp > 0);
+      const destHasFriendly = s.units.some(u => u.q === q && u.r === r && u.ownerId === HUMAN_ID && u.hp > 0);
+      if (stack.length > 0 && !destHasFriendly) {
+        const dist = hexDistance(s.selectedHex.q, s.selectedHex.r, q, r);
+        const tile = s.tiles.get(tileKey(q, r));
+        if (dist >= 1 && dist <= 10 && tile && tile.biome !== 'water') {
+          get().setPendingMove(q, r);
+          return;
+        }
+      }
     }
 
     // In supply view: resolve cluster from road or city hex, show cluster panel
@@ -1189,6 +1252,9 @@ export const useGameStore = create<GameState>((set, get) => ({
     const s = get();
     if (s.pendingTacticalOrders !== null) {
       get().cancelTacticalMode();
+    }
+    if (s.splitStackPending !== null) {
+      set({ splitStackPending: null });
     }
     if (s.uiMode === 'build_mine' || s.uiMode === 'build_quarry' || s.uiMode === 'build_gold_mine' || s.uiMode === 'build_road') {
       set({ selectedHex: null, uiMode: 'normal', pendingMove: null, roadPathSelection: [], selectedClusterKey: null });
@@ -1989,11 +2055,11 @@ export const useGameStore = create<GameState>((set, get) => ({
   },
 
   openTacticalMode: () => {
-    set({ pendingTacticalOrders: {}, assigningTacticalForStack: null, assigningTacticalOrderType: null });
+    set({ pendingTacticalOrders: {}, tacticalSelectedStackKeys: [], assigningTacticalForSelectedStacks: null, assigningTacticalForStack: null, assigningTacticalOrderType: null });
   },
 
   cancelTacticalMode: () => {
-    set({ pendingTacticalOrders: null, assigningTacticalForStack: null, assigningTacticalOrderType: null });
+    set({ pendingTacticalOrders: null, tacticalSelectedStackKeys: [], assigningTacticalForSelectedStacks: null, assigningTacticalForStack: null, assigningTacticalOrderType: null });
   },
 
   setTacticalOrder: (stackKey, order) => {
@@ -2007,6 +2073,79 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   startTacticalMoveForStack: (stackKey, orderType = 'move') => {
     set({ assigningTacticalForStack: stackKey, assigningTacticalOrderType: orderType });
+  },
+
+  setTacticalSelectedStackKeys: (keys) => {
+    set({ tacticalSelectedStackKeys: keys });
+  },
+
+  toggleTacticalStack: (stackKey) => {
+    const s = get();
+    const next = s.tacticalSelectedStackKeys.includes(stackKey)
+      ? s.tacticalSelectedStackKeys.filter(k => k !== stackKey)
+      : [...s.tacticalSelectedStackKeys, stackKey];
+    set({ tacticalSelectedStackKeys: next });
+  },
+
+  startTacticalOrderForSelected: (orderType) => {
+    const s = get();
+    if (s.pendingTacticalOrders === null) return;
+    const humanKeys = new Set<string>();
+    for (const u of s.units) {
+      if (u.ownerId === HUMAN_ID && u.hp > 0) humanKeys.add(tileKey(u.q, u.r));
+    }
+    const stackKeys = s.tacticalSelectedStackKeys.length > 0
+      ? s.tacticalSelectedStackKeys.filter(k => humanKeys.has(k))
+      : Array.from(humanKeys);
+    if (stackKeys.length === 0) {
+      get().addNotification('Select at least one army in the list, or use orders to assign to all.', 'warning');
+      return;
+    }
+    set({ assigningTacticalForSelectedStacks: { orderType, stackKeys }, assigningTacticalForStack: null, assigningTacticalOrderType: null });
+  },
+
+  setTacticalMoveTargetForSelected: (toQ, toR) => {
+    const s = get();
+    const pending = s.assigningTacticalForSelectedStacks;
+    if (!pending || s.pendingTacticalOrders === null) return;
+    const { orderType, stackKeys } = pending;
+    const tile = s.tiles.get(tileKey(toQ, toR));
+    if (!tile || tile.biome === 'water') return;
+    const next = { ...s.pendingTacticalOrders };
+    for (const stackKey of stackKeys) {
+      const [fromQ, fromR] = stackKey.split(',').map(Number);
+      const dist = hexDistance(fromQ, fromR, toQ, toR);
+      if (dist <= 10 && dist > 0) next[stackKey] = { type: orderType, toQ, toR };
+    }
+    set({ pendingTacticalOrders: next, assigningTacticalForSelectedStacks: null });
+    get().addNotification(`${stackKeys.length} stack(s) → (${toQ}, ${toR}). Confirm when ready.`, 'info');
+  },
+
+  setTacticalDefendForSelected: (cityId) => {
+    const s = get();
+    if (s.pendingTacticalOrders === null) return;
+    const humanKeys = new Set<string>();
+    for (const u of s.units) {
+      if (u.ownerId === HUMAN_ID && u.hp > 0) humanKeys.add(tileKey(u.q, u.r));
+    }
+    const stackKeys = s.tacticalSelectedStackKeys.length > 0
+      ? s.tacticalSelectedStackKeys.filter(k => humanKeys.has(k))
+      : Array.from(humanKeys);
+    if (stackKeys.length === 0) return;
+    const next = { ...s.pendingTacticalOrders };
+    for (const k of stackKeys) next[k] = { type: 'defend', cityId };
+    set({ pendingTacticalOrders: next });
+    get().addNotification(`${stackKeys.length} stack(s) set to defend. Confirm when ready.`, 'info');
+  },
+
+  clearTacticalOrdersForSelected: () => {
+    const s = get();
+    if (s.pendingTacticalOrders === null) return;
+    const humanKeys = new Set(s.tacticalSelectedStackKeys);
+    if (humanKeys.size === 0) return;
+    const next = { ...s.pendingTacticalOrders };
+    for (const k of humanKeys) delete next[k];
+    set({ pendingTacticalOrders: next });
   },
 
   setTacticalMoveTarget: (toQ, toR) => {
@@ -2059,7 +2198,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         notifs.push(`Stack at (${fromQ},${fromR}) → (${order.toQ},${order.toR})`);
       }
     }
-    set({ units, pendingTacticalOrders: null, assigningTacticalForStack: null, assigningTacticalOrderType: null });
+    set({ units, pendingTacticalOrders: null, tacticalSelectedStackKeys: [], assigningTacticalForSelectedStacks: null, assigningTacticalForStack: null, assigningTacticalOrderType: null });
     if (notifs.length > 0) get().addNotification(`Orders: ${notifs.join('; ')}`, 'info');
   },
 
@@ -2081,6 +2220,41 @@ export const useGameStore = create<GameState>((set, get) => ({
     });
     set({ units: newUnits, cities: newCities, selectedHex: null, uiMode: 'normal' });
     get().addNotification(`Disbanded ${toRemove.length} unit(s); population returned.`, 'info');
+  },
+
+  startSplitStack: (count) => {
+    const s = get();
+    if (!s.selectedHex) return;
+    const { q: fromQ, r: fromR } = s.selectedHex;
+    const stack = s.units.filter(u => u.q === fromQ && u.r === fromR && u.ownerId === HUMAN_ID && u.hp > 0);
+    const n = Math.max(1, Math.min(count, stack.length - 1));
+    if (n >= stack.length) {
+      get().addNotification('Split must leave at least one unit in the stack.', 'warning');
+      return;
+    }
+    set({ splitStackPending: { fromQ, fromR, count: n } });
+    get().addNotification(`Splitting ${n} unit(s). Click an adjacent hex to place them.`, 'info');
+  },
+
+  cancelSplitStack: () => {
+    set({ splitStackPending: null });
+  },
+
+  splitStackToHex: (toQ, toR) => {
+    const s = get();
+    const pending = s.splitStackPending;
+    if (!pending) return;
+    const { fromQ, fromR, count } = pending;
+    const stack = s.units.filter(u => u.q === fromQ && u.r === fromR && u.ownerId === HUMAN_ID && u.hp > 0);
+    const toMove = stack.slice(0, count);
+    const ids = new Set(toMove.map(u => u.id));
+    const newUnits = s.units.map(u =>
+      ids.has(u.id)
+        ? { ...u, q: toQ, r: toR, targetQ: undefined, targetR: undefined, status: 'idle' as const }
+        : u
+    );
+    set({ units: newUnits, splitStackPending: null });
+    get().addNotification(`Split ${count} unit(s) to (${toQ}, ${toR}).`, 'info');
   },
 
   setSiegeAssault: (assault) => {

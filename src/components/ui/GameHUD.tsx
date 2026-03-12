@@ -147,12 +147,14 @@ function VictoryScreen() {
 // ─── Playing HUD ───────────────────────────────────────────────────
 
 function PlayingHUD() {
+  const pendingTacticalOrders = useGameStore(s => s.pendingTacticalOrders);
   return (
     <>
       <TopBar />
       <WeatherOverlay />
       <CityModal />
       <SidePanel />
+      {pendingTacticalOrders !== null && <TacticalBottomBar />}
       <SupplyClusterSidePanel />
       <SupplyViewPanel />
       <MoveConfirmPopup />
@@ -638,6 +640,8 @@ function TopBar() {
   const tiles = useGameStore(s => s.tiles);
   const activeWeather = useGameStore(s => s.activeWeather);
   const gameMode = useGameStore(s => s.gameMode);
+  const simSpeedMultiplier = useGameStore(s => s.simSpeedMultiplier);
+  const setSimSpeedMultiplier = useGameStore(s => s.setSimSpeedMultiplier);
   const getSelectedCityForDisplay = useGameStore(s => s.getSelectedCityForDisplay);
   const pendingTacticalOrders = useGameStore(s => s.pendingTacticalOrders);
   const openTacticalMode = useGameStore(s => s.openTacticalMode);
@@ -745,6 +749,24 @@ function TopBar() {
         </span>
         {(gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4') && displayPlayer && (
           <span className="text-empire-gold/80 text-xs font-medium">Observing: {displayPlayer.name}</span>
+        )}
+        {(gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4') && (
+          <div className="flex items-center gap-0.5">
+            {([1, 2, 4] as const).map((speed) => (
+              <button
+                key={speed}
+                type="button"
+                onClick={() => setSimSpeedMultiplier(speed)}
+                className={`px-2 py-1 rounded text-xs font-medium transition-colors ${
+                  simSpeedMultiplier === speed
+                    ? 'bg-empire-gold/30 text-empire-gold border border-empire-gold/50'
+                    : 'bg-empire-stone/20 text-empire-parchment/70 border border-empire-stone/30 hover:bg-empire-stone/30'
+                }`}
+              >
+                {speed}x
+              </button>
+            ))}
+          </div>
         )}
         <div className="w-px h-5 bg-empire-stone/30" />
 
@@ -895,15 +917,14 @@ function Stat({ label, value, color = 'text-empire-parchment' }: { label: string
   );
 }
 
-// ─── Tactical Panel (batch orders for all stacks) ───────────────────
+// ─── Tactical Panel (stack list only; orders from bottom bar) ────────
 
 function TacticalPanel() {
   const units = useGameStore(s => s.units);
   const cities = useGameStore(s => s.cities);
   const pendingTacticalOrders = useGameStore(s => s.pendingTacticalOrders);
-  const assigningTacticalForStack = useGameStore(s => s.assigningTacticalForStack);
-  const setTacticalOrder = useGameStore(s => s.setTacticalOrder);
-  const startTacticalMoveForStack = useGameStore(s => s.startTacticalMoveForStack);
+  const tacticalSelectedStackKeys = useGameStore(s => s.tacticalSelectedStackKeys);
+  const toggleTacticalStack = useGameStore(s => s.toggleTacticalStack);
   const confirmTacticalOrders = useGameStore(s => s.confirmTacticalOrders);
   const cancelTacticalMode = useGameStore(s => s.cancelTacticalMode);
 
@@ -934,21 +955,17 @@ function TacticalPanel() {
             ×
           </button>
         </div>
-        <p className="text-empire-parchment/50 text-[10px]">
-          Assign Move, Defend, or Intercept per stack. Then Confirm to execute all.
+        <p className="text-empire-parchment/70 text-xs">
+          <strong>1.</strong> Click stacks below to select armies. <strong>2.</strong> Pick an order at the bottom of the screen (Move, Attack, Defend). <strong>3.</strong> For Move/Attack, click the map to choose the tile. Then Confirm.
         </p>
-
-        {assigningTacticalForStack && (
-          <div className="px-2 py-1.5 bg-amber-900/30 border border-amber-500/40 rounded text-xs text-amber-300">
-            Click map to choose destination for this stack.
-          </div>
-        )}
-
+        <p className="text-empire-parchment/50 text-[10px]">
+          Selected: {tacticalSelectedStackKeys.length === 0 ? 'all armies' : `${tacticalSelectedStackKeys.length} stack(s)`}
+        </p>
         <div className="space-y-2 max-h-60 overflow-y-auto">
           {humanStacks.map(({ q, r, units: stackUnits }) => {
             const stackKey = tileKey(q, r);
             const order = pendingTacticalOrders?.[stackKey];
-            const isAssigning = assigningTacticalForStack === stackKey;
+            const isSelected = tacticalSelectedStackKeys.includes(stackKey);
             const counts: Record<string, number> = {};
             let status = 'idle';
             for (const u of stackUnits) {
@@ -962,11 +979,17 @@ function TacticalPanel() {
             return (
               <div
                 key={stackKey}
-                className={`rounded border p-2 space-y-1.5 ${isAssigning ? 'border-amber-500/60 bg-amber-900/20' : 'border-empire-stone/30 bg-empire-stone/10'}`}
+                role="button"
+                tabIndex={0}
+                onClick={() => toggleTacticalStack(stackKey)}
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleTacticalStack(stackKey); } }}
+                className={`rounded border p-2 cursor-pointer select-none transition-colors ${
+                  isSelected ? 'border-cyan-500/60 bg-cyan-900/20 ring-1 ring-cyan-400/40' : 'border-empire-stone/30 bg-empire-stone/10 hover:bg-empire-stone/20'
+                }`}
               >
                 <div className="flex justify-between items-start gap-2">
                   <div className="text-xs">
-                    <span className="text-empire-parchment font-medium">({q}, {r})</span>
+                    <span className="text-empire-parchment font-medium">Stack at ({q}, {r})</span>
                     <span className="text-empire-parchment/50 ml-1">— {stackUnits.length} unit{stackUnits.length !== 1 ? 's' : ''}</span>
                     <div className="text-[10px] text-empire-parchment/60 truncate" title={comp}>{comp}</div>
                     <span className={`text-[10px] ${status === 'fighting' ? 'text-red-400' : status === 'moving' ? 'text-green-400' : 'text-empire-parchment/50'}`}>
@@ -975,7 +998,7 @@ function TacticalPanel() {
                   </div>
                 </div>
                 {order && (
-                  <div className="text-[10px] text-empire-gold/80">
+                  <div className="text-[10px] text-empire-gold/80 mt-1">
                     {order.type === 'defend' && order.cityId
                       ? `Defend ${friendlyCities.find(c => c.id === order.cityId)?.name ?? 'city'}`
                       : order.type === 'move' || order.type === 'intercept'
@@ -983,47 +1006,6 @@ function TacticalPanel() {
                         : ''}
                   </div>
                 )}
-                <div className="flex flex-wrap gap-1">
-                  <button
-                    type="button"
-                    onClick={() => setTacticalOrder(stackKey, null)}
-                    className="px-1.5 py-0.5 text-[10px] rounded border border-empire-stone/40 text-empire-parchment/70 hover:bg-empire-stone/20"
-                  >
-                    None
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => startTacticalMoveForStack(stackKey)}
-                    disabled={!!assigningTacticalForStack}
-                    className="px-1.5 py-0.5 text-[10px] rounded border border-green-500/40 text-green-300 hover:bg-green-900/30 disabled:opacity-50"
-                  >
-                    Move
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => startTacticalMoveForStack(stackKey, 'intercept')}
-                    disabled={!!assigningTacticalForStack}
-                    className="px-1.5 py-0.5 text-[10px] rounded border border-amber-500/40 text-amber-300 hover:bg-amber-900/30 disabled:opacity-50"
-                  >
-                    Intercept
-                  </button>
-                  {friendlyCities.length > 0 && (
-                    <select
-                      className="px-1.5 py-0.5 text-[10px] rounded border border-blue-500/40 bg-empire-dark text-blue-300 focus:outline-none"
-                      value={order?.type === 'defend' ? order.cityId ?? '' : ''}
-                      onChange={(e) => {
-                        const cityId = e.target.value;
-                        if (cityId) setTacticalOrder(stackKey, { type: 'defend', cityId });
-                        else setTacticalOrder(stackKey, null);
-                      }}
-                    >
-                      <option value="">Defend...</option>
-                      {friendlyCities.map(c => (
-                        <option key={c.id} value={c.id}>{c.name}</option>
-                      ))}
-                    </select>
-                  )}
-                </div>
               </div>
             );
           })}
@@ -1050,6 +1032,77 @@ function TacticalPanel() {
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ─── Tactical Bottom Bar (HoI4-style order buttons) ──────────────────
+
+function TacticalBottomBar() {
+  const pendingTacticalOrders = useGameStore(s => s.pendingTacticalOrders);
+  const tacticalSelectedStackKeys = useGameStore(s => s.tacticalSelectedStackKeys);
+  const assigningTacticalForSelectedStacks = useGameStore(s => s.assigningTacticalForSelectedStacks);
+  const cities = useGameStore(s => s.cities);
+  const startTacticalOrderForSelected = useGameStore(s => s.startTacticalOrderForSelected);
+  const setTacticalDefendForSelected = useGameStore(s => s.setTacticalDefendForSelected);
+  const clearTacticalOrdersForSelected = useGameStore(s => s.clearTacticalOrdersForSelected);
+
+  if (pendingTacticalOrders === null) return null;
+
+  const friendlyCities = cities.filter(c => c.ownerId === 'player_human');
+  const isAssigningDestination = assigningTacticalForSelectedStacks !== null;
+  const selectedCount = tacticalSelectedStackKeys.length;
+
+  return (
+    <div className="fixed bottom-0 left-0 right-0 z-20 pointer-events-auto bg-empire-dark/95 border-t border-empire-gold/40 px-4 py-3 flex flex-wrap items-center gap-4">
+      <span className="text-empire-gold font-bold text-sm uppercase tracking-wide">Orders</span>
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => startTacticalOrderForSelected('move')}
+          disabled={isAssigningDestination}
+          className="px-4 py-2 text-sm rounded border border-green-500/50 bg-green-900/20 text-green-300 hover:bg-green-800/40 disabled:opacity-50 disabled:cursor-not-allowed font-medium"
+        >
+          Move
+        </button>
+        <button
+          type="button"
+          onClick={() => startTacticalOrderForSelected('intercept')}
+          disabled={isAssigningDestination}
+          className="px-4 py-2 text-sm rounded border border-amber-500/50 bg-amber-900/20 text-amber-300 hover:bg-amber-800/40 disabled:opacity-50 disabled:cursor-not-allowed font-medium"
+        >
+          Attack
+        </button>
+        {friendlyCities.length > 0 && (
+          <select
+            className="px-3 py-2 text-sm rounded border border-blue-500/50 bg-empire-dark text-blue-300 focus:outline-none font-medium"
+            value=""
+            onChange={(e) => {
+              const cityId = e.target.value;
+              if (cityId) setTacticalDefendForSelected(cityId);
+              e.target.value = '';
+            }}
+          >
+            <option value="">Defend city...</option>
+            {friendlyCities.map(c => (
+              <option key={c.id} value={c.id}>{c.name}</option>
+            ))}
+          </select>
+        )}
+        <button
+          type="button"
+          onClick={clearTacticalOrdersForSelected}
+          className="px-3 py-2 text-sm rounded border border-empire-stone/40 text-empire-parchment/80 hover:bg-empire-stone/20 disabled={selectedCount === 0}"
+          disabled={selectedCount === 0}
+        >
+          Clear selected
+        </button>
+      </div>
+      {isAssigningDestination && (
+        <span className="text-amber-300 text-sm font-medium animate-pulse">
+          → {assigningTacticalForSelectedStacks!.orderType === 'intercept' ? 'Attack' : 'Move'}: click map to choose destination for {assigningTacticalForSelectedStacks!.stackKeys.length} army(ies)
+        </span>
+      )}
     </div>
   );
 }
@@ -2193,14 +2246,20 @@ function BattlePanel({ friendly, enemy }: { friendly: import('@/types/game').Uni
 // ─── Army Panel (Stack Composition) ────────────────────────────────
 
 function ArmyPanel({ units }: { units: import('@/types/game').Unit[] }) {
+  const [showUnitList, setShowUnitList] = useState(false);
+  const [splitCount, setSplitCount] = useState('');
   const setStance = useGameStore(s => s.setStance);
   const startDefendMode = useGameStore(s => s.startDefendMode);
   const startInterceptMode = useGameStore(s => s.startInterceptMode);
   const setRetreat = useGameStore(s => s.setRetreat);
   const disbandSelectedUnits = useGameStore(s => s.disbandSelectedUnits);
   const setSiegeAssault = useGameStore(s => s.setSiegeAssault);
+  const startSplitStack = useGameStore(s => s.startSplitStack);
+  const cancelSplitStack = useGameStore(s => s.cancelSplitStack);
   const uiMode = useGameStore(s => s.uiMode);
   const cities = useGameStore(s => s.cities);
+  const selectedHex = useGameStore(s => s.selectedHex);
+  const splitStackPending = useGameStore(s => s.splitStackPending);
 
   const counts: Record<UnitType, number> = { infantry: 0, cavalry: 0, ranged: 0, builder: 0, trebuchet: 0, battering_ram: 0, defender: 0 };
   let totalHp = 0, totalMaxHp = 0;
@@ -2226,107 +2285,118 @@ function ArmyPanel({ units }: { units: import('@/types/game').Unit[] }) {
     passive: 'text-gray-400 border-gray-500/40 bg-gray-900/20',
   };
 
+  const isThisStackSplitting = selectedHex && splitStackPending && splitStackPending.fromQ === selectedHex.q && splitStackPending.fromR === selectedHex.r;
+  const canSplit = units.length > 1;
+  const defaultSplitHalf = Math.max(1, Math.floor(units.length / 2));
+  const splitN = isThisStackSplitting ? splitStackPending!.count : (splitCount === '' ? defaultSplitHalf : Math.max(1, Math.min(units.length - 1, parseInt(splitCount, 10) || defaultSplitHalf)));
+
   return (
     <div className="space-y-2">
-      <h3 className="text-green-400 text-xs font-semibold">{hasCombatUnits ? 'ARMY' : 'UNITS'} ({units.length})</h3>
+      {/* One-line summary: title + composition + HP */}
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <h3 className="text-green-400 text-xs font-semibold shrink-0">{hasCombatUnits ? 'ARMY' : 'UNITS'} ({units.length})</h3>
+        <div className="flex gap-1.5 text-[10px] text-empire-parchment/90 flex-wrap">
+          {counts.infantry > 0 && <span>&#9876;{counts.infantry}</span>}
+          {counts.cavalry > 0 && <span>&#9822;{counts.cavalry}</span>}
+          {counts.ranged > 0 && <span>&#127993;{counts.ranged}</span>}
+          {counts.trebuchet > 0 && <span>&#9883;{counts.trebuchet}</span>}
+          {counts.battering_ram > 0 && <span>&#128737;{counts.battering_ram}</span>}
+          {counts.defender > 0 && <span>Def{counts.defender}</span>}
+        </div>
+        <span className="text-empire-parchment/60 text-[10px] ml-auto">HP {totalHp}/{totalMaxHp}</span>
+      </div>
+      <div className="h-1.5 bg-empire-stone/30 rounded-full overflow-hidden">
+        <div className="h-full bg-green-500 rounded-full transition-all" style={{ width: `${totalMaxHp ? (totalHp / totalMaxHp) * 100 : 0}%` }} />
+      </div>
 
-      {/* Siege status (design §41–44) */}
+      {/* Siege status — compact */}
       {(defendCityName || retreating || assaulting) && (
-        <div className="text-[10px] space-y-0.5 px-2 py-1.5 bg-empire-stone/20 rounded border border-empire-stone/30">
+        <div className="text-[10px] space-y-0.5 px-2 py-1 bg-empire-stone/20 rounded border border-empire-stone/30">
           {defendCityName && <div className="text-blue-400">Defending {defendCityName}</div>}
-          {retreating && <div className="text-amber-400">Retreating (2s delay)</div>}
-          {assaulting && <div className="text-red-400">Siege: Assault (attack debuff)</div>}
+          {retreating && <div className="text-amber-400">Retreating</div>}
+          {assaulting && <div className="text-red-400">Siege: Assault</div>}
         </div>
       )}
 
-      {/* Composition */}
-      <div className="flex gap-2 text-xs flex-wrap">
-        {counts.infantry > 0 && <span className="text-empire-parchment">&#9876; {counts.infantry} Inf</span>}
-        {counts.cavalry > 0 && <span className="text-empire-parchment">&#9822; {counts.cavalry} Cav</span>}
-        {counts.ranged > 0 && <span className="text-empire-parchment">&#127993; {counts.ranged} Rng</span>}
-        {counts.trebuchet > 0 && <span className="text-empire-parchment">&#9883; {counts.trebuchet} Treb</span>}
-        {counts.battering_ram > 0 && <span className="text-empire-parchment">&#128737; {counts.battering_ram} Ram</span>}
-        {counts.defender > 0 && <span className="text-empire-parchment">&#128737; {counts.defender} Def</span>}
-      </div>
-
-      {/* HP bar */}
-      <div className="flex items-center gap-2 text-xs">
-        <span className="text-empire-parchment/50">HP</span>
-        <div className="flex-1 h-1.5 bg-empire-stone/30 rounded-full overflow-hidden">
-          <div className="h-full bg-green-500 rounded-full transition-all" style={{ width: `${totalMaxHp ? (totalHp / totalMaxHp) * 100 : 0}%` }} />
-        </div>
-        <span className="text-empire-parchment text-[10px]">{totalHp}/{totalMaxHp}</span>
-      </div>
-
-      {/* Stance toggle — only for combat units */}
+      {/* Stance + actions in one compact block */}
       {hasCombatUnits && (
-        <div>
-          <label className="text-xs text-empire-parchment/50 block mb-1">Stance</label>
+        <div className="space-y-1.5">
           <div className="flex gap-1">
             {stances.map(s => (
               <button key={s} onClick={() => setStance(s)}
-                className={`flex-1 px-1 py-1 text-[10px] rounded border capitalize transition-colors ${
+                className={`flex-1 px-1 py-0.5 text-[10px] rounded border capitalize transition-colors ${
                   avgStance === s ? stanceColors[s] : 'border-empire-stone/20 text-empire-parchment/30'
                 }`}>
                 {s}
               </button>
             ))}
           </div>
-        </div>
-      )}
-
-      {/* Defend, Intercept, Retreat, Disband, Siege (design §2, 3, 34, 41–44) */}
-      {hasCombatUnits && (
-        <div className="space-y-1">
           <div className="flex flex-wrap gap-1">
             <button type="button" onClick={startDefendMode} disabled={uiMode === 'defend'}
-              className="px-2 py-1 text-[10px] rounded border border-blue-500/40 bg-blue-900/20 text-blue-300 hover:bg-blue-800/30 disabled:opacity-50">
-              Defend
-            </button>
+              className="px-1.5 py-0.5 text-[10px] rounded border border-blue-500/40 bg-blue-900/20 text-blue-300 hover:bg-blue-800/30 disabled:opacity-50">Defend</button>
             <button type="button" onClick={startInterceptMode} disabled={uiMode === 'intercept'}
-              className="px-2 py-1 text-[10px] rounded border border-amber-500/40 bg-amber-900/20 text-amber-300 hover:bg-amber-800/30 disabled:opacity-50">
-              Intercept
-            </button>
+              className="px-1.5 py-0.5 text-[10px] rounded border border-amber-500/40 bg-amber-900/20 text-amber-300 hover:bg-amber-800/30 disabled:opacity-50">Intercept</button>
             <button type="button" onClick={setRetreat}
-              className="px-2 py-1 text-[10px] rounded border border-amber-600/50 bg-amber-950/30 text-amber-400 hover:bg-amber-900/40">
-              Retreat
-            </button>
+              className="px-1.5 py-0.5 text-[10px] rounded border border-amber-600/50 bg-amber-950/30 text-amber-400 hover:bg-amber-900/40">Retreat</button>
             <button type="button" onClick={() => setSiegeAssault(!assaulting)}
-              className={`px-2 py-1 text-[10px] rounded border ${assaulting ? 'border-red-500/60 bg-red-900/30 text-red-300' : 'border-empire-stone/40 bg-empire-stone/20 text-empire-parchment/80'}`}>
-              Siege {assaulting ? '(Assault)' : ''}
-            </button>
+              className={`px-1.5 py-0.5 text-[10px] rounded border ${assaulting ? 'border-red-500/60 bg-red-900/30 text-red-300' : 'border-empire-stone/40 bg-empire-stone/20 text-empire-parchment/80'}`}>Siege</button>
             <button type="button" onClick={disbandSelectedUnits}
-              className="px-2 py-1 text-[10px] rounded border border-red-700/50 bg-red-950/30 text-red-400 hover:bg-red-900/40">
-              Disband
-            </button>
+              className="px-1.5 py-0.5 text-[10px] rounded border border-red-700/50 bg-red-950/30 text-red-400 hover:bg-red-900/40">Disband</button>
           </div>
           {(uiMode === 'defend' || uiMode === 'intercept') && (
-            <p className="text-empire-parchment/60 text-[10px]">
-              {uiMode === 'defend' ? 'Click a friendly city to defend' : 'Click hex to intercept'}
-            </p>
+            <p className="text-empire-parchment/60 text-[10px]">{uiMode === 'defend' ? 'Click a friendly city' : 'Click hex to intercept'}</p>
           )}
         </div>
       )}
 
-      {/* Individual units */}
-      <div className="space-y-0.5 max-h-32 overflow-y-auto">
-        {units.map(u => (
-          <div key={u.id} className="flex items-center justify-between text-[10px]">
-            <span className="text-empire-parchment capitalize">
-              {u.type} {u.level > 0 && <span className="text-yellow-400">Lv{u.level}</span>}
-            </span>
-            <div className="flex gap-2">
-              <span className={u.hp < u.maxHp * 0.3 ? 'text-red-400' : 'text-red-300'}>HP {u.hp}/{u.maxHp}</span>
-              <span className="text-purple-300">XP {u.xp}</span>
-              <span className={`${
-                u.status === 'fighting' ? 'text-red-400' :
-                u.status === 'moving' ? 'text-green-400' :
-                u.status === 'starving' ? 'text-orange-400' :
-                'text-gray-400'
-              }`}>{u.status}</span>
-            </div>
+      {/* Split stack — easy split to adjacent hex */}
+      {canSplit && (
+        <div className="rounded border border-empire-stone/30 bg-empire-stone/10 px-2 py-1.5 space-y-1">
+          {isThisStackSplitting ? (
+            <>
+              <p className="text-cyan-400/90 text-[10px]">Move {splitStackPending!.count} unit(s) → click adjacent hex</p>
+              <button type="button" onClick={cancelSplitStack}
+                className="px-2 py-0.5 text-[10px] rounded border border-empire-stone/40 text-empire-parchment/80 hover:bg-empire-stone/20">Cancel</button>
+            </>
+          ) : (
+            <>
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="text-empire-parchment/80 text-[10px]">Split:</span>
+                <input type="number" min={1} max={units.length - 1} value={splitCount || defaultSplitHalf}
+                  onChange={e => setSplitCount(e.target.value === '' ? '' : e.target.value)}
+                  className="w-12 px-1 py-0.5 text-[10px] rounded border border-empire-stone/40 bg-empire-dark text-empire-parchment"
+                />
+                <span className="text-empire-parchment/50 text-[10px]">units</span>
+                <button type="button" onClick={() => startSplitStack(splitN)}
+                  className="px-2 py-0.5 text-[10px] rounded border border-cyan-500/50 bg-cyan-900/20 text-cyan-300 hover:bg-cyan-800/30">Split</button>
+              </div>
+              <p className="text-empire-parchment/50 text-[10px]">New stack goes to adjacent hex</p>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Collapsible unit list */}
+      <div>
+        <button type="button" onClick={() => setShowUnitList(v => !v)}
+          className="flex items-center gap-1 text-empire-parchment/60 text-[10px] hover:text-empire-parchment">
+          <span className="transition-transform">{showUnitList ? '▼' : '▶'}</span>
+          Unit list ({units.length})
+        </button>
+        {showUnitList && (
+          <div className="space-y-0.5 max-h-28 overflow-y-auto mt-1">
+            {units.map(u => (
+              <div key={u.id} className="flex items-center justify-between text-[10px]">
+                <span className="text-empire-parchment capitalize">{u.type}{u.level > 0 ? ` Lv${u.level}` : ''}</span>
+                <div className="flex gap-2">
+                  <span className={u.hp < u.maxHp * 0.3 ? 'text-red-400' : 'text-red-300'}>HP {u.hp}/{u.maxHp}</span>
+                  <span className="text-purple-300">XP {u.xp}</span>
+                  <span className="text-gray-400">{u.status}</span>
+                </div>
+              </div>
+            ))}
           </div>
-        ))}
+        )}
       </div>
 
       <p className="text-green-400/60 text-[10px]">Click a hex to move army there</p>

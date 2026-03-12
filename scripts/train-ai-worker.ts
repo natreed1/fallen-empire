@@ -1,6 +1,7 @@
 /**
- * Worker for parallel candidate evaluation. Receives (candidate, baseline, options)
- * and returns total score. Loaded by train-ai.ts via worker_threads.
+ * Worker for parallel match evaluation. Handles two job types:
+ * - 'match': Run one match pair (2 sims), return single score — used for fine-grained parallelism.
+ * - 'eval': Run full candidate evaluation (legacy) — one worker per candidate.
  */
 import { parentPort } from 'worker_threads';
 import {
@@ -44,35 +45,78 @@ function scoreResult(
   return s;
 }
 
-interface WorkerInput {
+interface MatchJob {
+  type: 'match';
+  workerId: number;
+  jobId: number;
+  candidateId: number;
+  matchIndex: number;
   candidate: AiParams;
   baseline: AiParams;
-  matchesPerPair: number;
+  seed: number;
   maxCycles: number;
   mapConfigOverride?: { width: number; height: number };
 }
 
-function evaluate(candidate: AiParams, baseline: AiParams, opts: WorkerInput): number[] {
-  const c = ensureFullParams(candidate);
-  const b = ensureFullParams(baseline);
+interface EvalJob {
+  type: 'eval';
+  id: number;
+  workerId: number;
+  opts: {
+    candidate: AiParams;
+    baseline: AiParams;
+    matchesPerPair: number;
+    maxCycles: number;
+    mapConfigOverride?: { width: number; height: number };
+  };
+}
+
+function runOneMatch(job: MatchJob): number {
+  const c = ensureFullParams(job.candidate);
+  const b = ensureFullParams(job.baseline);
   const simOpts: RunSimulationOptions = {
-    maxCycles: opts.maxCycles,
-    mapConfigOverride: opts.mapConfigOverride,
+    maxCycles: job.maxCycles,
+    mapConfigOverride: job.mapConfigOverride,
+  };
+  const asAi1 = runSimulation(c, b, job.seed, job.maxCycles, simOpts);
+  const asAi2 = runSimulation(b, c, job.seed + 1, job.maxCycles, simOpts);
+  return scoreResult(asAi1, 'ai1', job.maxCycles) + scoreResult(asAi2, 'ai2', job.maxCycles);
+}
+
+function evaluate(job: EvalJob): number[] {
+  const c = ensureFullParams(job.opts.candidate);
+  const b = ensureFullParams(job.opts.baseline);
+  const simOpts: RunSimulationOptions = {
+    maxCycles: job.opts.maxCycles,
+    mapConfigOverride: job.opts.mapConfigOverride,
   };
   const matchScores: number[] = [];
-  for (let i = 0; i < opts.matchesPerPair; i++) {
+  for (let i = 0; i < job.opts.matchesPerPair; i++) {
     const seed = (Date.now() + i * 1000 + Math.floor(Math.random() * 1000)) % 1_000_000;
-    const asAi1 = runSimulation(c, b, seed, opts.maxCycles, simOpts);
-    const asAi2 = runSimulation(b, c, seed + 1, opts.maxCycles, simOpts);
+    const asAi1 = runSimulation(c, b, seed, job.opts.maxCycles, simOpts);
+    const asAi2 = runSimulation(b, c, seed + 1, job.opts.maxCycles, simOpts);
     matchScores.push(
-      scoreResult(asAi1, 'ai1', opts.maxCycles) + scoreResult(asAi2, 'ai2', opts.maxCycles),
+      scoreResult(asAi1, 'ai1', job.opts.maxCycles) + scoreResult(asAi2, 'ai2', job.opts.maxCycles),
     );
   }
   return matchScores;
 }
 
-parentPort!.on('message', (msg: { type: 'eval'; id: number; workerId: number; opts: WorkerInput }) => {
-  if (msg.type !== 'eval') return;
-  const scores = evaluate(msg.opts.candidate, msg.opts.baseline, msg.opts);
-  parentPort!.postMessage({ id: msg.id, scores, workerId: msg.workerId });
+parentPort!.on('message', (msg: MatchJob | EvalJob) => {
+  if (msg.type === 'match') {
+    const score = runOneMatch(msg);
+    parentPort!.postMessage({
+      type: 'match',
+      workerId: msg.workerId,
+      jobId: msg.jobId,
+      candidateId: msg.candidateId,
+      matchIndex: msg.matchIndex,
+      score,
+    });
+    return;
+  }
+  if (msg.type === 'eval') {
+    const scores = evaluate(msg);
+    parentPort!.postMessage({ id: msg.id, scores, workerId: msg.workerId });
+  }
 });

@@ -170,28 +170,53 @@ export function getMutationSpaceSummary(): MutationSpaceSummary {
   };
 }
 
+/** Per-param override from trend report: custom bounds and mutation strength multiplier. */
+export interface TrendParamOverride {
+  min: number;
+  max: number;
+  strengthMultiplier: number;
+}
+
+/** Overrides keyed by param name. When present, use these bounds and scale strength. */
+export type TrendMutationOverrides = Partial<Record<Exclude<EvolvableParamKey, 'militaryLevelMixTarget'>, TrendParamOverride>>;
+
 function mutateScalar(
   parent: AiParams,
   key: Exclude<EvolvableParamKey, 'militaryLevelMixTarget'>,
   strength: number,
+  override?: TrendParamOverride,
 ): number {
   const range = MUTATION_RANGES[key];
+  const effectiveRange = override
+    ? { min: Math.min(override.min, override.max), max: Math.max(override.min, override.max), round: range.round }
+    : range;
+  const effectiveStrength = override ? strength * override.strengthMultiplier : strength;
   const v = (parent as unknown as Record<string, number>)[key] ?? 0;
-  const delta = (Math.random() - 0.5) * 2 * strength * (range.max - range.min) * 0.5;
-  let out = Math.max(range.min, Math.min(range.max, v + delta));
+  const delta = (Math.random() - 0.5) * 2 * effectiveStrength * (effectiveRange.max - effectiveRange.min) * 0.5;
+  let out = Math.max(effectiveRange.min, Math.min(effectiveRange.max, v + delta));
   if (range.round) out = Math.round(out);
   return out;
 }
 
 /**
  * Mutate all evolvable params with safe min/max clamps. Structured param (militaryLevelMixTarget) is normalized.
+ * If trendOverrides provided (from artifacts/trend-report.json), uses recommendedMutationRange and classification-based strength.
  */
-export function mutateParams(parent: AiParams, strength: number): AiParams {
+export function mutateParams(
+  parent: AiParams,
+  strength: number,
+  trendOverrides?: TrendMutationOverrides,
+): AiParams {
   const base = { ...DEFAULT_AI_PARAMS, ...parent };
   const out: AiParams = { ...base };
 
   for (const key of SCALAR_PARAM_KEYS) {
-    (out as unknown as Record<string, number>)[key] = mutateScalar(out, key, strength);
+    (out as unknown as Record<string, number>)[key] = mutateScalar(
+      out,
+      key,
+      strength,
+      trendOverrides?.[key],
+    );
   }
 
   // Structured: mutate L1,L2,L3 then normalize

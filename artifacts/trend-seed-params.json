@@ -1,0 +1,17 @@
+{
+  "siegeChance": 0.1870713074224755,
+  "recruitGoldThreshold": 436.6666666666667,
+  "maxRecruitsWhenRich": 2.3333333333333335,
+  "maxRecruitsWhenPoor": 1.6666666666666667,
+  "targetDefenderWeight": 3.110308675413465,
+  "nearestTargetDistanceRatio": 0.8557716031374959,
+  "builderRecruitChance": 0.19989589231798885,
+  "foodBufferThreshold": 15.333333333333334,
+  "sustainableMilitaryMultiplier": 0.9132501710522994,
+  "farmFirstBias": 0.06501187153183689,
+  "farmPriorityThreshold": 15,
+  "factoryUpgradePriority": 0.5549048246578984,
+  "scoutChance": 0.9885162733132601,
+  "incorporateVillageChance": 0.9618420419161536,
+  "targetPopWeight": 1.0552790537918249
+}

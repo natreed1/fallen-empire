@@ -1,0 +1,46 @@
+[
+  {
+    "id": "c_B_2",
+    "params": {
+      "siegeChance": 0.17800790602475214,
+      "recruitGoldThreshold": 385,
+      "maxRecruitsWhenRich": 2,
+      "maxRecruitsWhenPoor": 2,
+      "targetDefenderWeight": 3.3167496126639,
+      "nearestTargetDistanceRatio": 0.8483137052330059,
+      "builderRecruitChance": 0.23805114940862476,
+      "foodBufferThreshold": 13,
+      "sustainableMilitaryMultiplier": 0.8898943366712494,
+      "farmFirstBias": 0.08636340916817856,
+      "farmPriorityThreshold": 14,
+      "factoryUpgradePriority": 0.554697484864791,
+      "scoutChance": 0.966120635113808,
+      "incorporateVillageChance": 0.9019732251907755,
+      "targetPopWeight": 1.1419326907803193
+    },
+    "points": -79.2,
+    "addedAt": "2026-03-04T01:14:13.522Z"
+  },
+  {
+    "id": "c_A_2",
+    "params": {
+      "siegeChance": 0.185173647455197,
+      "recruitGoldThreshold": 466,
+      "maxRecruitsWhenRich": 2,
+      "maxRecruitsWhenPoor": 3,
+      "targetDefenderWeight": 2.4155168210381177,
+      "nearestTargetDistanceRatio": 0.857322638514711,
+      "builderRecruitChance": 0.19123790848198616,
+      "foodBufferThreshold": 13,
+      "sustainableMilitaryMultiplier": 0.933448089763103,
+      "farmFirstBias": 0,
+      "farmPriorityThreshold": 15,
+      "factoryUpgradePriority": 0.6404085642168857,
+      "scoutChance": 1,
+      "incorporateVillageChance": 0.9631124825956946,
+      "targetPopWeight": 1.0324243410278313
+    },
+    "points": -324.4,
+    "addedAt": "2026-03-04T01:13:51.257Z"
+  }
+]

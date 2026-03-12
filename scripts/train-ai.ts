@@ -24,12 +24,13 @@ import {
   assertAiParamsConsistency,
   getMutationSpaceSummary,
   EVOLVABLE_PARAM_KEYS,
+  type TrendMutationOverrides,
 } from '../src/lib/aiParamsSchema';
 
 // ─── Config (env overrides for main knobs only) ────────────────────────
 const POPULATION_SIZE = parseInt(process.env.TRAIN_POPULATION_SIZE || '12', 10) || 12;
 const GENERATIONS = parseInt(process.env.TRAIN_GENERATIONS || '20', 10) || 20;
-const MATCHES_PER_PAIR = parseInt(process.env.TRAIN_MATCHES_PER_PAIR || '8', 10) || 8;
+const MATCHES_PER_PAIR = parseInt(process.env.TRAIN_MATCHES_PER_PAIR || '12', 10) || 12;
 const MAX_CYCLES = parseInt(process.env.TRAIN_MAX_CYCLES || '250', 10) || 250;
 const MAP_SIZE = parseInt(process.env.TRAIN_MAP_SIZE || '38', 10) || 38;
 const NUM_WORKERS_ENV = process.env.NUM_WORKERS;
@@ -68,9 +69,40 @@ function cloneParams(p: Partial<AiParams>): AiParams {
   return ensureFullParams(p);
 }
 
-function mutateParams(p: Partial<AiParams>): AiParams {
-  const mutated = mutateParamsFromSchema(ensureFullParams(p), MUTATION_STRENGTH);
+function mutateParams(p: Partial<AiParams>, trendOverrides?: TrendMutationOverrides): AiParams {
+  const mutated = mutateParamsFromSchema(ensureFullParams(p), MUTATION_STRENGTH, trendOverrides);
   return { ...DEFAULT_AI_PARAMS, ...mutated };
+}
+
+/** Load trend report and build mutation overrides. Returns undefined if not found. */
+function loadTrendReportOverrides(): TrendMutationOverrides | undefined {
+  const p = path.join(process.cwd(), 'artifacts', 'trend-report.json');
+  if (!fs.existsSync(p)) return undefined;
+  try {
+    const data = JSON.parse(fs.readFileSync(p, 'utf-8'));
+    const params = data.params ?? data;
+    const overrides: TrendMutationOverrides = {};
+    const strengthByClass: Record<string, number> = {
+      'stable-good': 0.7,
+      exploratory: 1.2,
+      'unstable-bad': 1.2,
+      default: 1,
+    };
+    for (const [key, entry] of Object.entries(params)) {
+      if (key === 'militaryLevelMixTarget' || !entry || typeof entry !== 'object') continue;
+      const rec = (entry as { recommendedMutationRange?: number[]; classification?: string });
+      const rng = rec.recommendedMutationRange;
+      if (!Array.isArray(rng) || rng.length < 2) continue;
+      const [a, b] = rng;
+      const min = Math.min(a, b);
+      const max = Math.max(a, b);
+      const strengthMultiplier = strengthByClass[rec.classification ?? ''] ?? strengthByClass.default;
+      overrides[key as keyof TrendMutationOverrides] = { min, max, strengthMultiplier };
+    }
+    return Object.keys(overrides).length > 0 ? overrides : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function scoreResult(
@@ -130,70 +162,109 @@ function evaluateCandidateMain(candidate: AiParams, baseline: AiParams): number[
   return matchScores;
 }
 
+/** Jobs for match-level parallelism: one job = one match pair (2 sims). */
+interface MatchJob {
+  jobId: number;
+  candidateId: number;
+  matchIndex: number;
+  seed: number;
+}
+
 async function evaluatePopulationParallel(
   population: AiParams[],
   baseline: AiParams,
   workerPath: string,
+  onProgress?: (completed: number, total: number, elapsedMs: number) => void,
 ): Promise<number[][]> {
-  const scores = new Array<number[] | undefined>(population.length);
-  let nextIdx = 0;
-  let resolved = 0;
   const nw = Math.max(1, NUM_WORKERS);
+  const jobs: MatchJob[] = [];
+  let jobId = 0;
+  for (let c = 0; c < population.length; c++) {
+    for (let m = 0; m < MATCHES_PER_PAIR; m++) {
+      const seed = (Date.now() + c * 1000 + m * 997) % 1_000_000;
+      jobs.push({ jobId: jobId++, candidateId: c, matchIndex: m, seed });
+    }
+  }
+
+  const scores: number[][] = population.map(() => []);
+  let completed = 0;
+  let nextJobIdx = 0;
+  const startMs = Date.now();
+  let lastLoggedPct = -1;
+
   return new Promise((resolve, reject) => {
-    const onResult = (id: number, matchScores: number[], workerId: number) => {
-      scores[id] = matchScores;
-      workerFree[workerId] = true;
-      resolved++;
-      if (resolved === population.length) {
-        workers.forEach(w => w.terminate());
-        resolve(scores as number[][]);
-      } else scheduleNext();
-    };
     const workers: Worker[] = [];
-    const workerFree: boolean[] = [];
-    function scheduleNext() {
-      if (nextIdx >= population.length) return;
-      const id = nextIdx++;
-      const opts = {
-        candidate: population[id],
+    const workerBusy: boolean[] = [];
+
+    function dispatchNext(workerIdx: number) {
+      if (nextJobIdx >= jobs.length) {
+        workerBusy[workerIdx] = false;
+        if (completed === jobs.length) {
+          workers.forEach(w => w.terminate());
+          resolve(scores);
+        }
+        return;
+      }
+      const job = jobs[nextJobIdx++];
+      workerBusy[workerIdx] = true;
+      workers[workerIdx].postMessage({
+        type: 'match',
+        workerId: workerIdx,
+        jobId: job.jobId,
+        candidateId: job.candidateId,
+        matchIndex: job.matchIndex,
+        candidate: population[job.candidateId],
         baseline,
-        matchesPerPair: MATCHES_PER_PAIR,
+        seed: job.seed,
         maxCycles: MAX_CYCLES,
         mapConfigOverride: TRAIN_MAP,
-      };
-      for (let w = 0; w < nw; w++) {
-        if (workerFree[w]) {
-          workerFree[w] = false;
-          workers[w].postMessage({ type: 'eval', id, workerId: w, opts });
-          return;
-        }
-      }
-      nextIdx--;
+      } as const);
     }
+
+    function onResult(msg: { type: string; workerId: number; candidateId: number; matchIndex: number; score: number }) {
+      if (msg.type !== 'match') return;
+      scores[msg.candidateId][msg.matchIndex] = msg.score;
+      completed++;
+      const elapsed = Date.now() - startMs;
+      const pct = Math.floor((100 * completed) / jobs.length);
+      if (onProgress && (pct >= lastLoggedPct + 5 || completed === jobs.length)) {
+        lastLoggedPct = pct;
+        onProgress(completed, jobs.length, elapsed);
+      }
+      dispatchNext(msg.workerId);
+    }
+
     for (let w = 0; w < nw; w++) {
       const worker = new Worker(workerPath, {
         workerData: null,
         execArgv: ['-r', 'ts-node/register', '-r', 'tsconfig-paths/register'],
       });
-      workerFree[w] = true;
-      worker.on('message', (msg: { id: number; scores: number[]; workerId: number }) =>
-        onResult(msg.id, msg.scores, msg.workerId));
+      workerBusy.push(false);
+      worker.on('message', (msg: { type?: string; workerId?: number; candidateId?: number; matchIndex?: number; score?: number }) => {
+        onResult(msg as { type: string; workerId: number; candidateId: number; matchIndex: number; score: number });
+      });
       worker.on('error', reject);
       worker.on('exit', (code) => { if (code !== 0) reject(new Error(`Worker exit ${code}`)); });
       workers.push(worker);
     }
-    for (let i = 0; i < Math.min(nw, population.length); i++) scheduleNext();
+
+    for (let w = 0; w < Math.min(nw, jobs.length); w++) dispatchNext(w);
   });
 }
 
 async function main() {
   assertAiParamsConsistency();
   const summary = getMutationSpaceSummary();
+  const trendOverrides = loadTrendReportOverrides();
   console.log('Training AI parameters (evolutionary + multi-game evaluation)...');
   console.log(`Param count: ${summary.totalParamCount}  In mutation space: ${summary.paramsInMutationSpace.length}  Excluded: ${summary.excludedFromMutation.length} (${summary.excludedReason})`);
   console.log(`Evolvable params: ${EVOLVABLE_PARAM_KEYS.join(', ')}`);
   console.log(`Map: ${TRAIN_MAP.width}x${TRAIN_MAP.height}  maxCycles: ${MAX_CYCLES}  workers: ${NUM_WORKERS}`);
   console.log(`Gens: ${GENERATIONS}  population: ${POPULATION_SIZE}  matches/candidate: ${MATCHES_PER_PAIR}  elite: ${ELITE_COUNT}`);
+  if (trendOverrides) {
+    const n = Object.keys(trendOverrides).length;
+    console.log(`Trend report: using ${n} param overrides (artifacts/trend-report.json)`);
+  }
   console.log('');
 
   let baseline: AiParams = cloneParams(DEFAULT_AI_PARAMS);
@@ -201,7 +272,7 @@ async function main() {
   console.log('');
   let population: AiParams[] = [cloneParams(baseline)];
   while (population.length < POPULATION_SIZE) {
-    population.push(mutateParams(population[population.length - 1]));
+    population.push(mutateParams(population[population.length - 1], trendOverrides));
   }
 
   const workerDir = path.join(process.cwd(), 'scripts');
@@ -216,11 +287,21 @@ async function main() {
 
     let matchScoresPerCandidate: number[][];
     if (NUM_WORKERS > 1) {
-      process.stdout.write(`  Evaluating ${population.length} candidates (${NUM_WORKERS} workers)...`);
+      const totalJobs = population.length * MATCHES_PER_PAIR;
       const start = Date.now();
+      console.log(`  Evaluating ${population.length} candidates, ${totalJobs} matches (${NUM_WORKERS} workers)...`);
       try {
-        matchScoresPerCandidate = await evaluatePopulationParallel(population, baseline, workerPath);
-        console.log(` ${((Date.now() - start) / 1000).toFixed(1)}s`);
+        matchScoresPerCandidate = await evaluatePopulationParallel(
+          population,
+          baseline,
+          workerPath,
+          (completed, total, elapsedMs) => {
+            const pct = Math.floor((100 * completed) / total);
+            const rate = elapsedMs > 0 ? (completed / (elapsedMs / 1000)).toFixed(1) : '0';
+            process.stdout.write(`\r  Matches ${completed}/${total} (${pct}%) · ${rate}/s · ${(elapsedMs / 1000).toFixed(1)}s   `);
+          },
+        );
+        console.log(`\r  Done: ${totalJobs} matches in ${((Date.now() - start) / 1000).toFixed(1)}s`);
       } catch (workerErr) {
         console.log('');
         console.warn('  Workers failed, falling back to main thread:', (workerErr as Error).message);
@@ -271,7 +352,7 @@ async function main() {
     population = scored.slice(0, ELITE_COUNT).map(s => s.params);
     while (population.length < POPULATION_SIZE) {
       const parent = population[Math.floor(Math.random() * ELITE_COUNT)];
-      population.push(mutateParams(parent));
+      population.push(mutateParams(parent, trendOverrides));
     }
   }
 
