@@ -41,6 +41,11 @@ export type SimSystemConfig = {
   // Scenario battery: min thresholds for promotion / champion
   scenarioMinScoreForPromotion: number;
   scenarioMinScoreForChampion: number;
+  // Fortress/supply competence for promotion to A (used when scenario battery includes fortress_adaptation)
+  /** Min score on fortress_adaptation scenario for promotion (closure success). */
+  fortressClosureMinScore: number;
+  /** Max ratio supplyStressCycles/cycle (from diagnostics) to allow promotion; NaN = not used. */
+  supplyStressMaxRatio: number;
 
   // Probation: fallback-promoted bots must improve within N seasons or auto-relegate
   probationSeasonsBeforeRelegate: number;
@@ -121,6 +126,8 @@ export function loadSimSystemConfig(): SimSystemConfig {
 
     scenarioMinScoreForPromotion: parseEnvFloat('SIM_SCENARIO_MIN_PROMOTION', 0, -50, 100),
     scenarioMinScoreForChampion: parseEnvFloat('SIM_SCENARIO_MIN_CHAMPION', 10, -50, 100),
+    fortressClosureMinScore: parseEnvFloat('SIM_FORTRESS_CLOSURE_MIN_SCORE', -20, -50, 100),
+    supplyStressMaxRatio: parseEnvFloat('SIM_SUPPLY_STRESS_MAX_RATIO', 0.5, 0, 1),
 
     probationSeasonsBeforeRelegate: parseEnvInt('SIM_PROBATION_SEASONS', 2, 1, 8),
     gateLenientUntilSeason: parseEnvInt('SIM_GATE_LENIENT_UNTIL_SEASON', 3, 1, 20),

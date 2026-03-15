@@ -43,21 +43,24 @@ export function passesTierAGate(agent: SimAgent, config: SimSystemConfig, season
   return score > minScore;
 }
 
-/** Scenario battery pass for promotion: all scenario scores >= min. Lenient early seasons use lower min. */
+/** Scenario battery pass for promotion: all scenario scores >= min. Lenient early seasons use lower min. Includes fortress_adaptation (closure success) when in battery. */
 export function passesScenarioMinimumForPromotion(
-  scenarioResults: { score: number }[],
+  scenarioResults: { scenarioId?: string; score: number }[],
   config: SimSystemConfig,
   season: number = 999,
 ): boolean {
   const min = isLenientSeason(season, config)
     ? Math.max(-50, config.scenarioMinScoreForPromotion - 10)
     : config.scenarioMinScoreForPromotion;
-  return scenarioResults.every(r => r.score >= min);
+  const allPass = scenarioResults.every(r => r.score >= min);
+  const fortressResult = scenarioResults.find(r => r.scenarioId === 'fortress_adaptation');
+  const fortressPass = !fortressResult || fortressResult.score >= config.fortressClosureMinScore;
+  return allPass && fortressPass;
 }
 
 /** Scenario battery pass for champion: all >= champion threshold. */
 export function passesScenarioMinimumForChampion(
-  scenarioResults: { score: number }[],
+  scenarioResults: { scenarioId?: string; score: number }[],
   config: SimSystemConfig,
 ): boolean {
   return scenarioResults.every(r => r.score >= config.scenarioMinScoreForChampion);

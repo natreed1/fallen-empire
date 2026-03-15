@@ -480,7 +480,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       movementTick(movingUnits, movingHeroes, s.tiles, s.wallSections, s.cities);
 
       // -- Combat tick (pass movingHeroes so hp mutations apply; then remove killed heroes) --
-      const combatResult = combatTick(movingUnits, movingHeroes, s.cycle, s.cities);
+      const combatResult = combatTick(movingUnits, movingHeroes, s.cycle, s.cities, s.tiles, now);
 
       // -- Siege tick: trebuchet/ram damage walls (design §17–19) --
       const wallSectionsMut = s.wallSections.map(w => ({ ...w }));
@@ -906,14 +906,15 @@ export const useGameStore = create<GameState>((set, get) => ({
     const upkeepResult = upkeepTick(units, cities, s.heroes, newCycle, s.tiles, s.territory, econ.clusters);
     notifs.push(...upkeepResult.notifications);
 
-    // AI turn(s): for each AI player, plan and apply builds, upgrades, recruits, moves, scouts, village incorporation
+    // AI turn(s): for each AI player, plan and apply builds, upgrades, recruits, moves, scouts, village incorporation, wall rings
     const aiPlayerIds = s.gameMode === 'bot_vs_bot' ? [AI_ID, AI_ID_2] : [AI_ID];
     let scoutMissions = s.scoutMissions;
     let scoutedHexes = s.scoutedHexes;
     let tilesMut = s.tiles;
+    let wallSectionsMut: WallSection[] = s.wallSections.map(w => ({ ...w }));
 
     for (const aiPlayerId of aiPlayerIds) {
-      const aiPlan = planAiTurn(aiPlayerId, cities, units, players, s.tiles, s.territory, getAiParams());
+      const aiPlan = planAiTurn(aiPlayerId, cities, units, players, s.tiles, s.territory, getAiParams(), wallSectionsMut);
       const aiPlayer = players.find(p => p.id === aiPlayerId);
       if (!aiPlayer) continue;
 
@@ -1057,6 +1058,38 @@ export const useGameStore = create<GameState>((set, get) => ({
           unit.nextMoveAt = 0;
         }
       }
+
+      // AI wall ring builds
+      const buildWallRings = (aiPlan as { buildWallRings?: { cityId: string; ring: 1 | 2 }[] }).buildWallRings ?? [];
+      for (const wr of buildWallRings) {
+        const city = cities.find(c => c.id === wr.cityId);
+        if (!city || city.ownerId !== aiPlayerId) continue;
+        const ringHexes = getHexRing(city.q, city.r, wr.ring);
+        const ownerWallKeys = new Set(wallSectionsMut.filter(w => w.ownerId === aiPlayerId).map(w => tileKey(w.q, w.r)));
+        const validHexes: { q: number; r: number }[] = [];
+        for (const { q, r } of ringHexes) {
+          const tile = tilesMut.get(tileKey(q, r));
+          if (!tile || tile.biome === 'water') continue;
+          if (ownerWallKeys.has(tileKey(q, r))) continue;
+          validHexes.push({ q, r });
+        }
+        if (validHexes.length === 0) continue;
+        const totalCost = validHexes.length * WALL_SECTION_STONE_COST;
+        const cityStone = city.storage.stone ?? 0;
+        if (cityStone < totalCost) continue;
+        const cityIdx = cities.indexOf(city);
+        if (cityIdx >= 0) {
+          cities[cityIdx] = {
+            ...cities[cityIdx],
+            storage: { ...cities[cityIdx].storage, stone: Math.max(0, cityStone - totalCost) },
+          };
+        }
+        for (const { q, r } of validHexes) {
+          wallSectionsMut.push({
+            q, r, ownerId: aiPlayerId, hp: WALL_SECTION_HP, maxHp: WALL_SECTION_HP,
+          });
+        }
+      }
     }
 
     let aliveUnits = units.filter(u => u.hp > 0);
@@ -1117,6 +1150,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     set({
       cities: citiesToSet, units: aliveUnits, players: playersAfterAncientCity, territory, phase,
       cycle: newCycle,
+      wallSections: wallSectionsMut,
       combatHexesThisCycle: new Set(),
       activeWeather: currentWeather,
       lastWeatherEndCycle: lastWeatherEnd,

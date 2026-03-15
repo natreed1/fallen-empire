@@ -22,6 +22,7 @@ export const SCENARIO_SPECS: ScenarioSpec[] = [
   { id: 'siege_break', name: 'Siege break', minScoreThreshold: 0, seedBase: 50002, gamesPerScenario: 4 },
   { id: 'resource_shock', name: 'Resource shock (lean-food map)', minScoreThreshold: -30, seedBase: 50003, gamesPerScenario: 4 },
   { id: 'village_timing', name: 'Village timing (high-expansion)', minScoreThreshold: 0, seedBase: 50004, gamesPerScenario: 4 },
+  { id: 'fortress_adaptation', name: 'Fortress adaptation', minScoreThreshold: -20, seedBase: 50005, gamesPerScenario: 4 },
 ];
 
 /** Opponent and map per scenario (deterministic). */
@@ -30,6 +31,7 @@ const SCENARIO_OPPONENT: Record<string, string> = {
   siege_break: 'arch_siege_attrition',
   resource_shock: 'arch_turtle',
   village_timing: 'arch_expansion',
+  fortress_adaptation: 'arch_turtle', // defender closes ring vs turtle; or attacker vs pre-fortified
 };
 
 const SCENARIO_MAP: Record<string, string> = {
@@ -37,10 +39,11 @@ const SCENARIO_MAP: Record<string, string> = {
   siege_break: 'balanced',
   resource_shock: 'lean-food',
   village_timing: 'high-expansion',
+  fortress_adaptation: 'fortress-adaptation',
 };
 
 function getSimOpts(mapName: string, mapSize: number, maxCycles: number): RunSimulationOptions {
-  const override = getScenarioMapOverride(mapName as 'balanced' | 'tight' | 'wide' | 'lean-food' | 'high-expansion');
+  const override = getScenarioMapOverride(mapName as import('../lib/scenarios').ScenarioName);
   return {
     maxCycles,
     mapConfigOverride: { width: mapSize, height: mapSize, ...override },

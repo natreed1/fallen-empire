@@ -21,6 +21,7 @@ import {
   DEFENDER_IRON_COST,
   FRONTIER_CYCLES, CITY_NAMES, PLAYER_COLORS,
   CITY_CAPTURE_HOLD_MS,
+  WALL_SECTION_STONE_COST, WALL_SECTION_HP, getHexRing,
 } from '../types/game';
 import { generateMap, placeAncientCity } from '../lib/mapGenerator';
 import { calculateTerritory } from '../lib/territory';
@@ -278,6 +279,11 @@ export function runSimulationWithDiagnostics(
   const unitsAtEnd = state.units.filter(u => u.hp > 0).length;
   const totalStarvationAbort = state.phase === 'total_starvation';
   if (totalStarvationAbort) diag.totalStarvationAbort = true;
+  const totalCycles = state.cycle;
+  if (totalCycles > 0) {
+    if (diag._closureCyclesAi1 != null) diag.closureUptimeAi1 = diag._closureCyclesAi1 / totalCycles;
+    if (diag._closureCyclesAi2 != null) diag.closureUptimeAi2 = diag._closureCyclesAi2 / totalCycles;
+  }
   return {
     winner,
     cycle: state.cycle,
@@ -326,6 +332,43 @@ export type SimDiagnostics = {
   /** Builds in late game (cycle > 100). */
   buildsAi1Late?: Record<string, number>;
   buildsAi2Late?: Record<string, number>;
+  // ── Ring/siege/supply telemetry (per game, optional) ──
+  /** Ring completion ratio (built/target segments) for AI1 key city, max over cycles. */
+  ringCompletionRatioAi1?: number;
+  /** Ring completion ratio for AI2 key city, max over cycles. */
+  ringCompletionRatioAi2?: number;
+  /** Whether AI1 ever had ring closed (any owned city). */
+  isRingClosedAi1?: boolean;
+  /** Whether AI2 ever had ring closed. */
+  isRingClosedAi2?: boolean;
+  /** Cycles to first closure (AI1). */
+  timeToClosureAi1?: number;
+  /** Cycles to first closure (AI2). */
+  timeToClosureAi2?: number;
+  /** Cycles when ring was closed (AI1); closureUptimeAi1 = this / totalCycles at end. */
+  _closureCyclesAi1?: number;
+  /** Cycles when ring was closed (AI2). */
+  _closureCyclesAi2?: number;
+  /** Fraction of cycles ring was closed (AI1), set at end of run. */
+  closureUptimeAi1?: number;
+  /** Fraction of cycles ring was closed (AI2), set at end of run. */
+  closureUptimeAi2?: number;
+  /** Breach count (intact→broken transitions) AI1. */
+  breachCountAi1?: number;
+  /** Breach count AI2. */
+  breachCountAi2?: number;
+  /** Cycles with any military starving (AI1). */
+  supplyStressCyclesAi1?: number;
+  /** Cycles with any military starving (AI2). */
+  supplyStressCyclesAi2?: number;
+  /** Avg distance military to nearest friendly city, final (AI1). */
+  avgMilitaryDistanceToAnchorAi1?: number;
+  /** Avg distance military to nearest friendly city, final (AI2). */
+  avgMilitaryDistanceToAnchorAi2?: number;
+  /** Cycles when all military were starving (AI1). */
+  allStarvingCyclesAi1?: number;
+  /** Cycles when all military were starving (AI2). */
+  allStarvingCyclesAi2?: number;
 };
 
 /** Single step: economy + AI actions + one movement/combat/siege/capture tick. */
@@ -409,6 +452,51 @@ export function stepSimulation(
     const ai2Units = units.filter(u => u.ownerId === AI_ID_2);
     diagnostics.unitStatusCountsAi1 = countStatus(ai1Units);
     diagnostics.unitStatusCountsAi2 = countStatus(ai2Units);
+    // Supply stress / all-starving cycles
+    if (ai1Military.some(u => u.status === 'starving')) diagnostics.supplyStressCyclesAi1 = (diagnostics.supplyStressCyclesAi1 ?? 0) + 1;
+    if (ai2Military.some(u => u.status === 'starving')) diagnostics.supplyStressCyclesAi2 = (diagnostics.supplyStressCyclesAi2 ?? 0) + 1;
+    if (allStarving1) diagnostics.allStarvingCyclesAi1 = (diagnostics.allStarvingCyclesAi1 ?? 0) + 1;
+    if (allStarving2) diagnostics.allStarvingCyclesAi2 = (diagnostics.allStarvingCyclesAi2 ?? 0) + 1;
+    // Avg military distance to nearest friendly city (anchor)
+    const ai1Cities = cities.filter(c => c.ownerId === AI_ID);
+    const ai2Cities = cities.filter(c => c.ownerId === AI_ID_2);
+    if (ai1Cities.length > 0 && ai1Military.length > 0) {
+      const sum = ai1Military.reduce((s, u) => s + Math.min(...ai1Cities.map(c => hexDistance(u.q, u.r, c.q, c.r))), 0);
+      diagnostics.avgMilitaryDistanceToAnchorAi1 = sum / ai1Military.length;
+    }
+    if (ai2Cities.length > 0 && ai2Military.length > 0) {
+      const sum = ai2Military.reduce((s, u) => s + Math.min(...ai2Cities.map(c => hexDistance(u.q, u.r, c.q, c.r))), 0);
+      diagnostics.avgMilitaryDistanceToAnchorAi2 = sum / ai2Military.length;
+    }
+    // Ring completion (key city = first city per side): ring 1 target vs built
+    const wallByKey = new Map(state.wallSections.map(w => [tileKey(w.q, w.r), w]));
+    for (const [side, ownerId] of [['Ai1', AI_ID], ['Ai2', AI_ID_2]] as const) {
+      const sideCities = cities.filter(c => c.ownerId === ownerId);
+      const keyCity = sideCities[0];
+      if (!keyCity) continue;
+      const ring1Hexes = getHexRing(keyCity.q, keyCity.r, 1);
+      let built = 0;
+      let target = 0;
+      for (const { q, r } of ring1Hexes) {
+        const t = state.tiles.get(tileKey(q, r));
+        if (t && t.biome !== 'water') target++;
+        const w = wallByKey.get(tileKey(q, r));
+        if (w && w.ownerId === ownerId && (w.hp ?? 0) > 0) built++;
+      }
+      const ratio = target > 0 ? built / target : 0;
+      const closed = target > 0 && built === target;
+      if (side === 'Ai1') {
+        diagnostics.ringCompletionRatioAi1 = Math.max(diagnostics.ringCompletionRatioAi1 ?? 0, ratio);
+        if (closed) diagnostics.isRingClosedAi1 = true;
+        if (closed && diagnostics.timeToClosureAi1 == null) diagnostics.timeToClosureAi1 = newCycle;
+        if (closed) diagnostics._closureCyclesAi1 = (diagnostics._closureCyclesAi1 ?? 0) + 1;
+      } else {
+        diagnostics.ringCompletionRatioAi2 = Math.max(diagnostics.ringCompletionRatioAi2 ?? 0, ratio);
+        if (closed) diagnostics.isRingClosedAi2 = true;
+        if (closed && diagnostics.timeToClosureAi2 == null) diagnostics.timeToClosureAi2 = newCycle;
+        if (closed) diagnostics._closureCyclesAi2 = (diagnostics._closureCyclesAi2 ?? 0) + 1;
+      }
+    }
   }
 
   // ── AI turns: compute both plans first (for trace), then apply ──
@@ -416,13 +504,14 @@ export function stepSimulation(
   let scoutedHexes = new Set(state.scoutedHexes);
   let tilesMut = state.tiles;
   let constructions = [...state.constructions];
+  let wallSectionsAfterAi: WallSection[] = state.wallSections.map(w => ({ ...w }));
 
   const aiConfigs: { id: string; params: AiParams }[] = [
     { id: AI_ID, params: paramsA },
     { id: AI_ID_2, params: paramsB },
   ];
 
-  const plans = aiConfigs.map(({ id, params }) => planAiTurn(id, cities, units, players, state.tiles, state.territory, params));
+  const plans = aiConfigs.map(({ id, params }) => planAiTurn(id, cities, units, players, state.tiles, state.territory, params, state.wallSections));
 
   if (traceCallback) {
     const ai1CitiesFiltered = cities.filter(c => c.ownerId === AI_ID);
@@ -637,6 +726,38 @@ export function stepSimulation(
         unit.stance = 'aggressive';
       }
     }
+
+    // AI wall ring builds: deduct stone from city, add sections for valid ring hexes that don't already have owner's wall
+    const buildWallRings = (aiPlan as { buildWallRings?: { cityId: string; ring: 1 | 2 }[] }).buildWallRings ?? [];
+    for (const wr of buildWallRings) {
+      const city = cities.find(c => c.id === wr.cityId);
+      if (!city || city.ownerId !== aiPlayerId) continue;
+      const ringHexes = getHexRing(city.q, city.r, wr.ring);
+      const ownerWallKeys = new Set(wallSectionsAfterAi.filter(w => w.ownerId === aiPlayerId).map(w => tileKey(w.q, w.r)));
+      const validHexes: { q: number; r: number }[] = [];
+      for (const { q, r } of ringHexes) {
+        const tile = tilesMut.get(tileKey(q, r));
+        if (!tile || tile.biome === 'water') continue;
+        if (ownerWallKeys.has(tileKey(q, r))) continue;
+        validHexes.push({ q, r });
+      }
+      if (validHexes.length === 0) continue;
+      const totalCost = validHexes.length * WALL_SECTION_STONE_COST;
+      const cityStone = city.storage.stone ?? 0;
+      if (cityStone < totalCost) continue;
+      const cityIdx = cities.indexOf(city);
+      if (cityIdx >= 0) {
+        cities[cityIdx] = {
+          ...cities[cityIdx],
+          storage: { ...cities[cityIdx].storage, stone: Math.max(0, cityStone - totalCost) },
+        };
+      }
+      for (const { q, r } of validHexes) {
+        wallSectionsAfterAi.push({
+          q, r, ownerId: aiPlayerId, hp: WALL_SECTION_HP, maxHp: WALL_SECTION_HP,
+        });
+      }
+    }
   }
 
   // ── Construction tick (one cycle = 30s; same BP logic as live game) ──
@@ -711,9 +832,9 @@ export function stepSimulation(
   // ── One movement + combat + siege tick (use sim time so headless runs advance correctly) ──
   const movingUnits = units.map(u => ({ ...u }));
   const movingHeroes = state.heroes.map(h => ({ ...h }));
-  movementTick(movingUnits, movingHeroes, state.tiles, state.wallSections, citiesToSet, newSimTimeMs);
-  const combatResult = combatTick(movingUnits, movingHeroes, newCycle, citiesToSet, newSimTimeMs);
-  const wallSectionsMut = state.wallSections.map(w => ({ ...w }));
+  movementTick(movingUnits, movingHeroes, state.tiles, wallSectionsAfterAi, citiesToSet, newSimTimeMs);
+  const combatResult = combatTick(movingUnits, movingHeroes, newCycle, citiesToSet, state.tiles, newSimTimeMs);
+  const wallSectionsMut = wallSectionsAfterAi.map(w => ({ ...w }));
   siegeTick(wallSectionsMut, movingUnits);
 
   aliveUnits = movingUnits.filter(u => u.hp > 0 && !combatResult.killedUnitIds.includes(u.id));

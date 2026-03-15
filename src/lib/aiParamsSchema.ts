@@ -53,6 +53,14 @@ export const EVOLVABLE_PARAM_KEYS = [
   'wallBuildPerCityTarget',
   'wallBuildPriority',
   'wallToDefenderSynergyWeight',
+  'wallClosurePriority',
+  'wallRepairPriority',
+  'wallRingTarget',
+  'wallClosureUptimeWeight',
+  'supplyExpansionPriority',
+  'supplyAnchorDistanceWeight',
+  'supplyStarvationRiskWeight',
+  'supplyCityAcquisitionBias',
 ] as const;
 
 export type EvolvableParamKey = (typeof EVOLVABLE_PARAM_KEYS)[number];
@@ -117,6 +125,14 @@ export const MUTATION_RANGES: Record<Exclude<EvolvableParamKey, 'militaryLevelMi
   wallBuildPerCityTarget: { min: 0, max: 6, round: true, exploration: 'medium' },
   wallBuildPriority: { min: 0, max: 1, exploration: 'medium' },
   wallToDefenderSynergyWeight: { min: 0, max: 1, exploration: 'low' },
+  wallClosurePriority: { min: 0, max: 1, exploration: 'medium' },
+  wallRepairPriority: { min: 0, max: 1, exploration: 'medium' },
+  wallRingTarget: { min: 1, max: 2, round: true, exploration: 'low' },
+  wallClosureUptimeWeight: { min: 0, max: 1, exploration: 'medium' },
+  supplyExpansionPriority: { min: 0, max: 1, exploration: 'medium' },
+  supplyAnchorDistanceWeight: { min: 0, max: 2, exploration: 'medium' },
+  supplyStarvationRiskWeight: { min: 0, max: 2, exploration: 'medium' },
+  supplyCityAcquisitionBias: { min: 0, max: 1, exploration: 'medium' },
 };
 
 /** Params intentionally excluded from mutation (fixed). Empty unless we add allowlisted fixed params. */

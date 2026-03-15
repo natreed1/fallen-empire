@@ -12,7 +12,8 @@ export type ScenarioName =
   | 'tight'
   | 'wide'
   | 'lean-food'
-  | 'high-expansion';
+  | 'high-expansion'
+  | 'fortress-adaptation';
 
 /** Map override for each named scenario. Uses map knobs when available. */
 const SCENARIO_OVERRIDES: Record<ScenarioName, Partial<MapConfig>> = {
@@ -55,6 +56,15 @@ const SCENARIO_OVERRIDES: Record<ScenarioName, Partial<MapConfig>> = {
     villageDensity: 0.045,
     provinceDensity: DEFAULT_MAP_CONFIG.provinceDensity,
     moistureScale: DEFAULT_MAP_CONFIG.moistureScale,
+  },
+  /** Fortress adaptation: defender must close ring under pressure; attacker vs pre-fortified defender. */
+  'fortress-adaptation': {
+    width: 32,
+    height: 32,
+    noiseScale: 0.04,
+    moistureScale: DEFAULT_MAP_CONFIG.moistureScale,
+    provinceDensity: 0.02,
+    villageDensity: 0.02,
   },
 };
 

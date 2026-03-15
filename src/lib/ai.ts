@@ -1,10 +1,11 @@
 import {
-  City, Unit, Player, Tile, TerritoryInfo, Hero,
+  City, Unit, Player, Tile, TerritoryInfo, Hero, WallSection,
   BuildingType, UnitType, BUILDING_COSTS, UNIT_COSTS, UNIT_L2_COSTS, UNIT_L3_COSTS, getUnitStats,
   BARACKS_UPGRADE_COST, FACTORY_UPGRADE_COST, FARM_UPGRADE_COST,
-  hexDistance, hexNeighbors, tileKey, generateId,
+  hexDistance, hexNeighbors, tileKey, generateId, getHexRing,
   STARTING_CITY_TEMPLATE, HERO_NAMES, CITY_CENTER_STORAGE,
   BUILDING_IRON_COSTS, SCOUT_MISSION_COST, VILLAGE_INCORPORATE_COST, DEFENDER_IRON_COST, HERO_BASE_HP,
+  WALL_SECTION_STONE_COST, WALL_SECTION_HP,
 } from '@/types/game';
 import { computeCityProductionRate } from '@/lib/gameLoop';
 
@@ -47,6 +48,11 @@ export interface AiIncorporateAction {
   r: number;
 }
 
+export interface AiWallRingAction {
+  cityId: string;
+  ring: 1 | 2;
+}
+
 export interface AiActions {
   builds: AiBuildAction[];
   upgrades: AiUpgradeAction[];
@@ -54,6 +60,7 @@ export interface AiActions {
   moveTargets: AiMoveAction[];
   scouts: AiScoutAction[];
   incorporateVillages: AiIncorporateAction[];
+  buildWallRings: AiWallRingAction[];
 }
 
 // ─── Evolvable AI Parameters (for self-improvement / training) ───────
@@ -158,6 +165,24 @@ export interface AiParams {
   wallBuildPriority: number;
   /** Weight for wall–defender synergy (0–1). */
   wallToDefenderSynergyWeight: number;
+  // ── Wall intelligence (closure, repair, ring target) ──
+  /** Prioritize closing ring vs partial spread (0–1). */
+  wallClosurePriority: number;
+  /** Rebuild breached segments quickly (0–1). */
+  wallRepairPriority: number;
+  /** Preferred ring depth for key cities (1 or 2). */
+  wallRingTarget: number;
+  /** Value maintaining closed state (0–1). */
+  wallClosureUptimeWeight: number;
+  // ── Supply expansion ──
+  /** Priority for supply expansion (0–1). */
+  supplyExpansionPriority: number;
+  /** Reward reducing front-to-city distance (0–2). */
+  supplyAnchorDistanceWeight: number;
+  /** Prioritize moves reducing starvation risk (0–2). */
+  supplyStarvationRiskWeight: number;
+  /** Value capturing/incorporating city/village as anchor (0–1). */
+  supplyCityAcquisitionBias: number;
 }
 
 const DEFAULT_MILITARY_LEVEL_MIX: MilitaryLevelMix = { L1: 0.6, L2: 0.3, L3: 0.1 };
@@ -208,6 +233,14 @@ export const DEFAULT_AI_PARAMS: AiParams = {
   wallBuildPerCityTarget: 2,
   wallBuildPriority: 0.4,
   wallToDefenderSynergyWeight: 0.5,
+  wallClosurePriority: 0.5,
+  wallRepairPriority: 0.5,
+  wallRingTarget: 1,
+  wallClosureUptimeWeight: 0.3,
+  supplyExpansionPriority: 0.4,
+  supplyAnchorDistanceWeight: 0.5,
+  supplyStarvationRiskWeight: 0.5,
+  supplyCityAcquisitionBias: 0.3,
 };
 
 // ─── Food-aware recruit gating (avoid starvation lock in headless sim) ──
@@ -251,14 +284,15 @@ export function planAiTurn(
   tiles: Map<string, Tile>,
   territory: Map<string, TerritoryInfo>,
   params: AiParams = DEFAULT_AI_PARAMS,
+  wallSections: WallSection[] = [],
 ): AiActions {
   const aiCities = cities.filter(c => c.ownerId === aiPlayerId);
   const aiPlayer = players.find(p => p.id === aiPlayerId);
   if (!aiPlayer || aiCities.length === 0) {
-    return { builds: [], upgrades: [], recruits: [], moveTargets: [], scouts: [], incorporateVillages: [] };
+    return { builds: [], upgrades: [], recruits: [], moveTargets: [], scouts: [], incorporateVillages: [], buildWallRings: [] };
   }
 
-  const actions: AiActions = { builds: [], upgrades: [], recruits: [], moveTargets: [], scouts: [], incorporateVillages: [] };
+  const actions: AiActions = { builds: [], upgrades: [], recruits: [], moveTargets: [], scouts: [], incorporateVillages: [], buildWallRings: [] };
   let goldBudget = aiPlayer.gold;
   const enemyCities = cities.filter(c => c.ownerId !== aiPlayerId);
   const aiUnits = units.filter(u => u.ownerId === aiPlayerId && u.hp > 0);
@@ -443,29 +477,64 @@ export function planAiTurn(
     }
   }
 
-  // Incorporate villages: any village where we have military and gold (allow outside territory so sending troops = expansion)
+  // Supply-aware expansion: avg distance from military to nearest friendly city (anchor)
+  const avgDistToAnchor = aiCities.length > 0 && aiUnits.some(u => u.type !== 'builder')
+    ? aiUnits
+        .filter(u => u.type !== 'builder')
+        .reduce((sum, u) => sum + Math.min(...aiCities.map(c => hexDistance(u.q, u.r, c.q, c.r))), 0) /
+      Math.max(1, aiUnits.filter(u => u.type !== 'builder').length)
+    : 0;
+  const anchorDistW = Math.max(0, Math.min(2, params.supplyAnchorDistanceWeight ?? 0.5));
+  const starvationW = Math.max(0, Math.min(2, params.supplyStarvationRiskWeight ?? 0.5));
+  const cityBias = Math.max(0, Math.min(1, params.supplyCityAcquisitionBias ?? 0.3));
+  const expansionPriority = Math.max(0, Math.min(1, params.supplyExpansionPriority ?? 0.4));
+
+  const scoreVillageExpansion = (vq: number, vr: number): number => {
+    const distToNearestCity = aiCities.length > 0 ? Math.min(...aiCities.map(c => hexDistance(vq, vr, c.q, c.r))) : 0;
+    const currentAvg = avgDistToAnchor;
+    const newCities = [...aiCities, { q: vq, r: vr } as City];
+    const newAvg = aiUnits.filter(u => u.type !== 'builder').length > 0
+      ? aiUnits
+          .filter(u => u.type !== 'builder')
+          .reduce((sum, u) => sum + Math.min(...newCities.map(c => hexDistance(u.q, u.r, c.q, c.r))), 0) /
+        Math.max(1, aiUnits.filter(u => u.type !== 'builder').length)
+      : currentAvg;
+    const supplyGain = Math.max(0, (currentAvg - newAvg) * 0.1 * anchorDistW);
+    const starvationRisk = (distToNearestCity / 24) * starvationW;
+    return 1 + supplyGain - starvationRisk + cityBias;
+  };
+
+  // Incorporate villages: order by expansion score when supply expansion is used
+  const villageTilesForIncorp: { q: number; r: number; score: number }[] = [];
   for (const tile of tiles.values()) {
     if (!tile.hasVillage) continue;
     if (cities.some(c => c.q === tile.q && c.r === tile.r)) continue;
     const militaryHere = aiUnits.filter(u => u.q === tile.q && u.r === tile.r && u.type !== 'builder');
-    if (militaryHere.length > 0 && goldBudget >= VILLAGE_INCORPORATE_COST && Math.random() < (params.incorporateVillageChance ?? 1)) {
-      actions.incorporateVillages.push({ q: tile.q, r: tile.r });
+    if (militaryHere.length > 0) villageTilesForIncorp.push({ q: tile.q, r: tile.r, score: scoreVillageExpansion(tile.q, tile.r) });
+  }
+  const sortedForIncorp = villageTilesForIncorp.sort((a, b) => b.score - a.score);
+  for (const { q, r } of sortedForIncorp) {
+    if (goldBudget < VILLAGE_INCORPORATE_COST) break;
+    if (Math.random() < (params.incorporateVillageChance ?? 1)) {
+      actions.incorporateVillages.push({ q, r });
       goldBudget -= VILLAGE_INCORPORATE_COST;
     }
   }
 
-  // Move units toward villages we don't have military on (village expansion)
-  const villagesNeedingUnits: { q: number; r: number }[] = [];
+  // Move units toward villages we don't have military on (village expansion), ordered by expansion score
+  const villagesNeedingUnits: { q: number; r: number; score: number }[] = [];
   for (const tile of tiles.values()) {
     if (!tile.hasVillage) continue;
     if (cities.some(c => c.q === tile.q && c.r === tile.r)) continue;
     const militaryHere = aiUnits.filter(u => u.q === tile.q && u.r === tile.r && u.type !== 'builder');
-    if (militaryHere.length === 0) villagesNeedingUnits.push({ q: tile.q, r: tile.r });
+    if (militaryHere.length === 0) villagesNeedingUnits.push({ q: tile.q, r: tile.r, score: scoreVillageExpansion(tile.q, tile.r) });
   }
+  villagesNeedingUnits.sort((a, b) => b.score - a.score);
   const movableForVillage = aiUnits.filter(u => u.hp > 0 && u.type !== 'builder' && u.status !== 'fighting');
   const assignedToVillage = new Set<string>();
-  if (villagesNeedingUnits.length > 0 && goldBudget >= VILLAGE_INCORPORATE_COST) {
-    for (const v of villagesNeedingUnits.slice(0, 3)) {
+  if (villagesNeedingUnits.length > 0 && goldBudget >= VILLAGE_INCORPORATE_COST && expansionPriority > 0) {
+    const cap = expansionPriority >= 0.5 ? 3 : 2;
+    for (const v of villagesNeedingUnits.slice(0, cap)) {
       const available = movableForVillage.filter(u => !assignedToVillage.has(u.id));
       if (available.length === 0) break;
       let nearest = available[0];
@@ -481,15 +550,21 @@ export function planAiTurn(
     }
   }
 
-  // Move units toward best enemy target (units not already sent to villages)
+  // Move units toward best enemy target (units not already sent to villages). Tie-breaker: prefer targets that become anchors (supplyCityAcquisitionBias).
   if (enemyCities.length > 0) {
     const movableUnits = aiUnits.filter(u => u.hp > 0 && u.type !== 'builder' && u.status !== 'fighting' && !assignedToVillage.has(u.id));
     const enemyUnitCount = (eq: number, er: number): number =>
       units.filter(u => u.ownerId !== aiPlayerId && u.hp > 0 && hexDistance(u.q, u.r, eq, er) <= 2).length;
     const popW = params.targetPopWeight ?? 1;
     const defW = params.targetDefenderWeight;
-    const score = (ec: City): number => popW * ec.population + enemyUnitCount(ec.q, ec.r) * defW;
-    const sortedEnemies = [...enemyCities].sort((a, b) => score(a) - score(b));
+    const baseScore = (ec: City): number => popW * ec.population + enemyUnitCount(ec.q, ec.r) * defW;
+    const distToOurs = (ec: City): number =>
+      aiCities.length === 0 ? 999 : Math.min(...aiCities.map(c => hexDistance(ec.q, ec.r, c.q, c.r)));
+    const score = (ec: City): number => baseScore(ec);
+    // Primary: weakest first; tie-breaker: prefer closer (becomes anchor, supplyCityAcquisitionBias)
+    const sortedEnemies = [...enemyCities].sort(
+      (a, b) => (score(a) - score(b)) || (cityBias > 0 ? distToOurs(a) - distToOurs(b) : 0)
+    );
     const primaryTarget = sortedEnemies[0];
     const ratio = Math.max(0.1, Math.min(1, params.nearestTargetDistanceRatio));
     const unitIdsTargeted = new Set(actions.moveTargets.map(mt => mt.unitId));
@@ -503,6 +578,42 @@ export function planAiTurn(
       }
       if (bestDist > 1) {
         actions.moveTargets.push({ unitId: unit.id, toQ: target.q, toR: target.r });
+      }
+    }
+  }
+
+  // Wall closure: for each owned city, compute ring topology and optionally build ring (closure first, then repair/expand)
+  const wallPriority = params.wallBuildPriority ?? 0;
+  const closurePriority = params.wallClosurePriority ?? 0.5;
+  const repairPriority = params.wallRepairPriority ?? 0.5;
+  const ringTarget = Math.max(1, Math.min(2, Math.round(params.wallRingTarget ?? 1))) as 1 | 2;
+  if (wallSections.length >= 0 && (wallPriority > 0 || closurePriority > 0 || repairPriority > 0)) {
+    const ownerWallByKey = new Map<string, WallSection>();
+    for (const w of wallSections) {
+      if (w.ownerId === aiPlayerId) ownerWallByKey.set(tileKey(w.q, w.r), w);
+    }
+    for (const city of aiCities) {
+      const stoneAvailable = city.storage.stone ?? 0;
+      if (stoneAvailable < WALL_SECTION_STONE_COST) continue;
+      const ring1 = getRingTopology(city, 1, tiles, ownerWallByKey);
+      const ring2 = getRingTopology(city, 2, tiles, ownerWallByKey);
+      // Prefer closing ring 1 first; if closed, consider ring 2 (or repair ring 1 if breached)
+      const wantClosure = closurePriority >= 0.3;
+      const wantRepair = repairPriority >= 0.3;
+      let buildRing: 1 | 2 | null = null;
+      if (!ring1.isClosed && ring1.missingCount > 0 && wantClosure) {
+        const cost = ring1.missingCount * WALL_SECTION_STONE_COST;
+        if (stoneAvailable >= cost) buildRing = 1;
+      }
+      if (!buildRing && ring1.isClosed && ring1.isBreached && wantRepair && ring1.missingCount > 0 && stoneAvailable >= ring1.missingCount * WALL_SECTION_STONE_COST) {
+        buildRing = 1;
+      }
+      if (!buildRing && ring1.isClosed && ringTarget >= 2 && !ring2.isClosed && ring2.missingCount > 0 && wantClosure) {
+        const cost = ring2.missingCount * WALL_SECTION_STONE_COST;
+        if (stoneAvailable >= cost) buildRing = 2;
+      }
+      if (buildRing && Math.random() < wallPriority + (buildRing === 1 && !ring1.isClosed ? closurePriority : 0) * 0.5) {
+        actions.buildWallRings.push({ cityId: city.id, ring: buildRing });
       }
     }
   }
@@ -526,6 +637,38 @@ export function createAiHero(q: number, r: number, ownerId: string): Hero {
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────
+
+/** Ring topology for one city at one ring depth: target perimeter, built/intact count, missing segments, closed, breached. */
+function getRingTopology(
+  city: City,
+  ring: 1 | 2,
+  tiles: Map<string, Tile>,
+  ownerWallByKey: Map<string, WallSection>,
+): { targetCount: number; builtCount: number; missingCount: number; isClosed: boolean; isBreached: boolean } {
+  const ringHexes = getHexRing(city.q, city.r, ring);
+  const validHexes: { q: number; r: number }[] = [];
+  for (const { q, r } of ringHexes) {
+    const tile = tiles.get(tileKey(q, r));
+    if (!tile || tile.biome === 'water') continue;
+    validHexes.push({ q, r });
+  }
+  const targetCount = validHexes.length;
+  let builtCount = 0;
+  let hasAnySection = false;
+  let hasBroken = false;
+  for (const { q, r } of validHexes) {
+    const w = ownerWallByKey.get(tileKey(q, r));
+    if (w) {
+      hasAnySection = true;
+      if ((w.hp ?? 0) > 0) builtCount++;
+      else hasBroken = true;
+    }
+  }
+  const missingCount = targetCount - builtCount;
+  const isClosed = targetCount > 0 && builtCount === targetCount;
+  const isBreached = hasAnySection && hasBroken;
+  return { targetCount, builtCount, missingCount, isClosed, isBreached };
+}
 
 function findEmptyTerritoryTile(
   city: City,

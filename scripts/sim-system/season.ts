@@ -141,7 +141,7 @@ function compareByRobustness(a: SimAgent, b: SimAgent, config: SimSystemConfig):
 function selectForPromotionToA(
   agents: SimAgent[],
   config: SimSystemConfig,
-  scenarioResultsByAgentId: Map<string, { score: number }[]>,
+  scenarioResultsByAgentId: Map<string, { scenarioId?: string; score: number }[]>,
   season: number,
   excludeIds: Set<string>,
 ): SimAgent[] {
@@ -198,7 +198,7 @@ function selectForRelegationToC(agents: SimAgent[], config: SimSystemConfig, cou
 export function applyPromotionRelegation(
   agents: SimAgent[],
   config: SimSystemConfig,
-  scenarioResultsByAgentId: Map<string, { score: number }[]>,
+  scenarioResultsByAgentId: Map<string, { scenarioId?: string; score: number }[]>,
   season: number,
 ): void {
   const targetA = config.tierSizeA;
