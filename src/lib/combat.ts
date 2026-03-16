@@ -15,6 +15,16 @@ export function getUnitAttack(unit: Unit, hero?: Hero): number {
 }
 
 /**
+ * Get effective defense for a unit (from getUnitStats), with optional general hero buff.
+ */
+export function getUnitDefense(unit: Unit, hero?: Hero): number {
+  const stats = getUnitStats(unit);
+  const base = stats.defense;
+  const heroBonus = hero?.type === 'general' ? 1.1 : 1.0;
+  return Math.floor(base * heroBonus);
+}
+
+/**
  * Award XP to a unit.  If XP >= 100, level up: reset XP, increase maxHp, partial heal.
  */
 export function awardXp(unit: Unit, amount: number): boolean {

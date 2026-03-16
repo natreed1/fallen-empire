@@ -183,6 +183,19 @@ export interface AiParams {
   supplyStarvationRiskWeight: number;
   /** Value capturing/incorporating city/village as anchor (0–1). */
   supplyCityAcquisitionBias: number;
+  // ── Village consolidation / local expansion ──
+  /** Prioritize expansion near own anchors before deep pushes (0–1). */
+  localConsolidationPriority: number;
+  /** Fraction of movable military allocated to village/city consolidation (0.05–0.50). */
+  frontierExpansionUnitBudgetShare: number;
+  /** Hard depth limit (hex steps from nearest anchor) for expansion target consideration (3–20). */
+  maxExpansionDepthFromNearestAnchor: number;
+  /** If supply stress/route fragility exceeds this, force anchor-forming expansion first (0–1). */
+  anchorFirstExpansionThreshold: number;
+  /** Distance beyond which expansion target score decays (mechanic-aware support). */
+  deepRaidPenaltyDistanceStart: number;
+  /** How strongly score drops beyond deepRaidPenaltyDistanceStart (0–2). */
+  deepRaidPenaltySlope: number;
 }
 
 const DEFAULT_MILITARY_LEVEL_MIX: MilitaryLevelMix = { L1: 0.6, L2: 0.3, L3: 0.1 };
@@ -241,6 +254,12 @@ export const DEFAULT_AI_PARAMS: AiParams = {
   supplyAnchorDistanceWeight: 0.5,
   supplyStarvationRiskWeight: 0.5,
   supplyCityAcquisitionBias: 0.3,
+  localConsolidationPriority: 0.55,
+  frontierExpansionUnitBudgetShare: 0.25,
+  maxExpansionDepthFromNearestAnchor: 10,
+  anchorFirstExpansionThreshold: 0.45,
+  deepRaidPenaltyDistanceStart: 10,
+  deepRaidPenaltySlope: 0.8,
 };
 
 /**
@@ -265,6 +284,12 @@ export const ADVANCED_AI_PARAMS: AiParams = {
   supplyCityAcquisitionBias: 0.45,
   defenderAssignmentPriority: 0.7,
   incorporateVillageChance: 1,
+  localConsolidationPriority: 0.6,
+  frontierExpansionUnitBudgetShare: 0.3,
+  maxExpansionDepthFromNearestAnchor: 10,
+  anchorFirstExpansionThreshold: 0.5,
+  deepRaidPenaltyDistanceStart: 10,
+  deepRaidPenaltySlope: 0.8,
 };
 
 // ─── Food-aware recruit gating (avoid starvation lock in headless sim) ──
@@ -519,6 +544,15 @@ export function planAiTurn(
   const starvationW = Math.max(0, Math.min(2, params.supplyStarvationRiskWeight ?? 0.5));
   const cityBias = Math.max(0, Math.min(1, params.supplyCityAcquisitionBias ?? 0.3));
   const expansionPriority = Math.max(0, Math.min(1, params.supplyExpansionPriority ?? 0.4));
+  const maxDepth = Math.max(3, Math.min(20, params.maxExpansionDepthFromNearestAnchor ?? 10));
+  const anchorFirstThresh = Math.max(0, Math.min(1, params.anchorFirstExpansionThreshold ?? 0.45));
+  const deepStart = Math.max(6, Math.min(20, params.deepRaidPenaltyDistanceStart ?? 10));
+  const deepSlope = Math.max(0, Math.min(2, params.deepRaidPenaltySlope ?? 0.8));
+  const localConsolidW = Math.max(0, Math.min(1, params.localConsolidationPriority ?? 0.55));
+  // Supply stress: 0–1 proxy (high avg dist => stress); when >= anchorFirstThresh, prefer anchor-forming villages
+  const supplyStressMetric = aiCities.length > 0 && militaryUnits.length > 0
+    ? Math.min(1, avgDistToAnchor / 20)
+    : 0;
 
   const scoreVillageExpansion = (vq: number, vr: number): number => {
     const distToNearestCity = aiCities.length > 0 ? minDistToCities(vq, vr, aiCities) : 0;
@@ -536,9 +570,16 @@ export function planAiTurn(
       }
       newAvg = sum / militaryUnits.length;
     }
-    const supplyGain = Math.max(0, (currentAvg - newAvg) * 0.1 * anchorDistW);
-    const starvationRisk = (distToNearestCity / 24) * starvationW;
-    return 1 + supplyGain - starvationRisk + cityBias;
+    let score = 1 + Math.max(0, (currentAvg - newAvg) * 0.1 * anchorDistW) - (distToNearestCity / 24) * starvationW + cityBias;
+    score += localConsolidW * Math.max(0, 1 - distToNearestCity / 15);
+    if (supplyStressMetric >= anchorFirstThresh) {
+      score += 0.5 * Math.max(0, 1 - distToNearestCity / 20);
+    }
+    if (distToNearestCity > deepStart) {
+      const excess = distToNearestCity - deepStart;
+      score *= Math.max(0, 1 - deepSlope * Math.min(1, excess / 10));
+    }
+    return score;
   };
 
   const cityCenterKeys = new Set(cities.map(c => tileKey(c.q, c.r)));
@@ -547,6 +588,8 @@ export function planAiTurn(
   for (const tile of tiles.values()) {
     if (!tile.hasVillage) continue;
     if (cityCenterKeys.has(tileKey(tile.q, tile.r))) continue;
+    const depthFromAnchor = aiCities.length > 0 ? minDistToCities(tile.q, tile.r, aiCities) : 0;
+    if (depthFromAnchor > maxDepth) continue;
     const militaryHere = aiUnits.filter(u => u.q === tile.q && u.r === tile.r && u.type !== 'builder');
     const score = scoreVillageExpansion(tile.q, tile.r);
     if (militaryHere.length > 0) villageTilesForIncorp.push({ q: tile.q, r: tile.r, score });
@@ -563,10 +606,12 @@ export function planAiTurn(
 
   villagesNeedingUnits.sort((a, b) => b.score - a.score);
   const movableForVillage = aiUnits.filter(u => u.hp > 0 && u.type !== 'builder' && u.status !== 'fighting');
+  const frontierBudget = Math.max(1, Math.floor(movableForVillage.length * (params.frontierExpansionUnitBudgetShare ?? 0.25)));
   const assignedToVillage = new Set<string>();
   if (villagesNeedingUnits.length > 0 && goldBudget >= VILLAGE_INCORPORATE_COST && expansionPriority > 0) {
-    const cap = expansionPriority >= 0.5 ? 3 : 2;
+    const cap = Math.min(frontierBudget, villagesNeedingUnits.length);
     for (const v of villagesNeedingUnits.slice(0, cap)) {
+      if (assignedToVillage.size >= frontierBudget) break;
       const available = movableForVillage.filter(u => !assignedToVillage.has(u.id));
       if (available.length === 0) break;
       let nearest = available[0];

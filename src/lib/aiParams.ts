@@ -5,10 +5,15 @@
  * Clamps use aiParamsSchema ranges for consistency.
  */
 
-import { AiParams, DEFAULT_AI_PARAMS } from './ai';
+import { AiParams, DEFAULT_AI_PARAMS, ADVANCED_AI_PARAMS } from './ai';
 import { MUTATION_RANGES, SCALAR_PARAM_KEYS, normalizeMilitaryLevelMix } from './aiParamsSchema';
 
 const STORAGE_KEY = 'fallen_empire_ai_params';
+
+/** Built-in advanced preset when no trained ai-params.json is available. */
+export function getAdvancedAiParams(): AiParams {
+  return { ...ADVANCED_AI_PARAMS };
+}
 
 function isBrowser(): boolean {
   return typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';

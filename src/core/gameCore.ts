@@ -22,6 +22,7 @@ import {
   FRONTIER_CYCLES, CITY_NAMES, PLAYER_COLORS,
   CITY_CAPTURE_HOLD_MS,
   WALL_SECTION_STONE_COST, WALL_SECTION_HP, getHexRing,
+  SUPPLY_QUALITY_THRESHOLD,
 } from '../types/game';
 import { generateMap, placeAncientCity } from '../lib/mapGenerator';
 import { calculateTerritory } from '../lib/territory';
@@ -284,6 +285,8 @@ export function runSimulationWithDiagnostics(
     if (diag._closureCyclesAi1 != null) diag.closureUptimeAi1 = diag._closureCyclesAi1 / totalCycles;
     if (diag._closureCyclesAi2 != null) diag.closureUptimeAi2 = diag._closureCyclesAi2 / totalCycles;
   }
+  if ((diag._totalMoveTargetsAi1 ?? 0) > 0) diag.localConsolidationActionShareAi1 = (diag._totalVillageMoveTargetsAi1 ?? 0) / diag._totalMoveTargetsAi1!;
+  if ((diag._totalMoveTargetsAi2 ?? 0) > 0) diag.localConsolidationActionShareAi2 = (diag._totalVillageMoveTargetsAi2 ?? 0) / diag._totalMoveTargetsAi2!;
   return {
     winner,
     cycle: state.cycle,
@@ -369,6 +372,27 @@ export type SimDiagnostics = {
   allStarvingCyclesAi1?: number;
   /** Cycles when all military were starving (AI2). */
   allStarvingCyclesAi2?: number;
+  // ── Logistics / consolidation telemetry ──
+  /** Cumulative unit-cycles with degraded route (0 < supplyQuality < threshold) AI1. */
+  interdictedUnitCyclesAi1?: number;
+  interdictedUnitCyclesAi2?: number;
+  /** Cumulative unit-cycles unsupplied (supplyQuality < threshold) AI1. */
+  unsuppliedUnitCyclesAi1?: number;
+  unsuppliedUnitCyclesAi2?: number;
+  /** Cycles when AI had at least one city not in capital cluster (disconnected outpost). */
+  disconnectedOutpostCyclesAi1?: number;
+  disconnectedOutpostCyclesAi2?: number;
+  /** Avg expansion depth (hex dist from capital) of owned cities, last cycle. */
+  avgExpansionDepthAi1?: number;
+  avgExpansionDepthAi2?: number;
+  /** Total move orders toward village hexes (for share). */
+  _totalVillageMoveTargetsAi1?: number;
+  _totalVillageMoveTargetsAi2?: number;
+  _totalMoveTargetsAi1?: number;
+  _totalMoveTargetsAi2?: number;
+  /** Fraction of move orders that were local consolidation (village) targets, set at end. */
+  localConsolidationActionShareAi1?: number;
+  localConsolidationActionShareAi2?: number;
 };
 
 /** Single step: economy + AI actions + one movement/combat/siege/capture tick. */
@@ -507,6 +531,48 @@ export function stepSimulation(
         if (closed) diagnostics._closureCyclesAi2 = (diagnostics._closureCyclesAi2 ?? 0) + 1;
       }
     }
+    // Logistics: interdicted / unsupplied unit-cycles from supply cache (filled by upkeepTick)
+    for (const u of ai1Military) {
+      const ent = supplyCache.get(u.id);
+      if (ent) {
+        if (ent.supplyQuality < SUPPLY_QUALITY_THRESHOLD) {
+          diagnostics.unsuppliedUnitCyclesAi1 = (diagnostics.unsuppliedUnitCyclesAi1 ?? 0) + 1;
+          if (ent.supplyQuality > 0) diagnostics.interdictedUnitCyclesAi1 = (diagnostics.interdictedUnitCyclesAi1 ?? 0) + 1;
+        }
+      }
+    }
+    for (const u of ai2Military) {
+      const ent = supplyCache.get(u.id);
+      if (ent) {
+        if (ent.supplyQuality < SUPPLY_QUALITY_THRESHOLD) {
+          diagnostics.unsuppliedUnitCyclesAi2 = (diagnostics.unsuppliedUnitCyclesAi2 ?? 0) + 1;
+          if (ent.supplyQuality > 0) diagnostics.interdictedUnitCyclesAi2 = (diagnostics.interdictedUnitCyclesAi2 ?? 0) + 1;
+        }
+      }
+    }
+    // Disconnected outpost: cities not in capital cluster
+    const clusters = econ.clusters;
+    const ai1Clusters = clusters?.get(AI_ID) ?? [];
+    const ai2Clusters = clusters?.get(AI_ID_2) ?? [];
+    const capCluster1 = ai1Cities[0] ? ai1Clusters.find(cl => cl.cityIds.includes(ai1Cities[0].id)) : undefined;
+    const capCluster2 = ai2Cities[0] ? ai2Clusters.find(cl => cl.cityIds.includes(ai2Cities[0].id)) : undefined;
+    const capitalIds1 = new Set(capCluster1?.cityIds ?? []);
+    const capitalIds2 = new Set(capCluster2?.cityIds ?? []);
+    if (ai1Cities.some(c => !capitalIds1.has(c.id))) diagnostics.disconnectedOutpostCyclesAi1 = (diagnostics.disconnectedOutpostCyclesAi1 ?? 0) + 1;
+    if (ai2Cities.some(c => !capitalIds2.has(c.id))) diagnostics.disconnectedOutpostCyclesAi2 = (diagnostics.disconnectedOutpostCyclesAi2 ?? 0) + 1;
+    // Avg expansion depth (hex dist from capital)
+    if (ai1Cities.length > 1) {
+      const cap = ai1Cities[0];
+      let sum = 0;
+      for (const c of ai1Cities) if (c.id !== cap.id) sum += hexDistance(cap.q, cap.r, c.q, c.r);
+      diagnostics.avgExpansionDepthAi1 = sum / (ai1Cities.length - 1);
+    }
+    if (ai2Cities.length > 1) {
+      const cap = ai2Cities[0];
+      let sum = 0;
+      for (const c of ai2Cities) if (c.id !== cap.id) sum += hexDistance(cap.q, cap.r, c.q, c.r);
+      diagnostics.avgExpansionDepthAi2 = sum / (ai2Cities.length - 1);
+    }
   }
 
   // ── AI turns: compute both plans first (for trace), then apply ──
@@ -522,6 +588,18 @@ export function stepSimulation(
   ];
 
   const plans = aiConfigs.map(({ id, params }) => planAiTurn(id, cities, units, players, state.tiles, state.territory, params, state.wallSections));
+
+  if (diagnostics) {
+    const p1 = plans[0].moveTargets;
+    const p2 = plans[1].moveTargets;
+    diagnostics._totalMoveTargetsAi1 = (diagnostics._totalMoveTargetsAi1 ?? 0) + p1.length;
+    diagnostics._totalMoveTargetsAi2 = (diagnostics._totalMoveTargetsAi2 ?? 0) + p2.length;
+    let v1 = 0, v2 = 0;
+    for (const mt of p1) { if (state.tiles.get(tileKey(mt.toQ, mt.toR))?.hasVillage) v1++; }
+    for (const mt of p2) { if (state.tiles.get(tileKey(mt.toQ, mt.toR))?.hasVillage) v2++; }
+    diagnostics._totalVillageMoveTargetsAi1 = (diagnostics._totalVillageMoveTargetsAi1 ?? 0) + v1;
+    diagnostics._totalVillageMoveTargetsAi2 = (diagnostics._totalVillageMoveTargetsAi2 ?? 0) + v2;
+  }
 
   if (traceCallback) {
     const ai1Pop = ai1Cities.reduce((s, c) => s + c.population, 0);
@@ -942,7 +1020,7 @@ export function stepSimulation(
   const citiesChanged =
     state.cities.length !== citiesToSet.length ||
     state.cities.some(c => newCityOwnerById.get(c.id) !== c.ownerId);
-  const supplyCacheNext = state.supplyCache != null && !citiesChanged ? state.supplyCache : undefined;
+  const supplyCacheNext = !citiesChanged ? supplyCache : undefined;
 
   return {
     ...state,

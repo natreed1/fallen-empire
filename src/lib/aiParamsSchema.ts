@@ -61,6 +61,12 @@ export const EVOLVABLE_PARAM_KEYS = [
   'supplyAnchorDistanceWeight',
   'supplyStarvationRiskWeight',
   'supplyCityAcquisitionBias',
+  'localConsolidationPriority',
+  'frontierExpansionUnitBudgetShare',
+  'maxExpansionDepthFromNearestAnchor',
+  'anchorFirstExpansionThreshold',
+  'deepRaidPenaltyDistanceStart',
+  'deepRaidPenaltySlope',
 ] as const;
 
 export type EvolvableParamKey = (typeof EVOLVABLE_PARAM_KEYS)[number];
@@ -133,6 +139,12 @@ export const MUTATION_RANGES: Record<Exclude<EvolvableParamKey, 'militaryLevelMi
   supplyAnchorDistanceWeight: { min: 0, max: 2, exploration: 'medium' },
   supplyStarvationRiskWeight: { min: 0, max: 2, exploration: 'medium' },
   supplyCityAcquisitionBias: { min: 0, max: 1, exploration: 'medium' },
+  localConsolidationPriority: { min: 0, max: 1, exploration: 'medium' },
+  frontierExpansionUnitBudgetShare: { min: 0.05, max: 0.5, exploration: 'medium' },
+  maxExpansionDepthFromNearestAnchor: { min: 3, max: 20, round: true, exploration: 'medium' },
+  anchorFirstExpansionThreshold: { min: 0, max: 1, exploration: 'medium' },
+  deepRaidPenaltyDistanceStart: { min: 6, max: 20, round: true, exploration: 'low' },
+  deepRaidPenaltySlope: { min: 0, max: 2, exploration: 'medium' },
 };
 
 /** Params intentionally excluded from mutation (fixed). Empty unless we add allowlisted fixed params. */

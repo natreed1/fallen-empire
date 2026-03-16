@@ -1,43 +1,109 @@
 /**
- * Trade route connectivity via passable terrain.
- * Cities auto-connect when reachable through passable hexes (plains, forest, desert).
- * Blocked by mountains, water, and enemy units. Roads on mountains create "mountain passes"
- * and make those hexes traversable for connectivity.
- *
- * Unit supply: military units and builders get supply when within SUPPLY_VICINITY_RADIUS
- * of any friendly city. Supply is by vicinity, not road connectivity.
+ * Trade route connectivity and unit supply via path cost.
+ * Cities connect only if shortest passable path cost (terrain + interdiction) <= CITY_LINK_MAX_PATH_COST.
+ * Unit supply: from nearest valid connected anchor path; supplyQuality [0..1] from route cost;
+ * below threshold => unsupplied/starving (see military upkeepTick).
  */
 
-import { City, Unit, Tile, TerritoryInfo, hexNeighbors, hexDistance, tileKey, parseTileKey, SUPPLY_VICINITY_RADIUS } from '@/types/game';
+import { City, Unit, Tile, TerritoryInfo, hexNeighbors, hexDistance, tileKey, parseTileKey } from '@/types/game';
+
+/** Max path cost for two cities to be in the same cluster (terrain-aware + interdiction). */
+export const CITY_LINK_MAX_PATH_COST = 20;
+/** Max path cost from unit to nearest anchor for full supply; above => supplyQuality decays to 0. */
+export const SUPPLY_UNIT_MAX_PATH_COST = 14;
+/** Extra cost per hex when an enemy unit is within this distance (interdiction). */
+export const INTERDICTION_RANGE = 2;
+/** Added move cost for a hex when an enemy is within INTERDICTION_RANGE. */
+export const INTERDICTION_HEX_COST = 3;
 
 export interface TradeCluster {
   cityIds: string[];
   cities: City[];
 }
 
+/** Terrain-aware move cost (roads cheaper). Used for cluster links and supply path cost. */
+export function getTileMoveCost(tile: Tile): number {
+  if (tile.biome === 'water') return Infinity;
+  if (tile.biome === 'mountain') return tile.hasRoad ? 5 : Infinity;
+  let base = 1;
+  switch (tile.biome) {
+    case 'forest': base = 2; break;
+    case 'desert': base = 2.5; break;
+    default: break;
+  }
+  return tile.hasRoad ? base * 0.5 : base;
+}
+
+/** Extra cost for stepping on (q,r) when enemies are near (deterministic). */
+function getInterdictionAt(q: number, r: number, units: Unit[], playerId: string): number {
+  for (const u of units) {
+    if (u.hp <= 0 || u.ownerId === playerId) continue;
+    if (hexDistance(q, r, u.q, u.r) <= INTERDICTION_RANGE) return INTERDICTION_HEX_COST;
+  }
+  return 0;
+}
+
+/**
+ * Cost-limited Dijkstra from (fromQ, fromR): fill costTo[key] for all reachable hexes with cost <= maxCost.
+ * Step cost = getTileMoveCost(tile) + getInterdictionAt(hex, units, playerId).
+ * Enemy-occupied hexes are not traversable (infinite cost).
+ */
+function dijkstraCostLimited(
+  fromQ: number,
+  fromR: number,
+  maxCost: number,
+  tiles: Map<string, Tile>,
+  units: Unit[],
+  playerId: string,
+): Map<string, number> {
+  const enemyByHex = new Set<string>();
+  for (const u of units) {
+    if (u.hp <= 0) continue;
+    if (u.ownerId !== playerId) enemyByHex.add(tileKey(u.q, u.r));
+  }
+
+  const costTo = new Map<string, number>();
+  const startKey = tileKey(fromQ, fromR);
+  costTo.set(startKey, 0);
+  const open: { key: string; cost: number }[] = [{ key: startKey, cost: 0 }];
+
+  const maxIter = tiles.size * 2;
+  let iter = 0;
+  while (open.length > 0 && iter++ < maxIter) {
+    open.sort((a, b) => a.cost - b.cost);
+    const { key: currentKey, cost: currentCost } = open.shift()!;
+    if (currentCost > maxCost) continue;
+    const [cq, cr] = parseTileKey(currentKey);
+
+    for (const [nq, nr] of hexNeighbors(cq, cr)) {
+      const nKey = tileKey(nq, nr);
+      if (enemyByHex.has(nKey)) continue;
+      const nTile = tiles.get(nKey);
+      if (!nTile) continue;
+      const moveCost = getTileMoveCost(nTile);
+      if (moveCost === Infinity) continue;
+      const stepCost = moveCost + getInterdictionAt(nq, nr, units, playerId);
+      const newCost = currentCost + stepCost;
+      if (newCost > maxCost) continue;
+      const prev = costTo.get(nKey);
+      if (prev != null && newCost >= prev) continue;
+      costTo.set(nKey, newCost);
+      open.push({ key: nKey, cost: newCost });
+    }
+  }
+  return costTo;
+}
+
 /**
  * Compute trade clusters per player.
- * Cities are in the same cluster if they're connected via passable terrain
- * (plains, forest, desert — or mountains with roads / mountain passes) with no enemy blocking.
+ * Cities are in the same cluster only if shortest path cost (terrain + interdiction) <= CITY_LINK_MAX_PATH_COST.
  */
 export function computeTradeClusters(
   cities: City[],
   tiles: Map<string, Tile>,
   units: Unit[],
-  territory: Map<string, TerritoryInfo>,
+  _territory: Map<string, TerritoryInfo>,
 ): Map<string, TradeCluster[]> {
-  const enemyByHex = new Map<string, string>();
-  for (const u of units) {
-    if (u.hp <= 0) continue;
-    const key = tileKey(u.q, u.r);
-    // For a given player, "enemy" = any unit not owned by that player
-    if (!enemyByHex.has(key)) enemyByHex.set(key, u.ownerId);
-    else {
-      const existing = enemyByHex.get(key)!;
-      if (existing !== u.ownerId) enemyByHex.set(key, 'multiple'); // multiple owners = blocked for all
-    }
-  }
-
   const byPlayer = new Map<string, City[]>();
   for (const c of cities) {
     if (!byPlayer.has(c.ownerId)) byPlayer.set(c.ownerId, []);
@@ -47,71 +113,55 @@ export function computeTradeClusters(
   const result = new Map<string, TradeCluster[]>();
 
   for (const [playerId, playerCities] of byPlayer) {
-    const clusters: TradeCluster[] = [];
-    const assigned = new Set<string>();
     const cityByHex = new Map<string, City>();
     for (const c of playerCities) cityByHex.set(tileKey(c.q, c.r), c);
 
+    // Union-find: parent[id] = id for root
+    const parent = new Map<string, string>();
+    for (const c of playerCities) parent.set(c.id, c.id);
+    function find(id: string): string {
+      const p = parent.get(id)!;
+      if (p === id) return id;
+      const root = find(p);
+      parent.set(id, root);
+      return root;
+    }
+    function union(a: string, b: string) {
+      const ra = find(a);
+      const rb = find(b);
+      if (ra !== rb) parent.set(ra, rb);
+    }
+
     for (const startCity of playerCities) {
-      if (assigned.has(startCity.id)) continue;
-
-      const clusterCities: City[] = [];
-      const queue: [number, number][] = [[startCity.q, startCity.r]];
-      const visited = new Set<string>();
-      visited.add(tileKey(startCity.q, startCity.r));
-
-      while (queue.length > 0) {
-        const [q, r] = queue.shift()!;
-        const key = tileKey(q, r);
-
-        const tile = tiles.get(key);
-        if (!tile || tile.biome === 'water') continue;
-
-        const cityHere = cityByHex.get(key);
-        if (cityHere) {
-          clusterCities.push(cityHere);
-          assigned.add(cityHere.id);
-        }
-
-        for (const [nq, nr] of hexNeighbors(q, r)) {
-          const nKey = tileKey(nq, nr);
-          if (visited.has(nKey)) continue;
-
-          const nTile = tiles.get(nKey);
-          if (!nTile) continue;
-          // Passable: plains/forest/desert, or mountains with roads (mountain pass)
-          const passable =
-            (nTile.biome !== 'water' && nTile.biome !== 'mountain') ||
-            (nTile.biome === 'mountain' && nTile.hasRoad);
-          if (!passable) continue;
-
-          const enemyOwner = enemyByHex.get(nKey);
-          if (enemyOwner !== undefined && enemyOwner !== playerId) continue;
-
-          visited.add(nKey);
-          queue.push([nq, nr]);
-        }
-      }
-
-      if (clusterCities.length > 0) {
-        clusters.push({
-          cityIds: clusterCities.map(c => c.id),
-          cities: clusterCities,
-        });
+      const costTo = dijkstraCostLimited(
+        startCity.q, startCity.r, CITY_LINK_MAX_PATH_COST, tiles, units, playerId,
+      );
+      for (const c of playerCities) {
+        if (c.id === startCity.id) continue;
+        const key = tileKey(c.q, c.r);
+        const cost = costTo.get(key);
+        if (cost != null && cost <= CITY_LINK_MAX_PATH_COST) union(startCity.id, c.id);
       }
     }
 
+    const rootToCities = new Map<string, City[]>();
+    for (const c of playerCities) {
+      const root = find(c.id);
+      if (!rootToCities.has(root)) rootToCities.set(root, []);
+      rootToCities.get(root)!.push(c);
+    }
+    const clusters: TradeCluster[] = [];
+    for (const list of rootToCities.values()) {
+      if (list.length > 0) {
+        clusters.push({ cityIds: list.map(x => x.id), cities: list });
+      }
+    }
     result.set(playerId, clusters);
   }
 
   return result;
 }
 
-/**
- * Find which cluster supplies a unit.
- * Units get supply when within SUPPLY_VICINITY_RADIUS hexes of any friendly city in a cluster.
- * No roads required — supply is by vicinity of cities, not road connectivity.
- */
 /** Returns the cluster containing the first (capital) city for the player. */
 export function getCapitalCluster(
   cities: City[],
@@ -132,26 +182,64 @@ export function getClusterForCity(
   return clusters.find(cl => cl.cityIds.includes(cityId));
 }
 
-export function getSupplyingClusterKey(
+export interface UnitSupplyInfo {
+  clusterKey: string | null;
+  supplyQuality: number;
+}
+
+/**
+ * Unit supply from nearest valid connected anchor path.
+ * supplyQuality [0..1] from route cost/interdiction; 0 when cost > SUPPLY_UNIT_MAX_PATH_COST.
+ * Below threshold (e.g. 0.5) => treat as unsupplied/starving in upkeep.
+ */
+export function getUnitSupplyInfo(
   unit: Unit,
   clusters: TradeCluster[],
-  _tiles: Map<string, Tile>,
-  _units: Unit[],
+  tiles: Map<string, Tile>,
+  units: Unit[],
   playerId: string,
-): string | null {
+): UnitSupplyInfo {
+  const maxCost = SUPPLY_UNIT_MAX_PATH_COST * 1.5; // allow slightly over to get exact cost for quality
+  const costTo = dijkstraCostLimited(unit.q, unit.r, maxCost, tiles, units, playerId);
+
+  let bestCost = Infinity;
+  let bestClusterKey: string | null = null;
+
   for (const cluster of clusters) {
     for (const city of cluster.cities) {
       if (city.ownerId !== playerId) continue;
-      const dist = hexDistance(unit.q, unit.r, city.q, city.r);
-      if (dist <= SUPPLY_VICINITY_RADIUS) {
-        return cluster.cityIds.join(',');
+      const key = tileKey(city.q, city.r);
+      const cost = costTo.get(key);
+      if (cost != null && cost < bestCost) {
+        bestCost = cost;
+        bestClusterKey = cluster.cityIds.join(',');
       }
     }
   }
-  return null;
+
+  if (bestClusterKey == null || bestCost > SUPPLY_UNIT_MAX_PATH_COST) {
+    return { clusterKey: null, supplyQuality: 0 };
+  }
+  const supplyQuality = Math.max(0, 1 - bestCost / SUPPLY_UNIT_MAX_PATH_COST);
+  return { clusterKey: bestClusterKey, supplyQuality };
 }
 
-/** A* pathfinding for logistics: mountains and water impassable except mountain passes (roads on mountains). */
+/**
+ * Legacy: returns cluster key if unit has supply, null otherwise.
+ * Uses supplyQuality >= 0.5 as "supplied" for backward compatibility with upkeep.
+ */
+export function getSupplyingClusterKey(
+  unit: Unit,
+  clusters: TradeCluster[],
+  tiles: Map<string, Tile>,
+  units: Unit[],
+  playerId: string,
+): string | null {
+  const info = getUnitSupplyInfo(unit, clusters, tiles, units, playerId);
+  return info.supplyQuality >= 0.5 ? info.clusterKey : null;
+}
+
+/** A* pathfinding for logistics (visualization): uses getTileMoveCost; enemy hexes blocked. */
 function pathfindLogistics(
   fromQ: number,
   fromR: number,
@@ -161,22 +249,11 @@ function pathfindLogistics(
   units: Unit[],
   playerId: string,
 ): { q: number; r: number }[] {
-  const enemyByHex = new Map<string, boolean>();
+  const enemyByHex = new Set<string>();
   for (const u of units) {
     if (u.hp <= 0) continue;
-    const key = tileKey(u.q, u.r);
-    if (u.ownerId !== playerId) enemyByHex.set(key, true);
+    if (u.ownerId !== playerId) enemyByHex.add(tileKey(u.q, u.r));
   }
-
-  const getMoveCost = (tile: Tile): number => {
-    if (tile.biome === 'water') return Infinity;
-    if (tile.biome === 'mountain') return tile.hasRoad ? 5 : Infinity; // mountain pass
-    switch (tile.biome) {
-      case 'forest': return 2;
-      case 'desert': return 2.5;
-      default: return 1;
-    }
-  };
 
   const startKey = tileKey(fromQ, fromR);
   const endKey = tileKey(toQ, toR);
@@ -224,10 +301,8 @@ function pathfindLogistics(
     for (const [nq, nr] of hexNeighbors(cq, cr)) {
       const nKey = tileKey(nq, nr);
       const nTile = tiles.get(nKey);
-      if (!nTile) continue;
-      if (enemyByHex.get(nKey)) continue;
-
-      const cost = getMoveCost(nTile);
+      if (!nTile || enemyByHex.has(nKey)) continue;
+      const cost = getTileMoveCost(nTile);
       if (cost === Infinity) continue;
 
       const tentativeG = currentG + cost;

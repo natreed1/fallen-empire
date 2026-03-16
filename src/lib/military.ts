@@ -3,9 +3,11 @@ import {
   getUnitStats, ROAD_SPEED_BONUS,
   hexDistance, hexNeighbors, tileKey, generateId,
   RETREAT_DELAY_MS, ASSAULT_ATTACK_DEBUFF, HERO_BASE_HP, HERO_ATTACK,
+  type Biome,
 } from '@/types/game';
-import { getUnitAttack, awardXp } from './combat';
-import { computeTradeClusters, getSupplyingClusterKey, TradeCluster } from '@/lib/logistics';
+import { getUnitAttack, getUnitDefense, awardXp } from './combat';
+import { computeTradeClusters, getUnitSupplyInfo, TradeCluster } from '@/lib/logistics';
+import { SUPPLY_QUALITY_THRESHOLD } from '@/types/game';
 
 const TOWER_DEFENSE_BONUS = 0.10;
 
@@ -20,6 +22,12 @@ function applyTowerDefense(damage: number, targetQ: number, targetR: number, cit
   return damage;
 }
 
+/** Reduce damage by defender's defense: finalDamage = max(1, attack - defense). Applied after raw attack, before tower/assault/resist. */
+function applyDefense(rawDamage: number, defender: Unit, defenderHero?: Hero): number {
+  const def = getUnitDefense(defender, defenderHero);
+  return Math.max(1, rawDamage - def);
+}
+
 /** Apply defender (and other unit) damage resistance. When defender is on friendly city hex, uses damageResistOnCityHex. */
 function applyDamageResist(damage: number, target: Unit, cities: City[]): number {
   const stats = getUnitStats(target);
@@ -30,6 +38,18 @@ function applyDamageResist(damage: number, target: Unit, cities: City[]): number
     : resist;
   if (resistVal <= 0) return damage;
   return Math.max(1, Math.floor(damage * (1 - resistVal)));
+}
+
+/** Terrain combat modifiers: multiplier applied to damage (defender's tile = less damage when < 1). Order: damage *= modifier then applyDamageResist. */
+export function getTerrainCombatModifier(biome: Biome, _role: 'attacker' | 'defender'): number {
+  switch (biome) {
+    case 'forest': return _role === 'defender' ? 0.85 : 1.0;   // defender 15% less damage
+    case 'mountain': return _role === 'defender' ? 0.80 : 1.0;  // defender 20% less damage
+    case 'desert': return _role === 'defender' ? 1.15 : 1.0;    // defender 15% more damage
+    case 'plains':
+    case 'water':
+    default: return 1.0;
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -137,6 +157,7 @@ export function combatTick(
   heroes: Hero[],
   cycle: number,
   cities: City[] = [],
+  tiles: Map<string, Tile> = new Map(),
   nowMs: number = Date.now(),
 ): CombatTickResult {
   const killed: string[] = [];
@@ -171,7 +192,7 @@ export function combatTick(
     const hero2 = heroes.find(h => h.q === side2[0]?.q && h.r === side2[0]?.r && h.ownerId === owners[1]);
 
     combatHexKeys.push(hexKey);
-    resolveMeleeRound(side1, side2, hero1, hero2, killed, killedHeroIds, notifications, cycle, cities);
+    resolveMeleeRound(side1, side2, hero1, hero2, killed, killedHeroIds, notifications, cycle, cities, tiles);
     for (const u of side1.concat(side2)) processed.add(u.id);
   }
 
@@ -197,6 +218,7 @@ export function combatTick(
 
       const enemies = otherUnits.filter((u: Unit) => u.ownerId !== ownerId && u.hp > 0);
       const enemyHero = heroes.find(h => h.q === oq && h.r === or_ && h.ownerId !== ownerId && heroHp(h) > 0);
+      const defenderHero = heroes.find(h => h.q === oq && h.r === or_ && h.ownerId === (enemies[0]?.ownerId ?? enemyHero?.ownerId));
       if (enemies.length === 0 && !enemyHero) continue;
 
       if (!combatHexKeys.includes(hexKey)) combatHexKeys.push(hexKey);
@@ -210,10 +232,13 @@ export function combatTick(
         const target = enemies.find((e: Unit) => e.hp > 0);
         if (target) {
           let rawDamage = getUnitAttack(atk, attackerHero);
-          let damage = applyTowerDefense(rawDamage, target.q, target.r, cities);
+          let damage = applyDefense(rawDamage, target, defenderHero);
+          damage = applyTowerDefense(damage, target.q, target.r, cities);
           if (atk.assaulting && isCityCenter(target.q, target.r, cities)) {
             damage = Math.max(1, Math.floor(damage * ASSAULT_ATTACK_DEBUFF));
           }
+          const defTile = tiles.get(tileKey(target.q, target.r));
+          damage = Math.max(1, Math.floor(damage * getTerrainCombatModifier(defTile?.biome ?? 'plains', 'defender')));
           damage = applyDamageResist(damage, target, cities);
           target.hp -= damage;
           atk.status = 'fighting';
@@ -229,7 +254,9 @@ export function combatTick(
             }
           }
         } else if (enemyHero) {
-          const damage = applyTowerDefense(getUnitAttack(atk, attackerHero), oq, or_, cities);
+          let damage = applyTowerDefense(getUnitAttack(atk, attackerHero), oq, or_, cities);
+          const defTile = tiles.get(otherKey);
+          damage = Math.max(1, Math.floor(damage * getTerrainCombatModifier(defTile?.biome ?? 'plains', 'defender')));
           const hp = (enemyHero.hp ?? HERO_BASE_HP) - damage;
           enemyHero.hp = Math.max(0, hp);
           if (enemyHero.hp <= 0) killedHeroIds.push(enemyHero.id);
@@ -237,7 +264,6 @@ export function combatTick(
         processed.add(atk.id);
       }
 
-      const defenderHero = heroes.find(h => h.q === oq && h.r === or_ && h.ownerId === (enemies[0]?.ownerId ?? enemyHero?.ownerId));
       for (const def of enemies) {
         if (def.hp <= 0 || processed.has(def.id) || def.stance === 'passive') continue;
         if (def.retreatAt) continue;
@@ -248,10 +274,13 @@ export function combatTick(
         if (!counterTarget) break;
 
         let rawDamage = getUnitAttack(def, defenderHero);
-        let damage = applyTowerDefense(rawDamage, counterTarget.q, counterTarget.r, cities);
+        let damage = applyDefense(rawDamage, counterTarget, attackerHero);
+        damage = applyTowerDefense(damage, counterTarget.q, counterTarget.r, cities);
         if (def.assaulting && isCityCenter(counterTarget.q, counterTarget.r, cities)) {
           damage = Math.max(1, Math.floor(damage * ASSAULT_ATTACK_DEBUFF));
         }
+        const defTile = tiles.get(hexKey);
+        damage = Math.max(1, Math.floor(damage * getTerrainCombatModifier(defTile?.biome ?? 'plains', 'defender')));
         damage = applyDamageResist(damage, counterTarget, cities);
         counterTarget.hp -= damage;
 
@@ -283,8 +312,8 @@ function resolveMeleeRound(
   hero1: Hero | undefined, hero2: Hero | undefined,
   killed: string[], killedHeroIds: string[], notifications: GameNotification[], cycle: number,
   cities: City[] = [],
+  tiles: Map<string, Tile> = new Map(),
 ) {
-  const now = Date.now();
   for (const atk of side1) {
     if (atk.hp <= 0 || atk.retreatAt) continue;
     const unitTarget = side2.find(d => d.hp > 0);
@@ -292,16 +321,21 @@ function resolveMeleeRound(
     if (!unitTarget && !heroTargetAlive) break;
     let rawDmg = getUnitAttack(atk, hero1);
     if (unitTarget) {
-      let dmg = applyTowerDefense(rawDmg, unitTarget.q, unitTarget.r, cities);
+      let dmg = applyDefense(rawDmg, unitTarget, hero2);
+      dmg = applyTowerDefense(dmg, unitTarget.q, unitTarget.r, cities);
       if (atk.assaulting && isCityCenter(unitTarget.q, unitTarget.r, cities)) {
         dmg = Math.max(1, Math.floor(dmg * ASSAULT_ATTACK_DEBUFF));
       }
+      const defBiome = tiles.get(tileKey(unitTarget.q, unitTarget.r))?.biome ?? 'plains';
+      dmg = Math.max(1, Math.floor(dmg * getTerrainCombatModifier(defBiome, 'defender')));
       dmg = applyDamageResist(dmg, unitTarget, cities);
       unitTarget.hp -= dmg;
       atk.status = 'fighting';
       if (unitTarget.hp <= 0) { killed.push(unitTarget.id); awardXp(atk, 10); }
     } else if (hero2) {
-      const dmg = applyTowerDefense(rawDmg, hero2.q, hero2.r, cities);
+      let dmg = applyTowerDefense(rawDmg, hero2.q, hero2.r, cities);
+      const defBiome = tiles.get(tileKey(hero2.q, hero2.r))?.biome ?? 'plains';
+      dmg = Math.max(1, Math.floor(dmg * getTerrainCombatModifier(defBiome, 'defender')));
       const hp = (hero2.hp ?? HERO_BASE_HP) - dmg;
       hero2.hp = Math.max(0, hp);
       atk.status = 'fighting';
@@ -315,16 +349,21 @@ function resolveMeleeRound(
     if (!unitTarget && !heroTargetAlive) break;
     let rawDmg = getUnitAttack(atk, hero2);
     if (unitTarget) {
-      let dmg = applyTowerDefense(rawDmg, unitTarget.q, unitTarget.r, cities);
+      let dmg = applyDefense(rawDmg, unitTarget, hero1);
+      dmg = applyTowerDefense(dmg, unitTarget.q, unitTarget.r, cities);
       if (atk.assaulting && isCityCenter(unitTarget.q, unitTarget.r, cities)) {
         dmg = Math.max(1, Math.floor(dmg * ASSAULT_ATTACK_DEBUFF));
       }
+      const defBiome = tiles.get(tileKey(unitTarget.q, unitTarget.r))?.biome ?? 'plains';
+      dmg = Math.max(1, Math.floor(dmg * getTerrainCombatModifier(defBiome, 'defender')));
       dmg = applyDamageResist(dmg, unitTarget, cities);
       unitTarget.hp -= dmg;
       atk.status = 'fighting';
       if (unitTarget.hp <= 0) { killed.push(unitTarget.id); awardXp(atk, 10); }
     } else if (hero1) {
-      const dmg = applyTowerDefense(rawDmg, hero1.q, hero1.r, cities);
+      let dmg = applyTowerDefense(rawDmg, hero1.q, hero1.r, cities);
+      const defBiome = tiles.get(tileKey(hero1.q, hero1.r))?.biome ?? 'plains';
+      dmg = Math.max(1, Math.floor(dmg * getTerrainCombatModifier(defBiome, 'defender')));
       const hp = (hero1.hp ?? HERO_BASE_HP) - dmg;
       hero1.hp = Math.max(0, hp);
       atk.status = 'fighting';
@@ -334,7 +373,9 @@ function resolveMeleeRound(
   if (hero1 && heroHp(hero1) > 0) {
     const target = side2.find(d => d.hp > 0);
     if (target) {
-      const dmg = applyTowerDefense(HERO_ATTACK, target.q, target.r, cities);
+      let dmg = applyTowerDefense(HERO_ATTACK, target.q, target.r, cities);
+      const defBiome = tiles.get(tileKey(target.q, target.r))?.biome ?? 'plains';
+      dmg = Math.max(1, Math.floor(dmg * getTerrainCombatModifier(defBiome, 'defender')));
       const afterResist = applyDamageResist(dmg, target, cities);
       target.hp -= afterResist;
       if (target.hp <= 0) { killed.push(target.id); }
@@ -343,7 +384,9 @@ function resolveMeleeRound(
   if (hero2 && heroHp(hero2) > 0) {
     const target = side1.find(d => d.hp > 0);
     if (target) {
-      const dmg = applyTowerDefense(HERO_ATTACK, target.q, target.r, cities);
+      let dmg = applyTowerDefense(HERO_ATTACK, target.q, target.r, cities);
+      const defBiome = tiles.get(tileKey(target.q, target.r))?.biome ?? 'plains';
+      dmg = Math.max(1, Math.floor(dmg * getTerrainCombatModifier(defBiome, 'defender')));
       const afterResist = applyDamageResist(dmg, target, cities);
       target.hp -= afterResist;
       if (target.hp <= 0) { killed.push(target.id); }
@@ -360,7 +403,7 @@ export interface UpkeepResult {
 }
 
 /** Cache entry for unit supply: avoid recomputing when position unchanged. */
-export type SupplyCacheEntry = { clusterKey: string | null; q: number; r: number };
+export type SupplyCacheEntry = { clusterKey: string | null; supplyQuality: number; q: number; r: number };
 
 export function upkeepTick(
   units: Unit[],
@@ -387,16 +430,20 @@ export function upkeepTick(
     const playerClusters = clusters.get(ownerId) ?? [];
     const isHuman = ownerId.includes('human');
 
-    // Group units by supplying cluster (null = cut off, no supply); use cache when position unchanged
+    // Group units by supplying cluster (null = cut off or supplyQuality below threshold); use cache when position unchanged
     const unitsByCluster = new Map<string | null, Unit[]>();
     for (const u of playerUnits) {
       let key: string | null;
+      let supplyQuality: number;
       const cached = supplyCache?.get(u.id);
       if (cached && cached.q === u.q && cached.r === u.r) {
         key = cached.clusterKey;
+        supplyQuality = cached.supplyQuality;
       } else {
-        key = getSupplyingClusterKey(u, playerClusters, tiles, units, ownerId);
-        if (supplyCache) supplyCache.set(u.id, { clusterKey: key, q: u.q, r: u.r });
+        const info = getUnitSupplyInfo(u, playerClusters, tiles, units, ownerId);
+        key = info.supplyQuality >= SUPPLY_QUALITY_THRESHOLD ? info.clusterKey : null;
+        supplyQuality = info.supplyQuality;
+        if (supplyCache) supplyCache.set(u.id, { clusterKey: info.clusterKey, supplyQuality, q: u.q, r: u.r });
       }
       if (!unitsByCluster.has(key)) unitsByCluster.set(key, []);
       unitsByCluster.get(key)!.push(u);

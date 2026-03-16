@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useGameStore } from '@/store/useGameStore';
-import { setAiParams } from '@/lib/aiParams';
+import { setAiParams, getAdvancedAiParams } from '@/lib/aiParams';
 import { computeTradeClusters, getCapitalCluster, getSupplyingClusterKey } from '@/lib/logistics';
 import { computeCityProductionRate } from '@/lib/gameLoop';
 import { getWeatherHarvestMultiplier } from '@/lib/weather';
@@ -47,28 +47,29 @@ function SetupScreen() {
             onClick={async () => {
               const data = await fetch('/ai-params.json').then(r => r.ok ? r.json() : null).catch(() => null);
               if (data) setAiParams(data);
+              else setAiParams(getAdvancedAiParams());
               useGameStore.getState().startSmallMapBotVsBot();
             }}
             className="px-8 py-3 bg-empire-gold/15 border border-empire-gold/50 rounded-lg text-empire-gold/90 font-medium tracking-wide hover:bg-empire-gold/25 transition-colors"
           >
-            Small map battle (38×38, champion AI)
+            Small map battle (38×38, champion / advanced AI)
           </button>
           <button
             type="button"
             onClick={() => useGameStore.getState().startBotVsBot()}
             className="px-8 py-3 bg-empire-dark border border-empire-gold/40 rounded-lg text-empire-parchment font-medium tracking-wide hover:bg-empire-gold/10 transition-colors"
           >
-            Watch 2 Bot (large map)
+            Spectate 2 Bot (large map)
           </button>
           <button
             type="button"
             onClick={() => useGameStore.getState().startFourBotVsBot()}
             className="px-8 py-3 bg-empire-dark border border-empire-gold/40 rounded-lg text-empire-parchment font-medium tracking-wide hover:bg-empire-gold/10 transition-colors"
           >
-            Watch 4 Bot
+            Spectate 4 Bot
           </button>
           <p className="text-empire-parchment/40 text-xs">
-            Small map: 38×38, trained champion from ai-params.json. 2 Bot: default map. 4 Bot: four kingdoms (52×52).
+            Champion AI from ai-params.json if present; else built-in advanced AI. Spectate: same AI both sides.
           </p>
         </div>
       </div>

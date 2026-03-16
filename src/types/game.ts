@@ -272,11 +272,12 @@ export interface TerritoryInfo {
 // ─── Game Constants ────────────────────────────────────────────────
 
 export const TERRITORY_RADIUS = 3;
-/** Rough max hexes a unit can move in one sim cycle (30s) at speed 1. Supply radius should be >= this so movement and supply are aligned. */
+/** Rough max hexes a unit can move in one sim cycle (30s) at speed 1. */
 export const MOVEMENT_HEXES_PER_CYCLE_ESTIMATE = 24;
-/** Units/builders get supply when within this hex distance of any friendly city. No roads required.
- *  >= MOVEMENT_HEXES_PER_CYCLE_ESTIMATE so one cycle of movement doesn't leave supply. */
+/** Legacy: supply was vicinity-based; now supply is path-cost based (see logistics.ts). Kept for reference. */
 export const SUPPLY_VICINITY_RADIUS = 24;
+/** Below this supplyQuality [0..1] unit is treated as unsupplied/starving (see military upkeepTick). */
+export const SUPPLY_QUALITY_THRESHOLD = 0.5;
 export const STARTING_GOLD = 150;
 
 export const STARTING_CITY_TEMPLATE: Omit<City, 'id' | 'name' | 'q' | 'r' | 'ownerId'> = {
@@ -417,7 +418,7 @@ export const UNIT_DISPLAY_NAMES: Record<UnitType, string> = {
 };
 
 export const UNIT_BASE_STATS: Record<UnitType, {
-  maxHp: number; attack: number; range: number;
+  maxHp: number; attack: number; defense: number; range: number;
   speed: number; foodUpkeep: number; gunUpkeep: number; gunL2Upkeep?: number;
   /** Siege damage vs wall sections (trebuchet 3 hex, ram melee). */
   siegeAttack?: number;
@@ -426,47 +427,47 @@ export const UNIT_BASE_STATS: Record<UnitType, {
   /** When on friendly city hex (defender only). */
   damageResistOnCityHex?: number;
 }> = {
-  infantry:       { maxHp: 100, attack: 15, range: 1, speed: 1.0, foodUpkeep: 1, gunUpkeep: 0 },
-  cavalry:        { maxHp: 75,  attack: 20, range: 1, speed: 1.5, foodUpkeep: 2, gunUpkeep: 0 },
-  ranged:         { maxHp: 50,  attack: 12, range: 2, speed: 1.0, foodUpkeep: 1, gunUpkeep: 0 },
-  builder:        { maxHp: 40,  attack: 0,  range: 0, speed: 1.0, foodUpkeep: 1, gunUpkeep: 0 },
-  trebuchet:      { maxHp: 60,  attack: 5,  range: 3, speed: 0.6, foodUpkeep: 2, gunUpkeep: 0, siegeAttack: 25 },
-  battering_ram:  { maxHp: 120, attack: 10, range: 1, speed: 0.5, foodUpkeep: 2, gunUpkeep: 0, siegeAttack: 40 },
-  defender:       { maxHp: 130, attack: 8,  range: 1, speed: 0.9, foodUpkeep: 1, gunUpkeep: 0, damageResist: 0.25, damageResistOnCityHex: 0.4 },
+  infantry:       { maxHp: 100, attack: 15, defense: 5,  range: 1, speed: 1.0, foodUpkeep: 1, gunUpkeep: 0 },
+  cavalry:        { maxHp: 75,  attack: 20, defense: 3,  range: 1, speed: 1.5, foodUpkeep: 2, gunUpkeep: 0 },
+  ranged:         { maxHp: 50,  attack: 12, defense: 2,  range: 2, speed: 1.0, foodUpkeep: 1, gunUpkeep: 0 },
+  builder:        { maxHp: 40,  attack: 0,  defense: 2,  range: 0, speed: 1.0, foodUpkeep: 1, gunUpkeep: 0 },
+  trebuchet:      { maxHp: 60,  attack: 5,  defense: 2,  range: 3, speed: 0.6, foodUpkeep: 2, gunUpkeep: 0, siegeAttack: 25 },
+  battering_ram:  { maxHp: 120, attack: 10, defense: 6,  range: 1, speed: 0.5, foodUpkeep: 2, gunUpkeep: 0, siegeAttack: 40 },
+  defender:       { maxHp: 130, attack: 8,  defense: 12, range: 1, speed: 0.9, foodUpkeep: 1, gunUpkeep: 0, damageResist: 0.25, damageResistOnCityHex: 0.4 },
 };
 
 // Level 2 unit stats (require L2 arms); siege and defender have no L2 variant
 export const UNIT_L2_STATS: Record<UnitType, {
-  maxHp: number; attack: number; range: number;
+  maxHp: number; attack: number; defense: number; range: number;
   speed: number; foodUpkeep: number; gunUpkeep: number; gunL2Upkeep: number;
   siegeAttack?: number;
   damageResist?: number;
   damageResistOnCityHex?: number;
 }> = {
-  infantry:       { maxHp: 120, attack: 18, range: 1, speed: 1.0, foodUpkeep: 1, gunUpkeep: 0, gunL2Upkeep: 1 },
-  cavalry:        { maxHp: 90,  attack: 24, range: 1, speed: 1.5, foodUpkeep: 2, gunUpkeep: 0, gunL2Upkeep: 1 },
-  ranged:         { maxHp: 60,  attack: 14, range: 2, speed: 1.0, foodUpkeep: 1, gunUpkeep: 0, gunL2Upkeep: 2 },
-  builder:        { maxHp: 40,  attack: 0,  range: 0, speed: 1.0, foodUpkeep: 1, gunUpkeep: 0, gunL2Upkeep: 0 },
-  trebuchet:      { maxHp: 60,  attack: 5,  range: 3, speed: 0.6, foodUpkeep: 2, gunUpkeep: 0, gunL2Upkeep: 0, siegeAttack: 25 },
-  battering_ram:  { maxHp: 120, attack: 10, range: 1, speed: 0.5, foodUpkeep: 2, gunUpkeep: 0, gunL2Upkeep: 0, siegeAttack: 40 },
-  defender:       { maxHp: 130, attack: 8,  range: 1, speed: 0.9, foodUpkeep: 1, gunUpkeep: 0, gunL2Upkeep: 0, damageResist: 0.25, damageResistOnCityHex: 0.4 },
+  infantry:       { maxHp: 120, attack: 18, defense: 6,  range: 1, speed: 1.0, foodUpkeep: 1, gunUpkeep: 0, gunL2Upkeep: 1 },
+  cavalry:        { maxHp: 90,  attack: 24, defense: 4,  range: 1, speed: 1.5, foodUpkeep: 2, gunUpkeep: 0, gunL2Upkeep: 1 },
+  ranged:         { maxHp: 60,  attack: 14, defense: 3,  range: 2, speed: 1.0, foodUpkeep: 1, gunUpkeep: 0, gunL2Upkeep: 2 },
+  builder:        { maxHp: 40,  attack: 0,  defense: 2,  range: 0, speed: 1.0, foodUpkeep: 1, gunUpkeep: 0, gunL2Upkeep: 0 },
+  trebuchet:      { maxHp: 60,  attack: 5,  defense: 2,  range: 3, speed: 0.6, foodUpkeep: 2, gunUpkeep: 0, gunL2Upkeep: 0, siegeAttack: 25 },
+  battering_ram:  { maxHp: 120, attack: 10, defense: 6,  range: 1, speed: 0.5, foodUpkeep: 2, gunUpkeep: 0, gunL2Upkeep: 0, siegeAttack: 40 },
+  defender:       { maxHp: 130, attack: 8,  defense: 12, range: 1, speed: 0.9, foodUpkeep: 1, gunUpkeep: 0, gunL2Upkeep: 0, damageResist: 0.25, damageResistOnCityHex: 0.4 },
 };
 
 // Level 3 unit stats (require L2 barracks, iron cost); defender is L3 only
 export const UNIT_L3_STATS: Record<UnitType, {
-  maxHp: number; attack: number; range: number;
+  maxHp: number; attack: number; defense: number; range: number;
   speed: number; foodUpkeep: number; gunUpkeep: number; gunL2Upkeep: number;
   siegeAttack?: number;
   damageResist?: number;
   damageResistOnCityHex?: number;
 }> = {
-  infantry:       { maxHp: 140, attack: 21, range: 1, speed: 1.0, foodUpkeep: 1, gunUpkeep: 0, gunL2Upkeep: 2 },
-  cavalry:        { maxHp: 105, attack: 28, range: 1, speed: 1.5, foodUpkeep: 2, gunUpkeep: 0, gunL2Upkeep: 2 },
-  ranged:         { maxHp: 70,  attack: 17, range: 2, speed: 1.0, foodUpkeep: 1, gunUpkeep: 0, gunL2Upkeep: 2 },
-  builder:        { maxHp: 40,  attack: 0,  range: 0, speed: 1.0, foodUpkeep: 1, gunUpkeep: 0, gunL2Upkeep: 0 },
-  trebuchet:      { maxHp: 60,  attack: 5,  range: 3, speed: 0.6, foodUpkeep: 2, gunUpkeep: 0, gunL2Upkeep: 0, siegeAttack: 25 },
-  battering_ram:  { maxHp: 120, attack: 10, range: 1, speed: 0.5, foodUpkeep: 2, gunUpkeep: 0, gunL2Upkeep: 0, siegeAttack: 40 },
-  defender:       { maxHp: 130, attack: 8,  range: 1, speed: 0.9, foodUpkeep: 1, gunUpkeep: 0, gunL2Upkeep: 0, damageResist: 0.25, damageResistOnCityHex: 0.4 },
+  infantry:       { maxHp: 140, attack: 21, defense: 7,  range: 1, speed: 1.0, foodUpkeep: 1, gunUpkeep: 0, gunL2Upkeep: 2 },
+  cavalry:        { maxHp: 105, attack: 28, defense: 5,  range: 1, speed: 1.5, foodUpkeep: 2, gunUpkeep: 0, gunL2Upkeep: 2 },
+  ranged:         { maxHp: 70,  attack: 17, defense: 4,  range: 2, speed: 1.0, foodUpkeep: 1, gunUpkeep: 0, gunL2Upkeep: 2 },
+  builder:        { maxHp: 40,  attack: 0,  defense: 2,  range: 0, speed: 1.0, foodUpkeep: 1, gunUpkeep: 0, gunL2Upkeep: 0 },
+  trebuchet:      { maxHp: 60,  attack: 5,  defense: 2,  range: 3, speed: 0.6, foodUpkeep: 2, gunUpkeep: 0, gunL2Upkeep: 0, siegeAttack: 25 },
+  battering_ram:  { maxHp: 120, attack: 10, defense: 6,  range: 1, speed: 0.5, foodUpkeep: 2, gunUpkeep: 0, gunL2Upkeep: 0, siegeAttack: 40 },
+  defender:       { maxHp: 130, attack: 8,  defense: 12, range: 1, speed: 0.9, foodUpkeep: 1, gunUpkeep: 0, gunL2Upkeep: 0, damageResist: 0.25, damageResistOnCityHex: 0.4 },
 };
 
 /** Resolve unit stats by arms level (L1/L2/L3). Defender uses L3. */

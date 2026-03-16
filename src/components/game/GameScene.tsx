@@ -9,7 +9,7 @@ import HexGrid from './HexGrid';
 import MapController from './MapController';
 import GameHUD from '../ui/GameHUD';
 import { useGameStore } from '@/store/useGameStore';
-import { setAiParams } from '@/lib/aiParams';
+import { setAiParams, getAdvancedAiParams } from '@/lib/aiParams';
 import { axialToWorld, worldToAxial, HEX_RADIUS } from '@/types/game';
 
 /** Match scripts/train-ai.ts default (TRAIN_MAP_SIZE / TRAIN_MAP) so watch mode uses same small map. */
@@ -199,15 +199,19 @@ export default function GameScene() {
     }
   }, [isGenerated, generateWorld, watchMode, watchFour]);
 
-  // Load champion AI params from public/ai-params.json (written by npm run train-ai)
+  // Load champion AI from public/ai-params.json (from npm run train-ai); else use built-in advanced preset for play/spectate
   useEffect(() => {
     fetch('/ai-params.json')
       .then(r => r.ok ? r.json() : null)
       .then(data => {
         if (data) setAiParams(data);
+        else setAiParams(getAdvancedAiParams());
         setAiParamsLoadAttempted(true);
       })
-      .catch(() => setAiParamsLoadAttempted(true));
+      .catch(() => {
+        setAiParams(getAdvancedAiParams());
+        setAiParamsLoadAttempted(true);
+      });
   }, []);
 
   // ?watch (1v1): use champion from ai-params.json; map matches train-ai (38×38). Start only after params load attempted.

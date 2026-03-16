@@ -11,7 +11,7 @@ import {
   WeatherEventType,
   BIOME_COLORS, BIOME_COLORS_DARK, ROAD_COLOR, RUINS_COLOR,
   MOUNTAIN_SNOW_COLOR, PLAYER_COLORS,
-  HEX_RADIUS, HEX_INNER_RATIO, axialToWorld, tileKey, parseTileKey,
+  HEX_RADIUS, HEX_INNER_RATIO, axialToWorld, tileKey, parseTileKey, hexDistance,
   ANCIENT_CITY_COLOR, GOLD_MINE_DEPOSIT_COLOR, QUARRY_DEPOSIT_COLOR,
 } from '@/types/game';
 
@@ -767,6 +767,56 @@ function MoveRangeOverlay({ fromQ, fromR, tiles, color = '#44ff88' }: {
   return <instancedMesh ref={meshRef} args={[geometry, material, Math.max(1, reachableTiles.length)]} renderOrder={5} />;
 }
 
+// ─── Tactical orders: valid destination hexes (union of range from selected stacks) ─
+
+const TACTICAL_MOVE_RADIUS = 10;
+
+function TacticalMoveRangeOverlay({ stackKeys, tiles, color = '#44ff88' }: {
+  stackKeys: string[];
+  tiles: Map<string, Tile>;
+  color?: string;
+}) {
+  const meshRef = useRef<THREE.InstancedMesh>(null);
+
+  const reachableTiles = useMemo(() => {
+    const froms = stackKeys.map(k => parseTileKey(k));
+    const result: Tile[] = [];
+    tiles.forEach((tile) => {
+      if (tile.biome === 'water') return;
+      let minDist = Infinity;
+      for (const [fromQ, fromR] of froms) {
+        const d = hexDistance(fromQ, fromR, tile.q, tile.r);
+        if (d < minDist) minDist = d;
+      }
+      if (minDist >= 1 && minDist <= TACTICAL_MOVE_RADIUS) result.push(tile);
+    });
+    return result;
+  }, [stackKeys, tiles]);
+
+  const geometry = useMemo(() => makeHexGeo(HEX_RADIUS * HEX_INNER_RATIO * 0.95, 0.03), []);
+  const material = useMemo(() => new THREE.MeshBasicMaterial({
+    color, transparent: true, opacity: 0.22, depthWrite: false,
+  }), [color]);
+
+  useEffect(() => {
+    if (!meshRef.current || reachableTiles.length === 0) return;
+    const mesh = meshRef.current;
+    const dummy = new THREE.Object3D();
+    reachableTiles.forEach((tile, i) => {
+      const [x, z] = axialToWorld(tile.q, tile.r, HEX_RADIUS);
+      dummy.position.set(x, tile.height + 0.05, z);
+      dummy.scale.set(1, 1, 1);
+      dummy.updateMatrix();
+      mesh.setMatrixAt(i, dummy.matrix);
+    });
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.count = reachableTiles.length;
+  }, [reachableTiles]);
+
+  if (reachableTiles.length === 0) return null;
+  return <instancedMesh ref={meshRef} args={[geometry, material, Math.max(1, reachableTiles.length)]} renderOrder={5} />;
+}
+
 // ─── Deposit Highlight (Mine/Quarry build mode) ─────────────────────
 
 function DepositHighlightOverlay({ tiles, cities, constructions, depositType }: {
@@ -1190,6 +1240,7 @@ export default function HexGrid() {
   const supplyViewTab = useGameStore(s => s.supplyViewTab);
   const getSupplyClustersWithHealth = useGameStore(s => s.getSupplyClustersWithHealth);
   const assigningTacticalForStack = useGameStore(s => s.assigningTacticalForStack);
+  const assigningTacticalForSelectedStacks = useGameStore(s => s.assigningTacticalForSelectedStacks);
 
   const visionActive = phase === 'playing';
 
@@ -1296,8 +1347,12 @@ export default function HexGrid() {
       {uiMode === 'move' && selectedHex && !assigningTacticalForStack && (
         <MoveRangeOverlay fromQ={selectedHex.q} fromR={selectedHex.r} tiles={tiles} />
       )}
-      {/* Tactical: valid destination hexes when assigning move/intercept for a stack */}
-      {assigningTacticalForStack && (() => {
+      {/* Tactical: valid destination hexes when assigning move/intercept for selected stacks (bottom-bar flow) */}
+      {assigningTacticalForSelectedStacks && (
+        <TacticalMoveRangeOverlay stackKeys={assigningTacticalForSelectedStacks.stackKeys} tiles={tiles} />
+      )}
+      {/* Tactical: valid destination hexes when assigning for a single stack (legacy) */}
+      {assigningTacticalForStack && !assigningTacticalForSelectedStacks && (() => {
         const [tq, tr] = parseTileKey(assigningTacticalForStack);
         return <MoveRangeOverlay fromQ={tq} fromR={tr} tiles={tiles} color="#e4b44c" />;
       })()}
