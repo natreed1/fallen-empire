@@ -243,6 +243,30 @@ export const DEFAULT_AI_PARAMS: AiParams = {
   supplyCityAcquisitionBias: 0.3,
 };
 
+/**
+ * Built-in "advanced" preset: stronger wall/supply/siege than default.
+ * Used when public/ai-params.json is not present so you can play vs and spectate a capable AI without running train-ai.
+ */
+export const ADVANCED_AI_PARAMS: AiParams = {
+  ...DEFAULT_AI_PARAMS,
+  siegeChance: 0.28,
+  targetDefenderWeight: 3.5,
+  foodBufferThreshold: 16,
+  sustainableMilitaryMultiplier: 0.95,
+  wallBuildPerCityTarget: 3,
+  wallBuildPriority: 0.55,
+  wallClosurePriority: 0.65,
+  wallRepairPriority: 0.6,
+  wallRingTarget: 1,
+  wallClosureUptimeWeight: 0.4,
+  supplyExpansionPriority: 0.55,
+  supplyAnchorDistanceWeight: 0.8,
+  supplyStarvationRiskWeight: 0.7,
+  supplyCityAcquisitionBias: 0.45,
+  defenderAssignmentPriority: 0.7,
+  incorporateVillageChance: 1,
+};
+
 // ─── Food-aware recruit gating (avoid starvation lock in headless sim) ──
 const CIV_FOOD_PER_POP = 0.25;
 const AVG_MILITARY_FOOD_PER_UNIT = 1.5;
@@ -298,7 +322,17 @@ export function planAiTurn(
   const aiUnits = units.filter(u => u.ownerId === aiPlayerId && u.hp > 0);
 
   const foodStats = estimateAiFoodSurplus(aiPlayerId, cities, units, tiles, territory);
-  const militaryCount = aiUnits.filter(u => u.type !== 'builder').length;
+  const militaryUnits = aiUnits.filter(u => u.type !== 'builder');
+  const militaryCount = militaryUnits.length;
+
+  const minDistToCities = (q: number, r: number, cityList: City[]): number => {
+    let min = Infinity;
+    for (const c of cityList) {
+      const d = hexDistance(q, r, c.q, c.r);
+      if (d < min) min = d;
+    }
+    return min;
+  };
 
   for (const city of aiCities) {
     const farmCount = city.buildings.filter(b => b.type === 'farm').length;
@@ -478,11 +512,8 @@ export function planAiTurn(
   }
 
   // Supply-aware expansion: avg distance from military to nearest friendly city (anchor)
-  const avgDistToAnchor = aiCities.length > 0 && aiUnits.some(u => u.type !== 'builder')
-    ? aiUnits
-        .filter(u => u.type !== 'builder')
-        .reduce((sum, u) => sum + Math.min(...aiCities.map(c => hexDistance(u.q, u.r, c.q, c.r))), 0) /
-      Math.max(1, aiUnits.filter(u => u.type !== 'builder').length)
+  const avgDistToAnchor = aiCities.length > 0 && militaryUnits.length > 0
+    ? militaryUnits.reduce((sum, u) => sum + minDistToCities(u.q, u.r, aiCities), 0) / militaryUnits.length
     : 0;
   const anchorDistW = Math.max(0, Math.min(2, params.supplyAnchorDistanceWeight ?? 0.5));
   const starvationW = Math.max(0, Math.min(2, params.supplyStarvationRiskWeight ?? 0.5));
@@ -490,30 +521,39 @@ export function planAiTurn(
   const expansionPriority = Math.max(0, Math.min(1, params.supplyExpansionPriority ?? 0.4));
 
   const scoreVillageExpansion = (vq: number, vr: number): number => {
-    const distToNearestCity = aiCities.length > 0 ? Math.min(...aiCities.map(c => hexDistance(vq, vr, c.q, c.r))) : 0;
+    const distToNearestCity = aiCities.length > 0 ? minDistToCities(vq, vr, aiCities) : 0;
     const currentAvg = avgDistToAnchor;
-    const newCities = [...aiCities, { q: vq, r: vr } as City];
-    const newAvg = aiUnits.filter(u => u.type !== 'builder').length > 0
-      ? aiUnits
-          .filter(u => u.type !== 'builder')
-          .reduce((sum, u) => sum + Math.min(...newCities.map(c => hexDistance(u.q, u.r, c.q, c.r))), 0) /
-        Math.max(1, aiUnits.filter(u => u.type !== 'builder').length)
-      : currentAvg;
+    let newAvg = currentAvg;
+    if (militaryUnits.length > 0) {
+      let sum = 0;
+      for (const u of militaryUnits) {
+        let minD = hexDistance(u.q, u.r, vq, vr);
+        for (const c of aiCities) {
+          const d = hexDistance(u.q, u.r, c.q, c.r);
+          if (d < minD) minD = d;
+        }
+        sum += minD;
+      }
+      newAvg = sum / militaryUnits.length;
+    }
     const supplyGain = Math.max(0, (currentAvg - newAvg) * 0.1 * anchorDistW);
     const starvationRisk = (distToNearestCity / 24) * starvationW;
     return 1 + supplyGain - starvationRisk + cityBias;
   };
 
-  // Incorporate villages: order by expansion score when supply expansion is used
+  const cityCenterKeys = new Set(cities.map(c => tileKey(c.q, c.r)));
   const villageTilesForIncorp: { q: number; r: number; score: number }[] = [];
+  const villagesNeedingUnits: { q: number; r: number; score: number }[] = [];
   for (const tile of tiles.values()) {
     if (!tile.hasVillage) continue;
-    if (cities.some(c => c.q === tile.q && c.r === tile.r)) continue;
+    if (cityCenterKeys.has(tileKey(tile.q, tile.r))) continue;
     const militaryHere = aiUnits.filter(u => u.q === tile.q && u.r === tile.r && u.type !== 'builder');
-    if (militaryHere.length > 0) villageTilesForIncorp.push({ q: tile.q, r: tile.r, score: scoreVillageExpansion(tile.q, tile.r) });
+    const score = scoreVillageExpansion(tile.q, tile.r);
+    if (militaryHere.length > 0) villageTilesForIncorp.push({ q: tile.q, r: tile.r, score });
+    else villagesNeedingUnits.push({ q: tile.q, r: tile.r, score });
   }
-  const sortedForIncorp = villageTilesForIncorp.sort((a, b) => b.score - a.score);
-  for (const { q, r } of sortedForIncorp) {
+  villageTilesForIncorp.sort((a, b) => b.score - a.score);
+  for (const { q, r } of villageTilesForIncorp) {
     if (goldBudget < VILLAGE_INCORPORATE_COST) break;
     if (Math.random() < (params.incorporateVillageChance ?? 1)) {
       actions.incorporateVillages.push({ q, r });
@@ -521,14 +561,6 @@ export function planAiTurn(
     }
   }
 
-  // Move units toward villages we don't have military on (village expansion), ordered by expansion score
-  const villagesNeedingUnits: { q: number; r: number; score: number }[] = [];
-  for (const tile of tiles.values()) {
-    if (!tile.hasVillage) continue;
-    if (cities.some(c => c.q === tile.q && c.r === tile.r)) continue;
-    const militaryHere = aiUnits.filter(u => u.q === tile.q && u.r === tile.r && u.type !== 'builder');
-    if (militaryHere.length === 0) villagesNeedingUnits.push({ q: tile.q, r: tile.r, score: scoreVillageExpansion(tile.q, tile.r) });
-  }
   villagesNeedingUnits.sort((a, b) => b.score - a.score);
   const movableForVillage = aiUnits.filter(u => u.hp > 0 && u.type !== 'builder' && u.status !== 'fighting');
   const assignedToVillage = new Set<string>();
@@ -559,7 +591,7 @@ export function planAiTurn(
     const defW = params.targetDefenderWeight;
     const baseScore = (ec: City): number => popW * ec.population + enemyUnitCount(ec.q, ec.r) * defW;
     const distToOurs = (ec: City): number =>
-      aiCities.length === 0 ? 999 : Math.min(...aiCities.map(c => hexDistance(ec.q, ec.r, c.q, c.r)));
+      aiCities.length === 0 ? 999 : minDistToCities(ec.q, ec.r, aiCities);
     const score = (ec: City): number => baseScore(ec);
     // Primary: weakest first; tie-breaker: prefer closer (becomes anchor, supplyCityAcquisitionBias)
     const sortedEnemies = [...enemyCities].sort(

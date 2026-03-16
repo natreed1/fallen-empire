@@ -435,12 +435,25 @@ export function stepSimulation(
     return { idle, moving, fighting, starving };
   };
 
-  const ai1Military = units.filter(u => u.ownerId === AI_ID && u.type !== 'builder');
-  const ai2Military = units.filter(u => u.ownerId === AI_ID_2 && u.type !== 'builder');
+  const ai1Cities = cities.filter(c => c.ownerId === AI_ID);
+  const ai2Cities = cities.filter(c => c.ownerId === AI_ID_2);
+  const ai1Units = units.filter(u => u.ownerId === AI_ID);
+  const ai2Units = units.filter(u => u.ownerId === AI_ID_2);
+  const ai1Military = ai1Units.filter(u => u.type !== 'builder');
+  const ai2Military = ai2Units.filter(u => u.type !== 'builder');
   const allStarving1 = ai1Military.length > 0 && ai1Military.every(u => u.status === 'starving');
   const allStarving2 = ai2Military.length > 0 && ai2Military.every(u => u.status === 'starving');
-  const foodAi1 = cities.filter(c => c.ownerId === AI_ID).reduce((s, c) => s + c.storage.food, 0);
-  const foodAi2 = cities.filter(c => c.ownerId === AI_ID_2).reduce((s, c) => s + c.storage.food, 0);
+  const foodAi1 = ai1Cities.reduce((s, c) => s + c.storage.food, 0);
+  const foodAi2 = ai2Cities.reduce((s, c) => s + c.storage.food, 0);
+
+  const minDistToCities = (q: number, r: number, cityList: City[]): number => {
+    let min = Infinity;
+    for (const c of cityList) {
+      const d = hexDistance(q, r, c.q, c.r);
+      if (d < min) min = d;
+    }
+    return min;
+  };
 
   if (diagnostics) {
     const anyStarving = units.some(u => u.status === 'starving');
@@ -448,8 +461,6 @@ export function stepSimulation(
     if ((allStarving1 || allStarving2) && diagnostics.firstCycleAllStarving == null) diagnostics.firstCycleAllStarving = newCycle;
     if (foodAi1 <= 0 && diagnostics.firstCycleFoodZeroAi1 == null) diagnostics.firstCycleFoodZeroAi1 = newCycle;
     if (foodAi2 <= 0 && diagnostics.firstCycleFoodZeroAi2 == null) diagnostics.firstCycleFoodZeroAi2 = newCycle;
-    const ai1Units = units.filter(u => u.ownerId === AI_ID);
-    const ai2Units = units.filter(u => u.ownerId === AI_ID_2);
     diagnostics.unitStatusCountsAi1 = countStatus(ai1Units);
     diagnostics.unitStatusCountsAi2 = countStatus(ai2Units);
     // Supply stress / all-starving cycles
@@ -458,20 +469,19 @@ export function stepSimulation(
     if (allStarving1) diagnostics.allStarvingCyclesAi1 = (diagnostics.allStarvingCyclesAi1 ?? 0) + 1;
     if (allStarving2) diagnostics.allStarvingCyclesAi2 = (diagnostics.allStarvingCyclesAi2 ?? 0) + 1;
     // Avg military distance to nearest friendly city (anchor)
-    const ai1Cities = cities.filter(c => c.ownerId === AI_ID);
-    const ai2Cities = cities.filter(c => c.ownerId === AI_ID_2);
     if (ai1Cities.length > 0 && ai1Military.length > 0) {
-      const sum = ai1Military.reduce((s, u) => s + Math.min(...ai1Cities.map(c => hexDistance(u.q, u.r, c.q, c.r))), 0);
+      let sum = 0;
+      for (const u of ai1Military) sum += minDistToCities(u.q, u.r, ai1Cities);
       diagnostics.avgMilitaryDistanceToAnchorAi1 = sum / ai1Military.length;
     }
     if (ai2Cities.length > 0 && ai2Military.length > 0) {
-      const sum = ai2Military.reduce((s, u) => s + Math.min(...ai2Cities.map(c => hexDistance(u.q, u.r, c.q, c.r))), 0);
+      let sum = 0;
+      for (const u of ai2Military) sum += minDistToCities(u.q, u.r, ai2Cities);
       diagnostics.avgMilitaryDistanceToAnchorAi2 = sum / ai2Military.length;
     }
     // Ring completion (key city = first city per side): ring 1 target vs built
     const wallByKey = new Map(state.wallSections.map(w => [tileKey(w.q, w.r), w]));
-    for (const [side, ownerId] of [['Ai1', AI_ID], ['Ai2', AI_ID_2]] as const) {
-      const sideCities = cities.filter(c => c.ownerId === ownerId);
+    for (const [side, ownerId, sideCities] of [['Ai1', AI_ID, ai1Cities], ['Ai2', AI_ID_2, ai2Cities]] as const) {
       const keyCity = sideCities[0];
       if (!keyCity) continue;
       const ring1Hexes = getHexRing(keyCity.q, keyCity.r, 1);
@@ -514,16 +524,12 @@ export function stepSimulation(
   const plans = aiConfigs.map(({ id, params }) => planAiTurn(id, cities, units, players, state.tiles, state.territory, params, state.wallSections));
 
   if (traceCallback) {
-    const ai1CitiesFiltered = cities.filter(c => c.ownerId === AI_ID);
-    const ai2CitiesFiltered = cities.filter(c => c.ownerId === AI_ID_2);
-    const ai1Pop = ai1CitiesFiltered.reduce((s, c) => s + c.population, 0);
-    const ai2Pop = ai2CitiesFiltered.reduce((s, c) => s + c.population, 0);
-    const ai1FoodStorage = ai1CitiesFiltered.reduce((s, c) => s + c.storage.food, 0);
-    const ai2FoodStorage = ai2CitiesFiltered.reduce((s, c) => s + c.storage.food, 0);
+    const ai1Pop = ai1Cities.reduce((s, c) => s + c.population, 0);
+    const ai2Pop = ai2Cities.reduce((s, c) => s + c.population, 0);
+    const ai1FoodStorage = ai1Cities.reduce((s, c) => s + c.storage.food, 0);
+    const ai2FoodStorage = ai2Cities.reduce((s, c) => s + c.storage.food, 0);
     const food1 = estimateAiFoodSurplus(AI_ID, cities, units, state.tiles, state.territory, harvestMultiplier);
     const food2 = estimateAiFoodSurplus(AI_ID_2, cities, units, state.tiles, state.territory, harvestMultiplier);
-    const ai1Units = units.filter(u => u.ownerId === AI_ID);
-    const ai2Units = units.filter(u => u.ownerId === AI_ID_2);
     traceCallback({
       cycle: newCycle,
       ai1Pop,
@@ -549,9 +555,16 @@ export function stepSimulation(
     const aiPlayer = players.find(p => p.id === aiPlayerId);
     if (!aiPlayer) continue;
 
+    const cityById = new Map(cities.map(c => [c.id, c]));
+    const occupiedTileKeys = new Set<string>();
+    for (const c of cities) {
+      for (const b of c.buildings) occupiedTileKeys.add(tileKey(b.q, b.r));
+    }
+    for (const cs of constructions) occupiedTileKeys.add(tileKey(cs.q, cs.r));
+
     for (const build of aiPlan.builds) {
       if (build.type === 'city_center') continue;
-      const city = cities.find(c => c.id === build.cityId);
+      const city = cityById.get(build.cityId);
       if (!city || city.ownerId !== aiPlayerId) continue;
       if (aiPlayer.gold < BUILDING_COSTS[build.type]) continue;
       const ironCost = BUILDING_IRON_COSTS[build.type] ?? 0;
@@ -559,8 +572,7 @@ export function stepSimulation(
       // Only start construction in own territory (city provides BP; outside territory would need builders)
       const terr = state.territory.get(tileKey(build.q, build.r));
       if (!terr || terr.playerId !== aiPlayerId) continue;
-      if (cities.some(c => c.buildings.some(b => b.q === build.q && b.r === build.r))) continue;
-      if (constructions.some(cs => cs.q === build.q && cs.r === build.r)) continue;
+      if (occupiedTileKeys.has(tileKey(build.q, build.r))) continue;
 
       const bpRequired = BUILDING_BP_COST[build.type];
       const site: ConstructionSite = {
@@ -574,6 +586,7 @@ export function stepSimulation(
         bpAccumulated: 0,
       };
       constructions.push(site);
+      occupiedTileKeys.add(tileKey(build.q, build.r));
       aiPlayer.gold -= BUILDING_COSTS[build.type];
       if (ironCost > 0) {
         const cityIdx = cities.indexOf(city);
@@ -602,7 +615,7 @@ export function stepSimulation(
     }
 
     for (const up of aiPlan.upgrades ?? []) {
-      const city = cities.find(c => c.id === up.cityId);
+      const city = cityById.get(up.cityId);
       if (!city || city.ownerId !== aiPlayerId || !aiPlayer) continue;
       const cost = up.type === 'barracks' ? BARACKS_UPGRADE_COST : up.type === 'farm' ? FARM_UPGRADE_COST : FACTORY_UPGRADE_COST;
       if (aiPlayer.gold < cost) continue;
@@ -616,7 +629,7 @@ export function stepSimulation(
     const aiTotalPopForRecruit = aiRecruitCities.reduce((s, c) => s + c.population, 0);
     let aiTroopCount = units.filter(u => u.ownerId === aiPlayerId && u.hp > 0).length;
     for (const rec of aiPlan.recruits) {
-      const city = cities.find(c => c.id === rec.cityId);
+      const city = cityById.get(rec.cityId);
       if (!city || city.ownerId !== aiPlayerId || city.population <= 0 || aiTroopCount >= aiTotalPopForRecruit) continue;
       const effectiveLevel = rec.type === 'defender' ? 3 : (rec.armsLevel ?? 1);
       const wantL2 = effectiveLevel === 2;
@@ -730,7 +743,7 @@ export function stepSimulation(
     // AI wall ring builds: deduct stone from city, add sections for valid ring hexes that don't already have owner's wall
     const buildWallRings = (aiPlan as { buildWallRings?: { cityId: string; ring: 1 | 2 }[] }).buildWallRings ?? [];
     for (const wr of buildWallRings) {
-      const city = cities.find(c => c.id === wr.cityId);
+      const city = cityById.get(wr.cityId);
       if (!city || city.ownerId !== aiPlayerId) continue;
       const ringHexes = getHexRing(city.q, city.r, wr.ring);
       const ownerWallKeys = new Set(wallSectionsAfterAi.filter(w => w.ownerId === aiPlayerId).map(w => tileKey(w.q, w.r)));
@@ -910,18 +923,18 @@ export function stepSimulation(
 
   // ── Victory / total-starvation abort ──
   let phase: GamePhase = 'playing';
-  const ai1Cities = citiesToSet.filter(c => c.ownerId === AI_ID);
-  const ai2Cities = citiesToSet.filter(c => c.ownerId === AI_ID_2);
+  const finalAi1Cities = citiesToSet.filter(c => c.ownerId === AI_ID);
+  const finalAi2Cities = citiesToSet.filter(c => c.ownerId === AI_ID_2);
   const finalAi1Military = aliveUnits.filter(u => u.ownerId === AI_ID && u.type !== 'builder');
   const finalAi2Military = aliveUnits.filter(u => u.ownerId === AI_ID_2 && u.type !== 'builder');
   const finalAllStarving1 = finalAi1Military.length > 0 && finalAi1Military.every(u => u.status === 'starving');
   const finalAllStarving2 = finalAi2Military.length > 0 && finalAi2Military.every(u => u.status === 'starving');
-  const finalFoodAi1 = ai1Cities.reduce((s, c) => s + c.storage.food, 0);
-  const finalFoodAi2 = ai2Cities.reduce((s, c) => s + c.storage.food, 0);
+  const finalFoodAi1 = finalAi1Cities.reduce((s, c) => s + c.storage.food, 0);
+  const finalFoodAi2 = finalAi2Cities.reduce((s, c) => s + c.storage.food, 0);
   if (finalAllStarving1 && finalAllStarving2 && finalFoodAi1 <= 0 && finalFoodAi2 <= 0) {
     phase = 'total_starvation';
     if (diagnostics) diagnostics.totalStarvationAbort = true;
-  } else if (ai1Cities.length === 0 || ai2Cities.length === 0) {
+  } else if (finalAi1Cities.length === 0 || finalAi2Cities.length === 0) {
     phase = 'victory';
   }
 
