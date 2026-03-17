@@ -29,6 +29,7 @@ import { calculateTerritory } from '../lib/territory';
 import { processEconomyTurn } from '../lib/gameLoop';
 import { planAiTurn, placeAiStartingCityAt, createAiHero, AiParams, DEFAULT_AI_PARAMS, estimateAiFoodSurplus } from '../lib/ai';
 import { movementTick, combatTick, upkeepTick, siegeTick, type SupplyCacheEntry } from '../lib/military';
+import { computeSupplyCostMaps, type SupplyCostMap } from '../lib/logistics';
 import { rollForWeatherEvent, tickWeatherEvent, getWeatherHarvestMultiplier } from '../lib/weather';
 
 export type { AiParams };
@@ -36,6 +37,13 @@ export { DEFAULT_AI_PARAMS };
 
 const AI_ID = 'player_ai';
 const AI_ID_2 = 'player_ai_2';
+
+/** Signature for cache invalidation: recompute supply cost maps when cities or unit layout change. */
+function makeLogisticsSignature(cities: City[], units: Unit[]): string {
+  const cityPart = cities.length + '_' + [...cities].map(c => c.id + ':' + c.ownerId).sort().join(',');
+  const unitPart = [...units].filter(u => u.hp > 0).map(u => tileKey(u.q, u.r)).sort().join(',');
+  return cityPart + '|' + unitPart;
+}
 
 export type SimState = {
   config: MapConfig;
@@ -58,8 +66,12 @@ export type SimState = {
   cityCaptureHold: Record<string, { attackerId: string; startedAt: number }>;
   /** Simulated time in ms; advances 30s per cycle for capture hold & scout completion */
   simTimeMs: number;
-  /** Cache: unitId -> { clusterKey, q, r }; recomputed only when unit moves or cities change. */
+  /** Cache: unitId -> { clusterKey, supplyQuality, q, r }; recomputed when unit moves. */
   supplyCache?: Map<string, SupplyCacheEntry>;
+  /** Precomputed supply cost maps per player; invalidated when cities or unit positions change. */
+  supplyCostMaps?: Map<string, SupplyCostMap>;
+  /** Signature used to avoid recomputing supply cost maps when nothing relevant changed. */
+  logisticsSignature?: string;
 };
 
 let _cityNameIdx = 0;
@@ -183,6 +195,8 @@ export type RunSimulationOptions = {
   mapConfigOverride?: Partial<MapConfig>;
   /** If set, per-cycle trace is written to this path (JSON array of CycleTrace). */
   tracePath?: string;
+  /** 'minimal' = collect only totalKills, killsByAi1/2, totalStarvationAbort (faster). Omit = 'full'. */
+  diagnosticsLevel?: 'full' | 'minimal';
 };
 
 /** Run one full simulation until victory or maxCycles. Returns result. */
@@ -249,6 +263,7 @@ export function runSimulationWithDiagnostics(
   const maxC = options?.maxCycles ?? maxCycles;
   const mapOverride = options?.mapConfigOverride;
   const tracePath = options?.tracePath;
+  const diagnosticsLevel = options?.diagnosticsLevel ?? 'full';
   const trace: CycleTrace[] = [];
   const traceCallback = tracePath
     ? (data: CycleTrace) => trace.push(data)
@@ -256,7 +271,7 @@ export function runSimulationWithDiagnostics(
 
   let state = initBotVsBotGame(seed, paramsA, paramsB, mapOverride);
   while (state.phase === 'playing' && state.cycle < maxC) {
-    state = stepSimulation(state, paramsA, paramsB, diag, traceCallback);
+    state = stepSimulation(state, paramsA, paramsB, diag, traceCallback, { diagnosticsLevel });
   }
 
   const ai1Cities = state.cities.filter(c => c.ownerId === AI_ID);
@@ -395,6 +410,9 @@ export type SimDiagnostics = {
   localConsolidationActionShareAi2?: number;
 };
 
+/** Options for stepSimulation (e.g. minimal diagnostics to reduce cost). */
+export type StepSimulationOptions = { diagnosticsLevel?: 'full' | 'minimal' };
+
 /** Single step: economy + AI actions + one movement/combat/siege/capture tick. */
 export function stepSimulation(
   state: SimState,
@@ -402,10 +420,12 @@ export function stepSimulation(
   paramsB: AiParams,
   diagnostics?: SimDiagnostics,
   traceCallback?: (data: CycleTrace) => void,
+  stepOptions?: StepSimulationOptions,
 ): SimState {
   if (state.phase !== 'playing') return state;
 
-  if (diagnostics) {
+  const diagFull = stepOptions?.diagnosticsLevel !== 'minimal';
+  if (diagnostics && diagFull) {
     diagnostics.buildsAi1 ??= {};
     diagnostics.buildsAi2 ??= {};
     diagnostics.buildsAi1Early ??= {};
@@ -440,11 +460,18 @@ export function stepSimulation(
   let units = econ.units;
   let players = econ.players;
 
-  // ── Upkeep (reuse clusters from economy; supply cache avoids recomputing per-unit supply when position unchanged) ──
+  // ── Supply cost maps: reuse when signature unchanged (city ownership/count + unit positions) ──
+  const logisticsSignature = makeLogisticsSignature(cities, units);
+  let supplyCostMaps = state.logisticsSignature === logisticsSignature ? state.supplyCostMaps : undefined;
+  if (!supplyCostMaps && econ.clusters) {
+    supplyCostMaps = computeSupplyCostMaps(cities, econ.clusters, state.tiles, units);
+  }
+
+  // ── Upkeep (reuse clusters + supply cost maps; supply cache avoids recomputing when position unchanged) ──
   const supplyCache = state.supplyCache ?? new Map<string, SupplyCacheEntry>();
   const upkeepResult = upkeepTick(
     units, cities, state.heroes, newCycle, state.tiles, state.territory,
-    econ.clusters, supplyCache,
+    econ.clusters, supplyCache, supplyCostMaps,
   );
   units = units.filter(u => u.hp > 0);
 
@@ -479,7 +506,7 @@ export function stepSimulation(
     return min;
   };
 
-  if (diagnostics) {
+  if (diagnostics && diagFull) {
     const anyStarving = units.some(u => u.status === 'starving');
     if (anyStarving && diagnostics.firstCycleAnyStarvation == null) diagnostics.firstCycleAnyStarvation = newCycle;
     if ((allStarving1 || allStarving2) && diagnostics.firstCycleAllStarving == null) diagnostics.firstCycleAllStarving = newCycle;
@@ -589,7 +616,7 @@ export function stepSimulation(
 
   const plans = aiConfigs.map(({ id, params }) => planAiTurn(id, cities, units, players, state.tiles, state.territory, params, state.wallSections));
 
-  if (diagnostics) {
+  if (diagnostics && diagFull) {
     const p1 = plans[0].moveTargets;
     const p2 = plans[1].moveTargets;
     diagnostics._totalMoveTargetsAi1 = (diagnostics._totalMoveTargetsAi1 ?? 0) + p1.length;
@@ -626,6 +653,8 @@ export function stepSimulation(
       unitStatusAi2: countStatus(ai2Units),
     });
   }
+
+  const unitById = new Map(units.map(u => [u.id, u]));
 
   for (let cfgIdx = 0; cfgIdx < aiConfigs.length; cfgIdx++) {
     const { id: aiPlayerId } = aiConfigs[cfgIdx];
@@ -677,7 +706,7 @@ export function stepSimulation(
         }
       }
 
-      if (diagnostics) {
+      if (diagnostics && diagFull) {
         const key = build.type;
         const early = newCycle <= 100;
         if (aiPlayerId === AI_ID) {
@@ -808,7 +837,7 @@ export function stepSimulation(
     }
 
     for (const mt of aiPlan.moveTargets) {
-      const unit = units.find(u => u.id === mt.unitId);
+      const unit = unitById.get(mt.unitId);
       // Allow idle, moving, or starving units to receive move targets (not fighting) so headless sims stay decisive
       if (unit && unit.hp > 0 && unit.status !== 'fighting') {
         unit.targetQ = mt.toQ;
@@ -1021,6 +1050,9 @@ export function stepSimulation(
     state.cities.length !== citiesToSet.length ||
     state.cities.some(c => newCityOwnerById.get(c.id) !== c.ownerId);
   const supplyCacheNext = !citiesChanged ? supplyCache : undefined;
+  // Invalidate supply cost maps when cities changed; keep logistics signature for next step
+  const supplyCostMapsNext = !citiesChanged ? supplyCostMaps : undefined;
+  const logisticsSignatureNext = logisticsSignature;
 
   return {
     ...state,
@@ -1041,5 +1073,7 @@ export function stepSimulation(
     simTimeMs: newSimTimeMs,
     heroes: movingHeroes.filter(h => !(combatResult.killedHeroIds ?? []).includes(h.id)),
     supplyCache: supplyCacheNext,
+    supplyCostMaps: supplyCostMapsNext,
+    logisticsSignature: logisticsSignatureNext,
   };
 }

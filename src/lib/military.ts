@@ -6,7 +6,7 @@ import {
   type Biome,
 } from '@/types/game';
 import { getUnitAttack, getUnitDefense, awardXp } from './combat';
-import { computeTradeClusters, getUnitSupplyInfo, TradeCluster } from '@/lib/logistics';
+import { computeTradeClusters, getUnitSupplyInfo, getUnitSupplyInfoFromMap, TradeCluster, type SupplyCostMap } from '@/lib/logistics';
 import { SUPPLY_QUALITY_THRESHOLD } from '@/types/game';
 
 const TOWER_DEFENSE_BONUS = 0.10;
@@ -414,6 +414,7 @@ export function upkeepTick(
   territory: Map<string, TerritoryInfo>,
   precomputedClusters?: Map<string, TradeCluster[]>,
   supplyCache?: Map<string, SupplyCacheEntry>,
+  supplyCostMaps?: Map<string, SupplyCostMap>,
 ): UpkeepResult {
   const notifications: GameNotification[] = [];
   const clusters = precomputedClusters ?? computeTradeClusters(cities, tiles, units, territory);
@@ -428,7 +429,17 @@ export function upkeepTick(
   for (const ownerId of Object.keys(byOwner)) {
     const playerUnits = byOwner[ownerId];
     const playerClusters = clusters.get(ownerId) ?? [];
+    const supplyMap = supplyCostMaps?.get(ownerId);
     const isHuman = ownerId.includes('human');
+
+    // Index cluster by key for O(1) lookup (avoids repeated playerClusters.find)
+    const clusterByKey = new Map<string, TradeCluster>();
+    for (const c of playerClusters) clusterByKey.set(c.cityIds.join(','), c);
+    // Index logistician heroes by hex for O(1) lookup per unit (avoids heroes.find per unit)
+    const heroLogisticianByHex = new Map<string, Hero>();
+    for (const h of heroes) {
+      if (h.ownerId === ownerId && h.type === 'logistician') heroLogisticianByHex.set(tileKey(h.q, h.r), h);
+    }
 
     // Group units by supplying cluster (null = cut off or supplyQuality below threshold); use cache when position unchanged
     const unitsByCluster = new Map<string | null, Unit[]>();
@@ -440,7 +451,9 @@ export function upkeepTick(
         key = cached.clusterKey;
         supplyQuality = cached.supplyQuality;
       } else {
-        const info = getUnitSupplyInfo(u, playerClusters, tiles, units, ownerId);
+        const info = supplyMap
+          ? getUnitSupplyInfoFromMap(u, supplyMap)
+          : getUnitSupplyInfo(u, playerClusters, tiles, units, ownerId);
         key = info.supplyQuality >= SUPPLY_QUALITY_THRESHOLD ? info.clusterKey : null;
         supplyQuality = info.supplyQuality;
         if (supplyCache) supplyCache.set(u.id, { clusterKey: info.clusterKey, supplyQuality, q: u.q, r: u.r });
@@ -468,7 +481,7 @@ export function upkeepTick(
         continue;
       }
 
-      const cluster = playerClusters.find(c => c.cityIds.join(',') === clusterKey);
+      const cluster = clusterByKey.get(clusterKey);
       if (!cluster) continue;
       const clusterCities = cluster.cities;
 
@@ -478,9 +491,7 @@ export function upkeepTick(
       for (const u of clusterUnits) {
         const stats = getUnitStats(u);
         let foodUp = stats.foodUpkeep;
-        const heroAtUnit = heroes.find(
-          h => h.q === u.q && h.r === u.r && h.ownerId === u.ownerId && h.type === 'logistician'
-        );
+        const heroAtUnit = heroLogisticianByHex.get(tileKey(u.q, u.r));
         if (heroAtUnit) foodUp = Math.ceil(foodUp * 0.5);
         totalFoodDemand += foodUp;
         totalGunDemand += stats.gunUpkeep ?? 0;

@@ -66,6 +66,7 @@ export function runSeasonGames(
   const opts: RunSimulationOptions = {
     maxCycles: config.maxCycles,
     mapConfigOverride: { width: config.mapSize, height: config.mapSize },
+    diagnosticsLevel: config.diagnosticsLevel,
   };
   const anchors = getAnchors();
 

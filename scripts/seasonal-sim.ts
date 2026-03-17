@@ -151,30 +151,46 @@ function main(): void {
   let lastStableCheckpoint: SimCheckpoint | null = null;
   let nextAgentId = agents.length;
 
+  const debugTiming = config.debugTiming;
+  const nowMs = (): number => performance.now();
+
   for (let season = 1; season <= numSeasons; season++) {
     console.log(`════════════════════════  Season ${season}/${numSeasons}  ════════════════════════`);
     resetSeasonStats(agents);
 
-    runSeasonGames(agents, season, config);
+    const t0Season = nowMs();
+    let tRunGames = 0, tScenarios = 0, tHoldout = 0, tTelemetry = 0, tRollback = 0, tCheckpoint = 0, tPromo = 0, tUnderflow = 0;
 
+    const t0 = nowMs();
+    runSeasonGames(agents, season, config);
+    tRunGames = nowMs() - t0;
+
+    const t1 = nowMs();
     const scenarioResultsByAgentId = new Map<string, { score: number }[]>();
     for (const a of agents.filter(x => !x.isAnchor)) {
       const results = runScenarioBattery(a.params, config);
       scenarioResultsByAgentId.set(a.id, results.map(r => ({ scenarioId: r.scenarioId, score: r.score })));
     }
+    tScenarios = nowMs() - t1;
 
     let holdoutResult: ReturnType<typeof runHoldoutSuite> | null = null;
     let currentHoldoutMean: number | null = null;
+    const t2 = nowMs();
     if (season % config.holdoutEveryNSeasons === 0) {
       holdoutResult = runHoldoutSuite(agents, season, config);
       const keys = Object.keys(holdoutResult.scoresByAgentId);
       currentHoldoutMean = keys.length ? keys.reduce((s, id) => s + holdoutResult!.scoresByAgentId[id], 0) / keys.length : 0;
       console.log(`  Holdout: drawRate=${(holdoutResult.drawRate * 100).toFixed(1)}% totalStarvation=${(holdoutResult.totalStarvationRate * 100).toFixed(1)}% decisiveness=${(holdoutResult.decisiveness * 100).toFixed(1)}%`);
     }
+    tHoldout = nowMs() - t2;
+
+    const t3 = nowMs();
     const snapshot = buildTelemetrySnapshot(season, agents, holdoutResult, lastHoldoutMean);
     if (currentHoldoutMean != null) lastHoldoutMean = currentHoldoutMean;
     appendTelemetry(snapshot);
+    tTelemetry = nowMs() - t3;
 
+    const t4 = nowMs();
     if (shouldRollback(snapshot, config)) {
       console.log('  [ROLLBACK] Telemetry thresholds violated; restoring last stable checkpoint.');
       const cp = loadCheckpoint();
@@ -184,15 +200,27 @@ function main(): void {
       }
       continue;
     }
+    tRollback = nowMs() - t4;
 
+    const t5 = nowMs();
     lastStableCheckpoint = { season, agents: agents.map(a => ({ ...a })), telemetry: snapshot, timestamp: new Date().toISOString() };
     saveCheckpoint(agents, snapshot, season);
+    tCheckpoint = nowMs() - t5;
 
+    const t6 = nowMs();
     applyPromotionRelegation(agents, config, scenarioResultsByAgentId, season);
+    tPromo = nowMs() - t6;
+    const t7 = nowMs();
     const inC = agents.filter(a => a.tier === 'C' && !a.isAnchor).length;
     if (inC < config.tierSizeC) {
       const newAgents = createNewAgentsForCUnderflow(agents, config.tierSizeC - inC, config, () => `c_${nextAgentId++}`);
       agents.push(...newAgents);
+    }
+    tUnderflow = nowMs() - t7;
+
+    if (debugTiming) {
+      const total = nowMs() - t0Season;
+      console.log('  [timing] season total=' + total.toFixed(0) + 'ms  runGames=' + tRunGames.toFixed(0) + 'ms  scenarios=' + tScenarios.toFixed(0) + 'ms  holdout=' + tHoldout.toFixed(0) + 'ms  telemetry=' + tTelemetry.toFixed(0) + 'ms  rollback=' + tRollback.toFixed(0) + 'ms  checkpoint=' + tCheckpoint.toFixed(0) + 'ms  promo=' + tPromo.toFixed(0) + 'ms  underflow=' + tUnderflow.toFixed(0) + 'ms');
     }
 
     const tierA = agents.filter(a => a.tier === 'A' && !a.isAnchor);

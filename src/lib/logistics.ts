@@ -3,9 +3,11 @@
  * Cities connect only if shortest passable path cost (terrain + interdiction) <= CITY_LINK_MAX_PATH_COST.
  * Unit supply: from nearest valid connected anchor path; supplyQuality [0..1] from route cost;
  * below threshold => unsupplied/starving (see military upkeepTick).
+ *
+ * Performance: min-heap Dijkstra, precomputed interdiction field, multi-source supply cost maps.
  */
 
-import { City, Unit, Tile, TerritoryInfo, hexNeighbors, hexDistance, tileKey, parseTileKey } from '@/types/game';
+import { City, Unit, Tile, TerritoryInfo, hexNeighbors, hexDistance, tileKey, parseTileKey, getHexRing } from '@/types/game';
 
 /** Max path cost for two cities to be in the same cluster (terrain-aware + interdiction). */
 export const CITY_LINK_MAX_PATH_COST = 20;
@@ -34,44 +36,112 @@ export function getTileMoveCost(tile: Tile): number {
   return tile.hasRoad ? base * 0.5 : base;
 }
 
-/** Extra cost for stepping on (q,r) when enemies are near (deterministic). */
-function getInterdictionAt(q: number, r: number, units: Unit[], playerId: string): number {
+// ─── Min-heap for Dijkstra (deterministic tie-break by key) ───────────────────
+
+interface HeapEntry { key: string; cost: number }
+
+function heapLess(a: HeapEntry, b: HeapEntry): boolean {
+  if (a.cost !== b.cost) return a.cost < b.cost;
+  return a.key < b.key;
+}
+
+class MinHeap {
+  private heap: HeapEntry[] = [];
+
+  push(entry: HeapEntry): void {
+    this.heap.push(entry);
+    this.siftUp(this.heap.length - 1);
+  }
+
+  pop(): HeapEntry | undefined {
+    if (this.heap.length === 0) return undefined;
+    const top = this.heap[0];
+    const last = this.heap.pop()!;
+    if (this.heap.length > 0) {
+      this.heap[0] = last;
+      this.siftDown(0);
+    }
+    return top;
+  }
+
+  isEmpty(): boolean {
+    return this.heap.length === 0;
+  }
+
+  private siftUp(i: number): void {
+    while (i > 0) {
+      const p = (i - 1) >> 1;
+      if (!heapLess(this.heap[i], this.heap[p])) break;
+      [this.heap[i], this.heap[p]] = [this.heap[p], this.heap[i]];
+      i = p;
+    }
+  }
+
+  private siftDown(i: number): void {
+    const n = this.heap.length;
+    while (true) {
+      let best = i;
+      const l = 2 * i + 1;
+      const r = 2 * i + 2;
+      if (l < n && heapLess(this.heap[l], this.heap[best])) best = l;
+      if (r < n && heapLess(this.heap[r], this.heap[best])) best = r;
+      if (best === i) break;
+      [this.heap[i], this.heap[best]] = [this.heap[best], this.heap[i]];
+      i = best;
+    }
+  }
+}
+
+// ─── Precomputed interdiction field (O(1) lookup per hex) ────────────────────
+
+/** Build tileKey -> interdiction cost once per player/tick. Do not scan enemies in neighbor loop. */
+export function buildInterdictionField(units: Unit[], playerId: string): Map<string, number> {
+  const out = new Map<string, number>();
   for (const u of units) {
     if (u.hp <= 0 || u.ownerId === playerId) continue;
-    if (hexDistance(q, r, u.q, u.r) <= INTERDICTION_RANGE) return INTERDICTION_HEX_COST;
+    out.set(tileKey(u.q, u.r), INTERDICTION_HEX_COST);
+    for (let ring = 1; ring <= INTERDICTION_RANGE; ring++) {
+      for (const { q, r } of getHexRing(u.q, u.r, ring)) {
+        const key = tileKey(q, r);
+        if (!out.has(key)) out.set(key, INTERDICTION_HEX_COST);
+      }
+    }
   }
-  return 0;
+  return out;
+}
+
+/** Build set of hex keys occupied by enemy units (blocked for pathfinding). */
+export function buildEnemyBlockedHexes(units: Unit[], playerId: string): Set<string> {
+  const out = new Set<string>();
+  for (const u of units) {
+    if (u.hp <= 0) continue;
+    if (u.ownerId !== playerId) out.add(tileKey(u.q, u.r));
+  }
+  return out;
 }
 
 /**
- * Cost-limited Dijkstra from (fromQ, fromR): fill costTo[key] for all reachable hexes with cost <= maxCost.
- * Step cost = getTileMoveCost(tile) + getInterdictionAt(hex, units, playerId).
- * Enemy-occupied hexes are not traversable (infinite cost).
+ * Cost-limited Dijkstra from (fromQ, fromR). Uses min-heap and precomputed interdiction.
+ * Step cost = getTileMoveCost(tile) + (interdictionMap.get(nKey) ?? 0).
  */
 function dijkstraCostLimited(
   fromQ: number,
   fromR: number,
   maxCost: number,
   tiles: Map<string, Tile>,
-  units: Unit[],
-  playerId: string,
+  enemyByHex: Set<string>,
+  interdictionMap: Map<string, number>,
 ): Map<string, number> {
-  const enemyByHex = new Set<string>();
-  for (const u of units) {
-    if (u.hp <= 0) continue;
-    if (u.ownerId !== playerId) enemyByHex.add(tileKey(u.q, u.r));
-  }
-
   const costTo = new Map<string, number>();
   const startKey = tileKey(fromQ, fromR);
   costTo.set(startKey, 0);
-  const open: { key: string; cost: number }[] = [{ key: startKey, cost: 0 }];
+  const open = new MinHeap();
+  open.push({ key: startKey, cost: 0 });
 
   const maxIter = tiles.size * 2;
   let iter = 0;
-  while (open.length > 0 && iter++ < maxIter) {
-    open.sort((a, b) => a.cost - b.cost);
-    const { key: currentKey, cost: currentCost } = open.shift()!;
+  while (!open.isEmpty() && iter++ < maxIter) {
+    const { key: currentKey, cost: currentCost } = open.pop()!;
     if (currentCost > maxCost) continue;
     const [cq, cr] = parseTileKey(currentKey);
 
@@ -82,7 +152,7 @@ function dijkstraCostLimited(
       if (!nTile) continue;
       const moveCost = getTileMoveCost(nTile);
       if (moveCost === Infinity) continue;
-      const stepCost = moveCost + getInterdictionAt(nq, nr, units, playerId);
+      const stepCost = moveCost + (interdictionMap.get(nKey) ?? 0);
       const newCost = currentCost + stepCost;
       if (newCost > maxCost) continue;
       const prev = costTo.get(nKey);
@@ -97,6 +167,7 @@ function dijkstraCostLimited(
 /**
  * Compute trade clusters per player.
  * Cities are in the same cluster only if shortest path cost (terrain + interdiction) <= CITY_LINK_MAX_PATH_COST.
+ * Uses min-heap Dijkstra and precomputed interdiction per player.
  */
 export function computeTradeClusters(
   cities: City[],
@@ -113,8 +184,8 @@ export function computeTradeClusters(
   const result = new Map<string, TradeCluster[]>();
 
   for (const [playerId, playerCities] of byPlayer) {
-    const cityByHex = new Map<string, City>();
-    for (const c of playerCities) cityByHex.set(tileKey(c.q, c.r), c);
+    const enemyByHex = buildEnemyBlockedHexes(units, playerId);
+    const interdictionMap = buildInterdictionField(units, playerId);
 
     // Union-find: parent[id] = id for root
     const parent = new Map<string, string>();
@@ -134,7 +205,7 @@ export function computeTradeClusters(
 
     for (const startCity of playerCities) {
       const costTo = dijkstraCostLimited(
-        startCity.q, startCity.r, CITY_LINK_MAX_PATH_COST, tiles, units, playerId,
+        startCity.q, startCity.r, CITY_LINK_MAX_PATH_COST, tiles, enemyByHex, interdictionMap,
       );
       for (const c of playerCities) {
         if (c.id === startCity.id) continue;
@@ -187,10 +258,102 @@ export interface UnitSupplyInfo {
   supplyQuality: number;
 }
 
+/** Per-player supply cost map: cost from any owned city to hex, and which cluster that cost came from. */
+export interface SupplyCostMap {
+  costTo: Map<string, number>;
+  clusterAt: Map<string, string>;
+}
+
+/**
+ * Multi-source Dijkstra from all player cities (tagged by cluster). One run per player.
+ * Reusable for all units of that player in the same tick.
+ */
+export function computeSupplyCostMaps(
+  cities: City[],
+  clusters: Map<string, TradeCluster[]>,
+  tiles: Map<string, Tile>,
+  units: Unit[],
+): Map<string, SupplyCostMap> {
+  const result = new Map<string, SupplyCostMap>();
+  const maxCost = SUPPLY_UNIT_MAX_PATH_COST * 1.5;
+
+  const byPlayer = new Map<string, City[]>();
+  for (const c of cities) {
+    if (!byPlayer.has(c.ownerId)) byPlayer.set(c.ownerId, []);
+    byPlayer.get(c.ownerId)!.push(c);
+  }
+
+  for (const [playerId, playerCities] of byPlayer) {
+    const playerClusters = clusters.get(playerId) ?? [];
+    const enemyByHex = buildEnemyBlockedHexes(units, playerId);
+    const interdictionMap = buildInterdictionField(units, playerId);
+
+    const costTo = new Map<string, number>();
+    const clusterAt = new Map<string, string>();
+    const open = new MinHeap();
+
+    for (const cluster of playerClusters) {
+      const clusterKey = cluster.cityIds.join(',');
+      for (const city of cluster.cities) {
+        if (city.ownerId !== playerId) continue;
+        const key = tileKey(city.q, city.r);
+        costTo.set(key, 0);
+        clusterAt.set(key, clusterKey);
+        open.push({ key, cost: 0 });
+      }
+    }
+
+    const maxIter = tiles.size * 2;
+    let iter = 0;
+    while (!open.isEmpty() && iter++ < maxIter) {
+      const { key: currentKey, cost: currentCost } = open.pop()!;
+      if (currentCost > maxCost) continue;
+      const currentCluster = clusterAt.get(currentKey)!;
+      const [cq, cr] = parseTileKey(currentKey);
+
+      for (const [nq, nr] of hexNeighbors(cq, cr)) {
+        const nKey = tileKey(nq, nr);
+        if (enemyByHex.has(nKey)) continue;
+        const nTile = tiles.get(nKey);
+        if (!nTile) continue;
+        const moveCost = getTileMoveCost(nTile);
+        if (moveCost === Infinity) continue;
+        const stepCost = moveCost + (interdictionMap.get(nKey) ?? 0);
+        const newCost = currentCost + stepCost;
+        if (newCost > maxCost) continue;
+        const prev = costTo.get(nKey);
+        if (prev != null && newCost >= prev) continue;
+        costTo.set(nKey, newCost);
+        clusterAt.set(nKey, currentCluster);
+        open.push({ key: nKey, cost: newCost });
+      }
+    }
+
+    result.set(playerId, { costTo, clusterAt });
+  }
+  return result;
+}
+
+/**
+ * Get unit supply from precomputed cost map (O(1) lookup). Use when supply cost maps are available.
+ */
+export function getUnitSupplyInfoFromMap(
+  unit: Unit,
+  map: SupplyCostMap,
+): UnitSupplyInfo {
+  const key = tileKey(unit.q, unit.r);
+  const cost = map.costTo.get(key);
+  const clusterKey = map.clusterAt.get(key) ?? null;
+  if (cost == null || cost > SUPPLY_UNIT_MAX_PATH_COST) {
+    return { clusterKey: null, supplyQuality: 0 };
+  }
+  const supplyQuality = Math.max(0, 1 - cost / SUPPLY_UNIT_MAX_PATH_COST);
+  return { clusterKey, supplyQuality };
+}
+
 /**
  * Unit supply from nearest valid connected anchor path.
- * supplyQuality [0..1] from route cost/interdiction; 0 when cost > SUPPLY_UNIT_MAX_PATH_COST.
- * Below threshold (e.g. 0.5) => treat as unsupplied/starving in upkeep.
+ * Fallback when no precomputed map: runs one Dijkstra from unit (slower).
  */
 export function getUnitSupplyInfo(
   unit: Unit,
@@ -199,8 +362,10 @@ export function getUnitSupplyInfo(
   units: Unit[],
   playerId: string,
 ): UnitSupplyInfo {
-  const maxCost = SUPPLY_UNIT_MAX_PATH_COST * 1.5; // allow slightly over to get exact cost for quality
-  const costTo = dijkstraCostLimited(unit.q, unit.r, maxCost, tiles, units, playerId);
+  const maxCost = SUPPLY_UNIT_MAX_PATH_COST * 1.5;
+  const enemyByHex = buildEnemyBlockedHexes(units, playerId);
+  const interdictionMap = buildInterdictionField(units, playerId);
+  const costTo = dijkstraCostLimited(unit.q, unit.r, maxCost, tiles, enemyByHex, interdictionMap);
 
   let bestCost = Infinity;
   let bestClusterKey: string | null = null;

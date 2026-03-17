@@ -66,6 +66,11 @@ export type SimSystemConfig = {
   maxCycles: number;
   mapSize: number;
   matchesPerPair: number; // per opponent per season (side-balanced)
+
+  /** When true, print per-season phase timing summary (SIM_DEBUG_TIMING=1). */
+  debugTiming: boolean;
+  /** 'minimal' = collect only totalKills, killsByAi1/2, totalStarvationAbort for scoring (faster). 'full' = full telemetry. */
+  diagnosticsLevel: 'full' | 'minimal';
 };
 
 function parseEnvInt(name: string, defaultVal: number, min: number, max: number): number {
@@ -143,5 +148,8 @@ export function loadSimSystemConfig(): SimSystemConfig {
     maxCycles: parseEnvInt('SIM_MAX_CYCLES', 300, 100, 600),
     mapSize: parseEnvInt('SIM_MAP_SIZE', 38, 24, 64),
     matchesPerPair: parseEnvInt('SIM_MATCHES_PER_PAIR', 4, 2, 16),
+
+    debugTiming: process.env.SIM_DEBUG_TIMING === '1',
+    diagnosticsLevel: process.env.SIM_DIAG === 'minimal' ? 'minimal' : 'full',
   };
 }
