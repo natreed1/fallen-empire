@@ -7,6 +7,7 @@ import {
   WORKERS_PER_LEVEL, MIN_STAFFING_RATIO, getUnitStats,
   generateId, tileKey, parseTileKey, hexDistance,
   FRONTIER_CYCLES, FRONTIER_MIGRATION_BONUS, MIGRATION_BASE_RATE,
+  PLAINS_FARM_FOOD_MULT, SAWMILL_WOOD_PER_REFINED, isFarmBuildingType,
 } from '@/types/game';
 import { computeTradeClusters, TradeCluster, getSupplyingClusterKey } from '@/lib/logistics';
 
@@ -16,7 +17,7 @@ export function computeCityProductionRate(
   tiles: Map<string, Tile>,
   territory: Map<string, TerritoryInfo>,
   harvestMultiplier: number = 1.0,
-): { food: number; goods: number; guns: number; stone: number; iron: number } {
+): { food: number; goods: number; guns: number; stone: number; iron: number; wood: number; refinedWood: number } {
   const moraleMod = city.morale / 100;
   let terrainFood = 0;
   for (const [key, info] of territory) {
@@ -26,24 +27,36 @@ export function computeCityProductionRate(
     if (tile) terrainFood += TERRAIN_FOOD_YIELD[tile.biome as Biome];
   }
   let buildingFood = 0, buildingGoods = 0, buildingGuns = 0, buildingStone = 0, buildingIron = 0;
+  let buildingWood = 0, buildingRefined = 0;
   for (const b of city.buildings) {
-    if (b.type === 'city_center' || b.type === 'barracks' || b.type === 'academy') continue; // no production
+    if (b.type === 'city_center' || b.type === 'barracks' || b.type === 'academy' || b.type === 'port' || b.type === 'shipyard') continue;
     const prod = BUILDING_PRODUCTION[b.type];
     const lvl = (b as CityBuilding).level ?? 1;
     const jobs = getBuildingJobs(b);
     const assigned = (b as CityBuilding).assignedWorkers ?? 0;
     const staffRatio = jobs > 0 ? Math.min(1, assigned / jobs) : 0;
-    const active = (b.type === 'quarry' || b.type === 'mine')
+    const active = (b.type === 'quarry' || b.type === 'mine' || b.type === 'logging_hut')
       ? (staffRatio > MIN_STAFFING_RATIO ? staffRatio : 0)
       : staffRatio;
-    const farmFood = b.type === 'farm' && lvl >= 2
+    let farmFood = isFarmBuildingType(b.type) && lvl >= 2
       ? FARM_L2_FOOD_PER_CYCLE * active
       : (prod.food ?? 0) * lvl * active;
+    if (isFarmBuildingType(b.type)) {
+      const fTile = tiles.get(tileKey(b.q, b.r));
+      if (fTile?.biome === 'plains') farmFood = Math.floor(farmFood * PLAINS_FARM_FOOD_MULT);
+    }
     buildingFood += farmFood;
     buildingGoods += (prod.goods ?? 0) * lvl * active;
     buildingGuns += (prod.guns ?? 0) * lvl * active;
     buildingStone += (prod.stone ?? 0) * lvl * (b.type === 'quarry' ? active : active);
     buildingIron += (prod.iron ?? 0) * lvl * (b.type === 'mine' ? active : active);
+    buildingWood += (prod.wood ?? 0) * lvl * (b.type === 'logging_hut' ? active : 0);
+    if (b.type === 'sawmill') {
+      const maxRef = (prod.refinedWood ?? 0) * lvl * staffRatio;
+      const woodAvail = city.storage.wood ?? 0;
+      const canMake = Math.min(maxRef, Math.floor(woodAvail / SAWMILL_WOOD_PER_REFINED));
+      buildingRefined += canMake;
+    }
   }
   return {
     food: Math.floor((terrainFood + buildingFood) * moraleMod * harvestMultiplier),
@@ -51,6 +64,37 @@ export function computeCityProductionRate(
     guns: Math.round(buildingGuns * moraleMod),
     stone: Math.floor(buildingStone * moraleMod),
     iron: Math.floor(buildingIron * moraleMod),
+    wood: Math.floor(buildingWood * moraleMod),
+    refinedWood: Math.floor(buildingRefined * moraleMod),
+  };
+}
+
+/**
+ * Per-cycle sawmill preview for one building (same formula as productionPhase).
+ * If the city has multiple sawmills, each preview uses the full current wood stock when
+ * computing the wood cap (matching the simulation loop).
+ */
+export function computeSawmillBuildingPreview(city: City, building: CityBuilding): {
+  refinedPerCycle: number;
+  rawWoodConsumedPerCycle: number;
+  staffCappedRefined: number;
+  cityRawWood: number;
+} | null {
+  if (building.type !== 'sawmill') return null;
+  const prod = BUILDING_PRODUCTION.sawmill;
+  const lvl = building.level ?? 1;
+  const jobs = getBuildingJobs(building);
+  const assigned = building.assignedWorkers ?? 0;
+  const staffRatio = jobs > 0 ? Math.min(1, assigned / jobs) : 0;
+  const staffCappedRefined = (prod.refinedWood ?? 0) * lvl * staffRatio;
+  const woodAvail = city.storage.wood ?? 0;
+  const canMake = Math.min(staffCappedRefined, Math.floor(woodAvail / SAWMILL_WOOD_PER_REFINED));
+  const moraleMod = city.morale / 100;
+  return {
+    refinedPerCycle: Math.floor(canMake * moraleMod),
+    rawWoodConsumedPerCycle: canMake * SAWMILL_WOOD_PER_REFINED,
+    staffCappedRefined,
+    cityRawWood: woodAvail,
   };
 }
 
@@ -244,23 +288,40 @@ function productionPhase(
     let buildingGuns = 0;
     let buildingStone = 0;
     let buildingIron = 0;
+    let buildingWood = 0;
+    let sawmillRefined = 0;
+    let sawmillWoodUsed = 0;
     for (const b of city.buildings) {
-      if (b.type === 'city_center' || b.type === 'barracks' || b.type === 'academy') continue; // no production
+      if (b.type === 'city_center' || b.type === 'barracks' || b.type === 'academy' || b.type === 'port' || b.type === 'shipyard') continue;
       const prod = BUILDING_PRODUCTION[b.type];
       const lvl = (b as CityBuilding).level ?? 1;
       const jobs = getBuildingJobs(b);
       const assigned = (b as CityBuilding).assignedWorkers ?? 0;
       const staffRatio = jobs > 0 ? Math.min(1, assigned / jobs) : 0;
-      const active = (b.type === 'quarry' || b.type === 'mine')
+      const active = (b.type === 'quarry' || b.type === 'mine' || b.type === 'logging_hut')
         ? (staffRatio > MIN_STAFFING_RATIO ? staffRatio : 0)
         : staffRatio;
-      const farmFood = b.type === 'farm' && lvl >= 2
+      let farmFood = isFarmBuildingType(b.type) && lvl >= 2
         ? FARM_L2_FOOD_PER_CYCLE * active
         : (prod.food ?? 0) * lvl * active;
+      if (isFarmBuildingType(b.type)) {
+        const fTile = tiles.get(tileKey(b.q, b.r));
+        if (fTile?.biome === 'plains') farmFood = Math.floor(farmFood * PLAINS_FARM_FOOD_MULT);
+      }
       buildingFood += farmFood;
       buildingGuns += (prod.guns ?? 0) * lvl * active;
       buildingStone += (prod.stone ?? 0) * lvl * (b.type === 'quarry' ? active : active);
       buildingIron += (prod.iron ?? 0) * lvl * (b.type === 'mine' ? active : active);
+      if (b.type === 'logging_hut') {
+        buildingWood += (prod.wood ?? 0) * lvl * active;
+      }
+      if (b.type === 'sawmill') {
+        const maxRef = (prod.refinedWood ?? 0) * lvl * staffRatio;
+        const woodAvail = city.storage.wood ?? 0;
+        const canMake = Math.min(maxRef, Math.floor(woodAvail / SAWMILL_WOOD_PER_REFINED));
+        sawmillRefined += canMake;
+        sawmillWoodUsed += canMake * SAWMILL_WOOD_PER_REFINED;
+      }
     }
 
     // L2 factory iron consumption is handled at cluster level in clusterResourcePhase
@@ -282,9 +343,19 @@ function productionPhase(
     city.storage.iron = Math.min(city.storageCap.iron, city.storage.iron + totalIronRaw);
     city.storage.stone = Math.min(city.storageCap.stone, city.storage.stone + totalStone);
 
+    const woodGain = Math.floor(buildingWood * moraleMod);
+    city.storage.wood = Math.min(city.storageCap.wood ?? 50, (city.storage.wood ?? 0) + woodGain);
+    if (sawmillWoodUsed > 0) {
+      city.storage.wood = Math.max(0, (city.storage.wood ?? 0) - sawmillWoodUsed);
+    }
+    const refinedGain = Math.floor(sawmillRefined * moraleMod);
+    city.storage.refinedWood = Math.min(city.storageCap.refinedWood ?? 50, (city.storage.refinedWood ?? 0) + refinedGain);
+
     const extras: string[] = [];
     if (totalStone > 0) extras.push(`+${totalStone} stone`);
     if (totalIronRaw > 0) extras.push(`+${totalIronRaw} iron`);
+    if (woodGain > 0) extras.push(`+${woodGain} wood`);
+    if (refinedGain > 0) extras.push(`+${refinedGain} refined wood`);
     if (totalFood > 0 || totalGuns > 0 || extras.length > 0) {
       const parts: string[] = [];
       if (totalFood > 0) parts.push(`+${totalFood} food`);

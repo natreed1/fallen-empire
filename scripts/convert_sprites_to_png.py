@@ -8,7 +8,9 @@ BUILDINGS = "/Users/natreed/fallen-empire/public/sprites/buildings"
 # All building sprites — many were RGB with opaque white backgrounds
 ALL_BUILDINGS = [
     "academy.png", "barracks.png", "factory.png", "farm.png",
-    "market.png", "mine.png", "quarry.png", "scout.png", "silo.png", "wall.png"
+    "fishery.png", "gold_mine.png", "logging_hut.png", "market.png",
+    "mine.png", "port.png", "quarry.png", "sawmill.png", "scout.png",
+    "shipyard.png", "silo.png", "wall.png",
 ]
 
 # Pixels this light or lighter become transparent (white, off-white, light blue/gray)

@@ -22,12 +22,24 @@ import {
   FRONTIER_CYCLES, CITY_NAMES, PLAYER_COLORS,
   CITY_CAPTURE_HOLD_MS,
   WALL_SECTION_STONE_COST, WALL_SECTION_HP, getHexRing,
+  isNavalUnitType,
 } from '../types/game';
 import { generateMap, placeAncientCity } from '../lib/mapGenerator';
 import { calculateTerritory } from '../lib/territory';
 import { processEconomyTurn } from '../lib/gameLoop';
 import { planAiTurn, placeAiStartingCityAt, createAiHero, AiParams, DEFAULT_AI_PARAMS, estimateAiFoodSurplus } from '../lib/ai';
-import { movementTick, combatTick, upkeepTick, siegeTick, type SupplyCacheEntry } from '../lib/military';
+import { appendStartingBarracksToCity, appendStartingAcademyToCity } from '../lib/kingdomSpawn';
+import {
+  movementTick,
+  combatTick,
+  upkeepTick,
+  siegeTick,
+  type SupplyCacheEntry,
+  landMilitaryContestsCityCapture,
+  enemyIntactWallOnCityHex,
+} from '../lib/military';
+import { releaseAttackWaveHolds } from '../lib/siege';
+import { applyDeployFlagsForMoveMutable, marchHexDistanceAtOrder } from '../lib/garrison';
 import { rollForWeatherEvent, tickWeatherEvent, getWeatherHarvestMultiplier } from '../lib/weather';
 
 export type { AiParams };
@@ -617,7 +629,7 @@ export function stepSimulation(
     for (const up of aiPlan.upgrades ?? []) {
       const city = cityById.get(up.cityId);
       if (!city || city.ownerId !== aiPlayerId || !aiPlayer) continue;
-      const cost = up.type === 'barracks' ? BARACKS_UPGRADE_COST : up.type === 'farm' ? FARM_UPGRADE_COST : FACTORY_UPGRADE_COST;
+      const cost = up.type === 'barracks' ? BARACKS_UPGRADE_COST : (up.type === 'farm' || up.type === 'banana_farm') ? FARM_UPGRADE_COST : FACTORY_UPGRADE_COST;
       if (aiPlayer.gold < cost) continue;
       const building = city.buildings.find(b => b.type === up.type && b.q === up.buildingQ && b.r === up.buildingR);
       if (!building || (building.level ?? 1) >= 2) continue;
@@ -652,10 +664,8 @@ export function stepSimulation(
       }
       const isBuilder = rec.type === 'builder';
       const academy = city.buildings.find(b => b.type === 'academy');
-      const barracks = city.buildings.find(b => b.type === 'barracks');
-      const spawnB = isBuilder ? academy : barracks;
-      const sq = spawnB ? spawnB.q : city.q;
-      const sr = spawnB ? spawnB.r : city.r;
+      const sq = isBuilder ? (academy ? academy.q : city.q) : city.q;
+      const sr = isBuilder ? (academy ? academy.r : city.r) : city.r;
       const newUnit: Unit = {
         id: generateId('unit'), type: rec.type,
         q: sq, r: sr, ownerId: aiPlayerId,
@@ -667,6 +677,10 @@ export function stepSimulation(
       };
       if (wantL2) newUnit.armsLevel = 2;
       if (wantL3 || rec.type === 'defender') newUnit.armsLevel = 3;
+      if (!isBuilder && !isNavalUnitType(rec.type)) {
+        newUnit.garrisonCityId = city.id;
+        newUnit.defendCityId = city.id;
+      }
       if (gunL2Upkeep > 0) {
         for (const oc of cities.filter(c => c.ownerId === aiPlayerId)) {
           if ((oc.storage.gunsL2 ?? 0) >= gunL2Upkeep) {
@@ -724,6 +738,9 @@ export function stepSimulation(
       };
       newCity.buildings = [{ type: 'city_center', q: inc.q, r: inc.r, assignedWorkers: 0 }];
       newCity.storageCap = { ...CITY_CENTER_STORAGE };
+      const incSeed = state.config.seed ^ (inc.q * 524287) ^ (inc.r * 65521);
+      appendStartingBarracksToCity(newCity, tilesMut, incSeed);
+      appendStartingAcademyToCity(newCity, tilesMut, incSeed ^ 0xaced);
       cities = [...cities, newCity];
       tilesMut = new Map(tilesMut);
       tilesMut.set(tileKey(inc.q, inc.r), { ...tile, hasVillage: false });
@@ -733,10 +750,12 @@ export function stepSimulation(
       const unit = units.find(u => u.id === mt.unitId);
       // Allow idle, moving, or starving units to receive move targets (not fighting) so headless sims stay decisive
       if (unit && unit.hp > 0 && unit.status !== 'fighting') {
+        applyDeployFlagsForMoveMutable(unit, mt.toQ, mt.toR, cities);
         unit.targetQ = mt.toQ;
         unit.targetR = mt.toR;
         unit.status = 'moving';
         unit.stance = 'aggressive';
+        unit.marchInitialHexDistance = marchHexDistanceAtOrder(unit, mt.toQ, mt.toR);
       }
     }
 
@@ -780,14 +799,29 @@ export function stepSimulation(
 
     for (const site of constructions) {
       let availBP = 0;
-      if (site.type !== 'trebuchet' && site.type !== 'scout_tower') {
+      if (site.type !== 'trebuchet' && site.type !== 'scout_tower' && site.type !== 'city_defense') {
         const terr = state.territory.get(tileKey(site.q, site.r));
         if (terr && terr.playerId === site.ownerId) availBP += CITY_BUILDING_POWER;
       }
-      const builders = units.filter(
-        (u) => u.q === site.q && u.r === site.r && u.ownerId === site.ownerId && u.type === 'builder' && u.hp > 0
-      );
-      availBP += builders.length * BUILDER_POWER;
+      const bpHexes: { q: number; r: number }[] = [{ q: site.q, r: site.r }];
+      if (site.type === 'city_defense' && site.cityDefenseBuilderBpHex) {
+        bpHexes.push(site.cityDefenseBuilderBpHex);
+      }
+      const builderIds = new Set<string>();
+      for (const { q: hq, r: hr } of bpHexes) {
+        for (const u of units) {
+          if (
+            u.q === hq &&
+            u.r === hr &&
+            u.ownerId === site.ownerId &&
+            u.type === 'builder' &&
+            u.hp > 0
+          ) {
+            builderIds.add(u.id);
+          }
+        }
+      }
+      availBP += builderIds.size * BUILDER_POWER;
 
       if (availBP === 0) {
         remaining.push(site);
@@ -799,11 +833,11 @@ export function stepSimulation(
       const newAccum = site.bpAccumulated + bpGain;
 
       if (newAccum >= site.bpRequired) {
-        if (site.type === 'trebuchet' || site.type === 'scout_tower') continue; // not used by AI in this path
+        if (site.type === 'trebuchet' || site.type === 'scout_tower' || site.type === 'city_defense') continue; // not used by AI in this path
         const city = updatedCities.find((c) => c.id === site.cityId);
         if (city) {
           const b: CityBuilding = { type: site.type as BuildingType, q: site.q, r: site.r };
-          if (['quarry', 'mine', 'gold_mine', 'barracks', 'factory', 'academy', 'farm', 'market'].includes(site.type)) b.level = 1;
+          if (['quarry', 'mine', 'gold_mine', 'barracks', 'factory', 'academy', 'farm', 'banana_farm', 'market', 'sawmill', 'port', 'shipyard', 'fishery', 'logging_hut'].includes(site.type)) b.level = 1;
           const jobs = BUILDING_JOBS[site.type as BuildingType] ?? 0;
           if (jobs > 0) {
             const totalEmployed = city.buildings.reduce((s, x) => s + ((x as CityBuilding).assignedWorkers ?? 0), 0);
@@ -829,24 +863,33 @@ export function stepSimulation(
   }
   scoutMissions = stillPending;
 
-  // ── City capture (instant when no defenders; runCycle-style) ──
+  // ── City capture before movement (instant only; land military + wall / defender check) ──
   let citiesToSet = cities;
   let aliveUnits = units.filter(u => u.hp > 0);
   for (const city of cities) {
-    const defenders = aliveUnits.filter(u => u.ownerId === city.ownerId && u.hp > 0 && u.q === city.q && u.r === city.r);
-    if (defenders.length > 0) continue;
-    const attackers = aliveUnits.filter(u => u.ownerId !== city.ownerId && u.hp > 0 && u.type !== 'builder' && u.q === city.q && u.r === city.r);
-    if (attackers.length === 0) continue;
-    const newOwnerId = attackers[0].ownerId;
-    citiesToSet = citiesToSet.map(c => c.id === city.id ? { ...c, ownerId: newOwnerId } : c);
+    const wallBlocks = enemyIntactWallOnCityHex(wallSectionsAfterAi, city);
+    const defendingLand = aliveUnits.filter(
+      u => landMilitaryContestsCityCapture(u, city.q, city.r) && u.ownerId === city.ownerId,
+    );
+    const attackingLand = aliveUnits.filter(
+      u => landMilitaryContestsCityCapture(u, city.q, city.r) && u.ownerId !== city.ownerId,
+    );
+    if (attackingLand.length === 0) continue;
+    const instantTake =
+      city.population === 0 || (defendingLand.length === 0 && !wallBlocks);
+    if (!instantTake) continue;
+    const newOwnerId = attackingLand[0].ownerId;
+    citiesToSet = citiesToSet.map(c => (c.id === city.id ? { ...c, ownerId: newOwnerId } : c));
   }
   // Territory computed once at end of step (after capture hold) to avoid duplicate work
 
   // ── One movement + combat + siege tick (use sim time so headless runs advance correctly) ──
   const movingUnits = units.map(u => ({ ...u }));
   const movingHeroes = state.heroes.map(h => ({ ...h }));
-  movementTick(movingUnits, movingHeroes, state.tiles, wallSectionsAfterAi, citiesToSet, newSimTimeMs);
-  const combatResult = combatTick(movingUnits, movingHeroes, newCycle, citiesToSet, state.tiles, newSimTimeMs);
+  // Same-cycle tile edits (e.g. village incorporation) must apply before movement/combat.
+  movementTick(movingUnits, movingHeroes, tilesMut, wallSectionsAfterAi, citiesToSet, newSimTimeMs, state.players);
+  releaseAttackWaveHolds(movingUnits, citiesToSet);
+  const combatResult = combatTick(movingUnits, movingHeroes, newCycle, citiesToSet, tilesMut, newSimTimeMs);
   const wallSectionsMut = wallSectionsAfterAi.map(w => ({ ...w }));
   siegeTick(wallSectionsMut, movingUnits);
 
@@ -875,26 +918,35 @@ export function stepSimulation(
     }
   }
 
-  // ── City capture hold (5s) ──
+  // ── City capture hold (5s); land military only; instant when pop 0 or undefended + no enemy wall ──
   let captureHoldNext: Record<string, { attackerId: string; startedAt: number }> = { ...state.cityCaptureHold };
   for (const city of citiesToSet) {
-    const onCenter = aliveUnits.filter(u => u.q === city.q && u.r === city.r && u.hp > 0);
-    const owners = [...new Set(onCenter.map(u => u.ownerId))];
-    if (owners.length === 1 && owners[0] !== city.ownerId) {
-      const attackerId = owners[0];
-      if (city.population === 0) {
-        citiesToSet = citiesToSet.map(c => c.id === city.id ? { ...c, ownerId: attackerId } : c);
-        delete captureHoldNext[city.id];
-      } else {
-        const existing = captureHoldNext[city.id];
-        if (!existing || existing.attackerId !== attackerId) {
-          captureHoldNext[city.id] = { attackerId, startedAt: newSimTimeMs };
-        } else if (newSimTimeMs - existing.startedAt >= CITY_CAPTURE_HOLD_MS) {
-          citiesToSet = citiesToSet.map(c => c.id === city.id ? { ...c, ownerId: attackerId } : c);
-          delete captureHoldNext[city.id];
-        }
-      }
-    } else {
+    const contenders = [
+      ...new Set(
+        aliveUnits.filter(u => landMilitaryContestsCityCapture(u, city.q, city.r)).map(u => u.ownerId),
+      ),
+    ];
+    if (contenders.length !== 1 || contenders[0] === city.ownerId) {
+      delete captureHoldNext[city.id];
+      continue;
+    }
+    const attackerId = contenders[0];
+    const defendingLandMilitary = aliveUnits.filter(
+      u => landMilitaryContestsCityCapture(u, city.q, city.r) && u.ownerId === city.ownerId,
+    );
+    const wallBlocks = enemyIntactWallOnCityHex(wallSectionsMut, city);
+    const instantTake =
+      city.population === 0 || (defendingLandMilitary.length === 0 && !wallBlocks);
+    if (instantTake) {
+      citiesToSet = citiesToSet.map(c => (c.id === city.id ? { ...c, ownerId: attackerId } : c));
+      delete captureHoldNext[city.id];
+      continue;
+    }
+    const existing = captureHoldNext[city.id];
+    if (!existing || existing.attackerId !== attackerId) {
+      captureHoldNext[city.id] = { attackerId, startedAt: newSimTimeMs };
+    } else if (newSimTimeMs - existing.startedAt >= CITY_CAPTURE_HOLD_MS) {
+      citiesToSet = citiesToSet.map(c => (c.id === city.id ? { ...c, ownerId: attackerId } : c));
       delete captureHoldNext[city.id];
     }
   }
@@ -946,6 +998,7 @@ export function stepSimulation(
 
   return {
     ...state,
+    tiles: tilesMut,
     cities: citiesToSet,
     units: aliveUnits,
     players,

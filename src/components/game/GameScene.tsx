@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useCallback, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useCallback, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { Canvas, ThreeEvent, useThree } from '@react-three/fiber';
 import { OrthographicCamera } from '@react-three/drei';
@@ -20,16 +20,49 @@ const TRAIN_MAP_SIZE = 38;
 function SceneLighting() {
   return (
     <>
-      <ambientLight intensity={2.0} color="#ffffff" />
+      <ambientLight intensity={1.25} color="#ebe6df" />
       <directionalLight
-        position={[40, 100, 50]}
-        intensity={1.5}
-        color="#fff8e8"
+        position={[52, 118, 48]}
+        intensity={2.05}
+        color="#fff4dc"
       />
-      <directionalLight position={[-40, 60, -30]} intensity={0.8} color="#d0e0ff" />
-      <hemisphereLight args={['#ffffff', '#80a060', 0.6]} />
+      <directionalLight position={[-42, 78, -32]} intensity={0.62} color="#a8b8e8" />
+      <hemisphereLight args={['#f2ebe3', '#5c4a3a', 0.62]} />
     </>
   );
+}
+
+/** Gradient sky + soft exponential fog so the map reads as a lit tableau, not a void. */
+function MapAtmosphere() {
+  const { scene } = useThree();
+
+  useLayoutEffect(() => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 4;
+    canvas.height = 512;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const g = ctx.createLinearGradient(0, 0, 0, 512);
+    g.addColorStop(0, '#2a2438');
+    g.addColorStop(0.28, '#16121f');
+    g.addColorStop(0.55, '#0e0c14');
+    g.addColorStop(1, '#060508');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, 4, 512);
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    const prevBg = scene.background;
+    scene.background = tex;
+    const prevFog = scene.fog;
+    scene.fog = new THREE.FogExp2(0x121018, 0.00135);
+    return () => {
+      scene.background = prevBg;
+      scene.fog = prevFog;
+      tex.dispose();
+    };
+  }, [scene]);
+
+  return null;
 }
 
 // ─── Hex Click Interaction Plane ───────────────────────────────────
@@ -133,7 +166,11 @@ function CameraZoomController() {
     }
     if (phase !== 'playing') botZoomSet.current = false;
 
-    if (prevPhaseRef.current === 'place_city' && phase === 'playing' && gameMode === 'human_vs_ai') {
+    if (
+      prevPhaseRef.current === 'place_city' &&
+      (phase === 'commander_setup' || phase === 'playing') &&
+      (gameMode === 'human_vs_ai' || gameMode === 'human_solo')
+    ) {
       const targetZoom = 35;
       const startZoom = cam.zoom;
       const duration = 1200;
@@ -157,23 +194,17 @@ function CameraZoomController() {
 // ─── Escape Key Handler ─────────────────────────────────────────────
 
 function useEscapeKey() {
-  const deselectAll = useGameStore(s => s.deselectAll);
-  const cancelBuilderBuild = useGameStore(s => s.cancelBuilderBuild);
-  const uiMode = useGameStore(s => s.uiMode);
+  const escapeFromUi = useGameStore(s => s.escapeFromUi);
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
       if (e.key === 'Escape') {
-        if (uiMode === 'build_mine' || uiMode === 'build_quarry' || uiMode === 'build_gold_mine' || uiMode === 'build_road') {
-          cancelBuilderBuild();
-        } else {
-          deselectAll();
-        }
+        escapeFromUi();
       }
     }
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [deselectAll, cancelBuilderBuild, uiMode]);
+  }, [escapeFromUi]);
 }
 
 // ─── Main Scene ────────────────────────────────────────────────────
@@ -183,21 +214,36 @@ export default function GameScene() {
   const generateWorld = useGameStore(s => s.generateWorld);
   const isGenerated = useGameStore(s => s.isGenerated);
   const phase = useGameStore(s => s.phase);
-  const target = useCameraTarget();
+  const gameMode = useGameStore(s => s.gameMode);
+  const liveTarget = useCameraTarget();
+  const isBotWatch = gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4';
+  const [mapTarget, setMapTarget] = useState(liveTarget);
   const [aiParamsLoadAttempted, setAiParamsLoadAttempted] = useState(false);
+
+  useEffect(() => {
+    if (isBotWatch) {
+      setMapTarget(liveTarget);
+      return;
+    }
+    if (phase !== 'playing') {
+      setMapTarget(liveTarget);
+    }
+  }, [liveTarget, phase, isBotWatch]);
 
   useEscapeKey();
 
   const watchParam = searchParams.get('watch') ?? searchParams.get('mode');
   const watchMode = watchParam != null;
   const watchFour = watchParam === '4';
+  const sandboxMode = searchParams.get('sandbox') != null && !watchMode;
 
-  // Generate map: 38x38 for ?watch (2 bot), skip for ?watch=4 (4-bot generates its own 52x52)
+  // Generate map: 38×38 for ?watch (2 bot) or ?sandbox; skip for ?watch=4 (4-bot generates its own 52×52)
   useEffect(() => {
     if (!isGenerated && !watchFour) {
-      generateWorld(watchMode ? { width: TRAIN_MAP_SIZE, height: TRAIN_MAP_SIZE } : undefined);
+      const smallMap = watchMode || sandboxMode;
+      generateWorld(smallMap ? { width: TRAIN_MAP_SIZE, height: TRAIN_MAP_SIZE } : undefined);
     }
-  }, [isGenerated, generateWorld, watchMode, watchFour]);
+  }, [isGenerated, generateWorld, watchMode, watchFour, sandboxMode]);
 
   // Load champion AI params from public/ai-params.json (written by npm run train-ai)
   useEffect(() => {
@@ -220,8 +266,14 @@ export default function GameScene() {
     if (watchMode && isGenerated) useGameStore.getState().startBotVsBot();
   }, [watchMode, watchFour, isGenerated, phase, aiParamsLoadAttempted]);
 
+  // ?sandbox: 38×38 map, human-only placement (no AI).
+  useEffect(() => {
+    if (!sandboxMode || !isGenerated || phase !== 'setup') return;
+    useGameStore.getState().startSoloPlacement();
+  }, [sandboxMode, isGenerated, phase]);
+
   const cameraPosition: [number, number, number] = [
-    target[0] + 60, 80, target[2] + 60,
+    mapTarget[0] + 60, 80, mapTarget[2] + 60,
   ];
 
   return (
@@ -234,7 +286,7 @@ export default function GameScene() {
         }}
         dpr={[1, 2]}
       >
-        <color attach="background" args={['#0f1a2a']} />
+        <MapAtmosphere />
         <SceneLighting />
 
         <OrthographicCamera
@@ -245,7 +297,7 @@ export default function GameScene() {
           far={500}
         />
 
-        <MapController target={target} />
+        <MapController target={mapTarget} />
         <CameraZoomController />
         <HexInteractionPlane />
 

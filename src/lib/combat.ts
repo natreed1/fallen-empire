@@ -4,14 +4,20 @@ import {
 
 /**
  * Get effective attack for a unit, considering armsLevel, level and hero buff.
- * Formula: BaseAttack * (1 + level * 0.1) * hero bonus
+ * Formula: BaseAttack * (1 + level * 0.1) * hero bonus * optional stack scroll * commander
  */
-export function getUnitAttack(unit: Unit, hero?: Hero): number {
+export function getUnitAttack(
+  unit: Unit,
+  hero?: Hero,
+  opts?: { attackMult?: number; commanderAttackMult?: number },
+): number {
   const stats = getUnitStats(unit);
   const base = stats.attack;
   const levelBonus = 1 + unit.level * 0.1;
   const heroBonus = hero?.type === 'general' ? 1.1 : 1.0;
-  return Math.floor(base * levelBonus * heroBonus);
+  const scrollMult = opts?.attackMult ?? 1;
+  const cmdMult = opts?.commanderAttackMult ?? 1;
+  return Math.floor(base * levelBonus * heroBonus * scrollMult * cmdMult);
 }
 
 /**

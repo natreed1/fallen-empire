@@ -15,6 +15,94 @@ export interface TradeCluster {
   cities: City[];
 }
 
+/** Flood-fill: each water hex key → component id (for port-linked trade). */
+export function getWaterHexComponents(tiles: Map<string, Tile>): Map<string, number> {
+  const result = new Map<string, number>();
+  let nextId = 0;
+  for (const tile of tiles.values()) {
+    if (tile.biome !== 'water') continue;
+    const k = tileKey(tile.q, tile.r);
+    if (result.has(k)) continue;
+    nextId += 1;
+    const id = nextId;
+    const queue: Tile[] = [tile];
+    result.set(k, id);
+    while (queue.length > 0) {
+      const t = queue.pop()!;
+      for (const [nq, nr] of hexNeighbors(t.q, t.r)) {
+        const nk = tileKey(nq, nr);
+        if (result.has(nk)) continue;
+        const nt = tiles.get(nk);
+        if (!nt || nt.biome !== 'water') continue;
+        result.set(nk, id);
+        queue.push(nt);
+      }
+    }
+  }
+  return result;
+}
+
+function mergeLandClustersByPorts(
+  landClusters: TradeCluster[],
+  tiles: Map<string, Tile>,
+  waterKeyToComp: Map<string, number>,
+): TradeCluster[] {
+  if (landClusters.length <= 1) return landClusters;
+
+  const n = landClusters.length;
+  const parent = Array.from({ length: n }, (_, i) => i);
+  const find = (x: number): number => (parent[x] === x ? x : (parent[x] = find(parent[x])));
+  const union = (a: number, b: number) => {
+    const ra = find(a);
+    const rb = find(b);
+    if (ra !== rb) parent[ra] = rb;
+  };
+
+  const portComps: Set<number>[] = landClusters.map(cluster => {
+    const s = new Set<number>();
+    for (const c of cluster.cities) {
+      for (const b of c.buildings) {
+        if (b.type !== 'port') continue;
+        for (const [nq, nr] of hexNeighbors(b.q, b.r)) {
+          const wk = tileKey(nq, nr);
+          if (tiles.get(wk)?.biome !== 'water') continue;
+          const comp = waterKeyToComp.get(wk);
+          if (comp != null) s.add(comp);
+        }
+      }
+    }
+    return s;
+  });
+
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      let share = false;
+      for (const w of portComps[i]) {
+        if (portComps[j].has(w)) {
+          share = true;
+          break;
+        }
+      }
+      if (share) union(i, j);
+    }
+  }
+
+  const byRoot = new Map<number, Map<string, City>>();
+  for (let i = 0; i < n; i++) {
+    const r = find(i);
+    if (!byRoot.has(r)) byRoot.set(r, new Map());
+    const m = byRoot.get(r)!;
+    for (const c of landClusters[i].cities) m.set(c.id, c);
+  }
+
+  const out: TradeCluster[] = [];
+  for (const m of byRoot.values()) {
+    const cities = [...m.values()];
+    out.push({ cityIds: cities.map(c => c.id), cities });
+  }
+  return out;
+}
+
 /**
  * Compute trade clusters per player.
  * Cities are in the same cluster if they're connected via passable terrain
@@ -47,7 +135,7 @@ export function computeTradeClusters(
   const result = new Map<string, TradeCluster[]>();
 
   for (const [playerId, playerCities] of byPlayer) {
-    const clusters: TradeCluster[] = [];
+    const landClusters: TradeCluster[] = [];
     const assigned = new Set<string>();
     const cityByHex = new Map<string, City>();
     for (const c of playerCities) cityByHex.set(tileKey(c.q, c.r), c);
@@ -94,14 +182,15 @@ export function computeTradeClusters(
       }
 
       if (clusterCities.length > 0) {
-        clusters.push({
+        landClusters.push({
           cityIds: clusterCities.map(c => c.id),
           cities: clusterCities,
         });
       }
     }
 
-    result.set(playerId, clusters);
+    const waterComps = getWaterHexComponents(tiles);
+    result.set(playerId, mergeLandClustersByPorts(landClusters, tiles, waterComps));
   }
 
   return result;

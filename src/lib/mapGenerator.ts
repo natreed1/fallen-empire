@@ -7,6 +7,11 @@ import {
   hexNeighbors,
   hexDistance,
   tileKey,
+  SPECIAL_REGION_HEX_RADIUS,
+  SPECIAL_REGION_DISPLAY_NAME,
+  type SpecialRegion,
+  type SpecialRegionKind,
+  type ScrollKind,
 } from '@/types/game';
 
 // ─── Seeded PRNG (Mulberry32) ──────────────────────────────────────
@@ -26,6 +31,7 @@ function mulberry32(seed: number): () => number {
 export interface GeneratorResult {
   tiles: Tile[];
   provinceCenters: Tile[];
+  specialRegions: SpecialRegion[];
 }
 
 export function generateMap(config: MapConfig): GeneratorResult {
@@ -60,12 +66,17 @@ export function generateMap(config: MapConfig): GeneratorResult {
         hasMineDeposit: false,
         hasAncientCity: false,
         hasGoldMineDeposit: false,
+        hasWoodDeposit: false,
+        isIsland: false,
       };
 
       tileMap.set(tileKey(q, r), tile);
       allTiles.push(tile);
     }
   }
+
+  sprinkleOceanIslands(allTiles, tileMap, config, rng);
+  labelIslandLandmasses(allTiles, tileMap, config);
 
   // ── Pass 2: Empire overlay ─────────────────────────────────────
   const landTiles = allTiles.filter((t) => t.biome !== 'water');
@@ -84,7 +95,141 @@ export function generateMap(config: MapConfig): GeneratorResult {
   // ── Pass 4: Quarry & Mine deposits (biome-based) ───────────────
   scatterResourceDeposits(allTiles, rng);
 
-  return { tiles: allTiles, provinceCenters };
+  // ── Pass 5: Special scroll regions (large scattered zones) ──────
+  const specialRegions = placeSpecialRegions(allTiles, tileMap, config, rng);
+
+  return { tiles: allTiles, provinceCenters, specialRegions };
+}
+
+/** Keep region disks from overlapping (2×radius + small buffer). */
+const MIN_SPECIAL_REGION_CENTER_SEP = 14;
+
+function placeSpecialRegions(
+  allTiles: Tile[],
+  tileMap: Map<string, Tile>,
+  config: MapConfig,
+  rng: () => number,
+): SpecialRegion[] {
+  const specs: { kind: SpecialRegionKind; scrollReward: ScrollKind }[] = [
+    { kind: 'mexca', scrollReward: 'combat' },
+    { kind: 'hills_lost', scrollReward: 'defense' },
+    { kind: 'forest_secrets', scrollReward: 'movement' },
+    { kind: 'isle_lost', scrollReward: 'combat' },
+  ];
+  for (let i = specs.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [specs[i], specs[j]] = [specs[j], specs[i]];
+  }
+
+  const takenCenters: { q: number; r: number }[] = [];
+  const regions: SpecialRegion[] = [];
+  const margin = SPECIAL_REGION_HEX_RADIUS + 2;
+
+  for (const spec of specs) {
+    const pool = candidateCentersForSpecialRegion(
+      spec.kind,
+      allTiles,
+      config,
+      takenCenters,
+      margin,
+      MIN_SPECIAL_REGION_CENTER_SEP,
+    );
+    if (pool.length === 0) continue;
+
+    const center = pool[Math.floor(rng() * pool.length)];
+    takenCenters.push(center);
+    const id = `sr_${spec.kind}_${regions.length}`;
+    regions.push({
+      id,
+      kind: spec.kind,
+      name: SPECIAL_REGION_DISPLAY_NAME[spec.kind],
+      centerQ: center.q,
+      centerR: center.r,
+      radius: SPECIAL_REGION_HEX_RADIUS,
+      scrollReward: spec.scrollReward,
+    });
+    paintSpecialRegion(tileMap, allTiles, center, spec.kind, id, config);
+    const centerTile = tileMap.get(tileKey(center.q, center.r));
+    if (centerTile && spec.kind === 'mexca' && centerTile.biome !== 'water') {
+      centerTile.hasRuins = true;
+    }
+  }
+
+  return regions;
+}
+
+function candidateCentersForSpecialRegion(
+  kind: SpecialRegionKind,
+  allTiles: Tile[],
+  config: MapConfig,
+  takenCenters: { q: number; r: number }[],
+  margin: number,
+  minSep: number,
+): Tile[] {
+  const w = config.width;
+  const h = config.height;
+  const farFromEdge = (t: Tile) =>
+    t.q >= margin && t.r >= margin && t.q < w - margin && t.r < h - margin;
+  const farFromTaken = (t: Tile) =>
+    takenCenters.every(c => hexDistance(c.q, c.r, t.q, t.r) >= minSep);
+
+  let pool = allTiles.filter(t => t.biome !== 'water' && farFromEdge(t) && farFromTaken(t));
+
+  const byKind = (): Tile[] => {
+    switch (kind) {
+      case 'mexca':
+        return pool.filter(t => t.biome === 'desert' || t.biome === 'plains');
+      case 'hills_lost':
+        return pool.filter(t => t.biome === 'mountain' || (t.biome === 'plains' && t.elevation > 0.32));
+      case 'forest_secrets':
+        return pool.filter(t => t.biome === 'forest');
+      case 'isle_lost':
+        return pool.filter(t => t.isIsland);
+      default:
+        return pool;
+    }
+  };
+
+  let out = byKind();
+  if (out.length === 0 && kind === 'forest_secrets') {
+    out = pool.filter(t => t.biome === 'plains' || t.biome === 'forest');
+  }
+  if (out.length === 0 && kind === 'mexca') {
+    out = pool.filter(t => t.biome !== 'mountain');
+  }
+  if (out.length === 0 && kind === 'hills_lost') {
+    out = pool.filter(t => t.biome === 'mountain' || t.biome === 'desert');
+  }
+  if (out.length === 0 && kind === 'isle_lost') {
+    out = allTiles.filter(
+      t =>
+        t.biome !== 'water' &&
+        t.biome !== 'mountain' &&
+        farFromEdge(t) &&
+        farFromTaken(t),
+    );
+  }
+  return out;
+}
+
+function paintSpecialRegion(
+  tileMap: Map<string, Tile>,
+  allTiles: Tile[],
+  center: { q: number; r: number },
+  _kind: SpecialRegionKind,
+  regionId: string,
+  config: MapConfig,
+): void {
+  const R = SPECIAL_REGION_HEX_RADIUS;
+  const isle = _kind === 'isle_lost';
+
+  for (const t of allTiles) {
+    if (hexDistance(center.q, center.r, t.q, t.r) > R) continue;
+    if (!isle && t.biome === 'water') continue;
+    if (t.specialRegionId) continue;
+    const tile = tileMap.get(tileKey(t.q, t.r));
+    if (tile) tile.specialRegionId = regionId;
+  }
 }
 
 // ─── Ancient City placement (after starting cities chosen) ─────────────
@@ -155,14 +300,14 @@ function sampleElevation(
   const e3 = detailNoise(q * scale * 4.0, r * scale * 4.0) * 0.25;
   let e = (e1 + e2 + e3) / 1.75;
 
-  // Island falloff
+  // Island falloff — gentler uplift so coastlines stay lower and seas read larger
   const cx = config.width / 2;
   const cy = config.height / 2;
   const dx = (q - cx) / cx;
   const dy = (r - cy) / cy;
   const distFromCenter = Math.sqrt(dx * dx + dy * dy);
-  const falloff = 1.0 - Math.pow(distFromCenter, 1.8);
-  e = e * 0.7 + falloff * 0.3;
+  const falloff = 1.0 - Math.pow(distFromCenter, 1.65);
+  e = e * 0.74 + falloff * 0.22;
 
   // Ensure land in all 4 corners (for 4-bot maps)
   if (config.ensureCornerLand) {
@@ -196,7 +341,7 @@ function sampleMoisture(
 // ─── Biome Classification ──────────────────────────────────────────
 
 function classifyBiome(elevation: number, moisture: number): Biome {
-  if (elevation < -0.1) return 'water';
+  if (elevation < 0.02) return 'water';
   if (elevation > 0.55) return 'mountain';
   if (moisture < 0.3) return 'desert';
   if (moisture > 0.6 && elevation > 0.05) return 'forest';
@@ -450,6 +595,9 @@ function scatterResourceDeposits(
     if (tile.biome === 'mountain') {
       if (!tile.hasQuarryDeposit && !tile.hasMineDeposit && rng() < 0.05) tile.hasGoldMineDeposit = true;
     }
+
+    // Wood deposits: forest (logging huts)
+    if (tile.biome === 'forest' && rng() < 0.35) tile.hasWoodDeposit = true;
   }
 }
 
@@ -468,8 +616,103 @@ function spawnVillages(
       tile.hasRuins
     ) continue;
 
-    if (rng() < config.villageDensity) {
+    const islandBoost = tile.isIsland ? 1.8 : 1;
+    if (rng() < config.villageDensity * islandBoost) {
       tile.hasVillage = true;
     }
+  }
+}
+
+/** Landmasses inside oceans — larger archipelagos and occasional high ground. */
+function sprinkleOceanIslands(
+  allTiles: Tile[],
+  tileMap: Map<string, Tile>,
+  config: MapConfig,
+  rng: () => number,
+): void {
+  const waterCandidates = allTiles.filter((t) => t.biome === 'water');
+  if (waterCandidates.length < 20) return;
+
+  const attempts = Math.max(
+    12,
+    Math.floor((config.width * config.height) / 280),
+  );
+  for (let a = 0; a < attempts; a++) {
+    const seed = waterCandidates[Math.floor(rng() * waterCandidates.length)];
+    const neighbors = hexNeighbors(seed.q, seed.r);
+    const nearLand = neighbors.some(([nq, nr]) => {
+      const n = tileMap.get(tileKey(nq, nr));
+      return n && n.biome !== 'water';
+    });
+    if (nearLand && rng() < 0.72) continue;
+
+    const size = 8 + Math.floor(rng() * 22);
+    const queue: Tile[] = [seed];
+    const seen = new Set<string>([tileKey(seed.q, seed.r)]);
+    let added = 0;
+    while (queue.length > 0 && added < size) {
+      const cur = queue.shift()!;
+      if (cur.biome !== 'water') continue;
+      const elev = cur.elevation;
+      const roll = rng();
+      if (roll < 0.12) {
+        cur.biome = 'mountain';
+      } else {
+        cur.biome = roll < 0.52 ? 'forest' : 'plains';
+      }
+      cur.height = computeHeight(cur.biome, elev);
+      added++;
+
+      for (const [nq, nr] of hexNeighbors(cur.q, cur.r)) {
+        const k = tileKey(nq, nr);
+        if (seen.has(k)) continue;
+        const nt = tileMap.get(k);
+        if (!nt || nt.biome !== 'water') continue;
+        if (rng() < 0.68) {
+          seen.add(k);
+          queue.push(nt);
+        }
+      }
+    }
+  }
+}
+
+/** Land hexes not reachable from map edge without crossing water are flagged isIsland. */
+function labelIslandLandmasses(
+  allTiles: Tile[],
+  tileMap: Map<string, Tile>,
+  config: MapConfig,
+): void {
+  const w = config.width;
+  const h = config.height;
+  const edgeLand: Tile[] = [];
+  for (const t of allTiles) {
+    if (t.biome === 'water') continue;
+    if (t.q === 0 || t.r === 0 || t.q === w - 1 || t.r === h - 1) edgeLand.push(t);
+  }
+
+  const visited = new Set<string>();
+  const queue: Tile[] = [...edgeLand];
+  for (const t of edgeLand) visited.add(tileKey(t.q, t.r));
+
+  while (queue.length > 0) {
+    const cur = queue.shift()!;
+    for (const [nq, nr] of hexNeighbors(cur.q, cur.r)) {
+      if (nq < 0 || nr < 0 || nq >= w || nr >= h) continue;
+      const k = tileKey(nq, nr);
+      if (visited.has(k)) continue;
+      const nt = tileMap.get(k);
+      if (!nt || nt.biome === 'water') continue;
+      visited.add(k);
+      queue.push(nt);
+    }
+  }
+
+  for (const t of allTiles) {
+    if (t.biome === 'water') {
+      t.isIsland = false;
+      continue;
+    }
+    t.isIsland = !visited.has(tileKey(t.q, t.r));
   }
 }

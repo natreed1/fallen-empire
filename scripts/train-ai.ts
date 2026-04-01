@@ -5,7 +5,9 @@
  * Method: evolutionary (population + elite selection + mutation). Research shows
  * this is the best fit for noisy game outcomes and many cheap evaluations — see docs/OPTIMIZATION.md.
  * Env overrides: TRAIN_POPULATION_SIZE, TRAIN_GENERATIONS, TRAIN_MATCHES_PER_PAIR,
- * TRAIN_MAX_CYCLES, TRAIN_MAP_SIZE, NUM_WORKERS.
+ * TRAIN_MAX_CYCLES, TRAIN_MAP_SIZE, NUM_WORKERS, TRAIN_ELITE_COUNT, TRAIN_MUTATION_STRENGTH,
+ * TRAIN_DRAW_PENALTY, TRAIN_VARIANCE_PENALTY, TRAIN_FROM_CHAMPION (set 0 to skip), TRAIN_SEED_JSON,
+ * TRAIN_SHOW_BATTLES, TRAIN_WON_QUICKLY_BONUS, TRAIN_LOST_SLOWLY_BONUS.
  */
 
 import * as path from 'path';
@@ -38,14 +40,15 @@ const NUM_WORKERS =
   NUM_WORKERS_ENV !== undefined
     ? Math.max(0, parseInt(NUM_WORKERS_ENV, 10) || 0)
     : Math.min(8, Math.max(1, (os.cpus?.()?.length ?? 1) - 1));
-const ELITE_COUNT = 4;
-const MUTATION_STRENGTH = 0.15;
-const VARIANCE_PENALTY = 0.5; // rank by mean - VARIANCE_PENALTY * std
-const SHOW_BATTLES = 4;
+let ELITE_COUNT = Math.max(2, parseInt(process.env.TRAIN_ELITE_COUNT || '4', 10) || 4);
+ELITE_COUNT = Math.min(ELITE_COUNT, Math.max(2, POPULATION_SIZE - 1));
+const MUTATION_STRENGTH = Math.min(0.5, Math.max(0.05, parseFloat(process.env.TRAIN_MUTATION_STRENGTH || '0.15') || 0.15));
+const VARIANCE_PENALTY = parseFloat(process.env.TRAIN_VARIANCE_PENALTY || '0.5') || 0.5;
+const SHOW_BATTLES = Math.max(0, parseInt((process.env.TRAIN_SHOW_BATTLES ?? process.env.SHOW_BATTLES) || '4', 10) || 4);
 
-const DRAW_PENALTY = 10;
-const WON_QUICKLY_BONUS_PER_CYCLE = 0.05; // bonus for finishing under maxCycles when winning
-const LOST_SLOWLY_BONUS_PER_CYCLE = 0.03; // small bonus for lasting longer when losing
+const DRAW_PENALTY = parseFloat(process.env.TRAIN_DRAW_PENALTY || '10') || 10;
+const WON_QUICKLY_BONUS_PER_CYCLE = parseFloat(process.env.TRAIN_WON_QUICKLY_BONUS || '0.05') || 0.05;
+const LOST_SLOWLY_BONUS_PER_CYCLE = parseFloat(process.env.TRAIN_LOST_SLOWLY_BONUS || '0.03') || 0.03;
 
 const TRAIN_MAP = { width: MAP_SIZE, height: MAP_SIZE };
 const SIM_OPTS: RunSimulationOptions = { maxCycles: MAX_CYCLES, mapConfigOverride: TRAIN_MAP };
@@ -54,6 +57,27 @@ const SIM_OPTS: RunSimulationOptions = { maxCycles: MAX_CYCLES, mapConfigOverrid
 function ensureFullParams(p: Partial<AiParams>): AiParams {
   return { ...DEFAULT_AI_PARAMS, ...p };
 }
+
+/** Seed evolution from public/ai-params.json (champion) unless TRAIN_FROM_CHAMPION=0. */
+function loadSeedBaseline(): AiParams {
+  const overridePath = process.env.TRAIN_SEED_JSON;
+  const defaultChampion = path.join(process.cwd(), 'public', 'ai-params.json');
+  const useChampion = process.env.TRAIN_FROM_CHAMPION !== '0';
+  const jsonPath = overridePath || (useChampion && fs.existsSync(defaultChampion) ? defaultChampion : null);
+  if (!jsonPath || !fs.existsSync(jsonPath)) {
+    console.log('Seed baseline: DEFAULT_AI_PARAMS (no champion file)');
+    return ensureFullParams({});
+  }
+  try {
+    const raw = JSON.parse(fs.readFileSync(jsonPath, 'utf-8')) as Partial<AiParams>;
+    console.log(`Seed baseline: loaded ${jsonPath}`);
+    return ensureFullParams(raw);
+  } catch (e) {
+    console.warn('Seed baseline: failed to parse champion, using defaults:', (e as Error).message);
+    return ensureFullParams({});
+  }
+}
+
 
 function formatParamsShort(p: AiParams): string {
   const k = EVOLVABLE_PARAM_KEYS.length;
@@ -267,7 +291,7 @@ async function main() {
   }
   console.log('');
 
-  let baseline: AiParams = cloneParams(DEFAULT_AI_PARAMS);
+  let baseline: AiParams = loadSeedBaseline();
   console.log('Initial baseline: ' + formatParamsShort(baseline));
   console.log('');
   let population: AiParams[] = [cloneParams(baseline)];

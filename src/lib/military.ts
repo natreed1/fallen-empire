@@ -1,13 +1,41 @@
 import {
-  Unit, Hero, Tile, City, GameNotification, TerritoryInfo, WallSection,
+  Unit, Hero, Tile, City, GameNotification, TerritoryInfo, WallSection, Player,
+  DefenseInstallation,
   getUnitStats, ROAD_SPEED_BONUS,
   hexDistance, hexNeighbors, tileKey, generateId,
   RETREAT_DELAY_MS, ASSAULT_ATTACK_DEBUFF, HERO_BASE_HP, HERO_ATTACK,
+  isNavalUnitType, getShipMaxCargo,
+  DEFENSE_TOWER_MORTAR_RANGE,
+  DEFENSE_TOWER_ARCHER_RANGE,
+  DEFENSE_TOWER_BALLISTA_RANGE,
+  COMBAT_UNIT_DAMAGE_SCALE,
+  COMBAT_KILL_XP,
+  COMBAT_HIT_FULL_CHANCE,
+  COMBAT_HIT_GLANCE_CHANCE,
+  COMBAT_GLANCE_DAMAGE_MULT,
+  UNIT_MOVEMENT_DELAY_MULT,
+  MONGOL_LAND_SPEED_MULT,
+  SCROLL_COMBAT_BONUS,
+  SCROLL_DEFENSE_BONUS,
+  SCROLL_MOVEMENT_BONUS,
+  type ScrollAttachment,
+  type Commander,
 } from '@/types/game';
+import { armyHasMovementScroll, hexHasScrollKind } from '@/lib/scrolls';
+import {
+  commanderAttackMultiplierForUnit,
+  commanderDefenseDamageFactorForUnit,
+} from '@/lib/commanders';
 import { getUnitAttack, awardXp } from './combat';
 import { computeTradeClusters, getSupplyingClusterKey, TradeCluster } from '@/lib/logistics';
+import { tryReGarrisonIdleUnit } from '@/lib/garrison';
 
 const TOWER_DEFENSE_BONUS = 0.10;
+
+function clearMarchFields(u: Unit): void {
+  delete u.marchInitialHexDistance;
+  delete u.moveLegMs;
+}
 
 function hasTowerAt(_q: number, _r: number, _cities: City[]): boolean {
   return false; // scout towers removed
@@ -20,16 +48,231 @@ function applyTowerDefense(damage: number, targetQ: number, targetR: number, cit
   return damage;
 }
 
+function landTargetableByDefenseTower(u: Unit): boolean {
+  return u.hp > 0 && !u.aboardShipId && !isNavalUnitType(u.type) && u.type !== 'builder';
+}
+
+function defenseTowerTerritoryActive(t: DefenseInstallation, territory: Map<string, TerritoryInfo>): boolean {
+  const info = territory.get(tileKey(t.q, t.r));
+  return !!(info && info.playerId === t.ownerId && info.cityId === t.cityId);
+}
+
+function mortarSplashDamagePerUnit(level: number): number {
+  return Math.max(1, Math.floor(1.75 * (0.75 + 0.15 * level)));
+}
+
+function archerTowerShotDamage(level: number): number {
+  return Math.max(1, Math.floor(6 * (0.8 + 0.12 * level)));
+}
+
+function ballistaShotDamage(level: number): number {
+  return Math.max(1, Math.floor(3.5 * (0.8 + 0.12 * level)));
+}
+
+/** Scale damage for land/naval unit-vs-unit combat (not static defenses). */
+function scaleLandCombatDamageToUnit(damage: number): number {
+  if (damage <= 0) return 0;
+  return Math.max(0, Math.floor(damage * COMBAT_UNIT_DAMAGE_SCALE));
+}
+
+/** Deterministic 0..1 roll for hit / glance / miss (stable given cycle, time, ids, salt). */
+export function combatRoll01(
+  cycle: number,
+  nowMs: number,
+  attackerId: string,
+  defenderId: string,
+  salt: number,
+): number {
+  const tickPart = Math.floor(nowMs / 1000) | 0;
+  let h = ((cycle | 0) * 1000003) >>> 0;
+  h = Math.imul(h ^ tickPart, 2654435761) >>> 0;
+  h = Math.imul(h ^ (salt | 0), 1597334677) >>> 0;
+  for (let i = 0; i < attackerId.length; i++) h = Math.imul(h ^ attackerId.charCodeAt(i), 2246822519) >>> 0;
+  for (let i = 0; i < defenderId.length; i++) h = Math.imul(h ^ defenderId.charCodeAt(i), 3266489917) >>> 0;
+  return (h % 10000) / 10000;
+}
+
+function hitOutcomeFromRoll(r: number): 'full' | 'glance' | 'miss' {
+  if (r < COMBAT_HIT_FULL_CHANCE) return 'full';
+  if (r < COMBAT_HIT_FULL_CHANCE + COMBAT_HIT_GLANCE_CHANCE) return 'glance';
+  return 'miss';
+}
+
+function applyHitOutcomeDamage(damage: number, outcome: 'full' | 'glance' | 'miss'): number {
+  if (outcome === 'miss' || damage <= 0) return 0;
+  if (outcome === 'glance') return Math.max(0, Math.floor(damage * COMBAT_GLANCE_DAMAGE_MULT));
+  return damage;
+}
+
+function applyDefenseDamageToUnit(
+  raw: number,
+  target: Unit,
+  cities: City[],
+  killed: string[],
+  units: Unit[],
+  scrollAttachments?: ScrollAttachment[],
+  commanders?: Commander[],
+): void {
+  let damage = applyTowerDefense(raw, target.q, target.r, cities);
+  damage = applyDamageResist(damage, target, cities, units, scrollAttachments);
+  if (commanders?.length) {
+    const f = commanderDefenseDamageFactorForUnit(target, commanders, cities, units);
+    damage = Math.max(1, Math.floor(damage * f));
+  }
+  target.hp -= damage;
+  if (target.hp <= 0) killed.push(target.id);
+}
+
+/** Volley from static city defenses (1s combat tick); mortar splashes center + neighbors. */
+function defenseTowerVolley(
+  installations: DefenseInstallation[],
+  territory: Map<string, TerritoryInfo>,
+  tiles: Map<string, Tile>,
+  units: Unit[],
+  heroes: Hero[],
+  cities: City[],
+  killed: string[],
+  killedHeroIds: string[],
+  combatHexKeys: string[],
+  defenseVolleyFx: DefenseVolleyFx[],
+  scrollAttachments?: ScrollAttachment[],
+  commanders?: Commander[],
+): void {
+  for (const tower of installations) {
+    if (!defenseTowerTerritoryActive(tower, territory)) continue;
+    if (tiles.get(tileKey(tower.q, tower.r))?.biome === 'water') continue;
+
+    const enemies = units.filter(u => landTargetableByDefenseTower(u) && u.ownerId !== tower.ownerId);
+    if (enemies.length === 0) continue;
+
+    if (tower.type === 'mortar') {
+      type Cand = { q: number; r: number; count: number; dist: number };
+      const byHex = new Map<string, Cand>();
+      for (const u of enemies) {
+        const d = hexDistance(tower.q, tower.r, u.q, u.r);
+        if (d > DEFENSE_TOWER_MORTAR_RANGE) continue;
+        const k = tileKey(u.q, u.r);
+        const cur = byHex.get(k);
+        if (!cur) byHex.set(k, { q: u.q, r: u.r, count: 1, dist: d });
+        else {
+          cur.count++;
+          cur.dist = Math.min(cur.dist, d);
+        }
+      }
+      if (byHex.size === 0) continue;
+      let best: Cand | null = null;
+      for (const c of byHex.values()) {
+        if (!best || c.count > best.count || (c.count === best.count && c.dist < best.dist)) best = c;
+      }
+      if (!best) continue;
+      const splash: [number, number][] = [[best.q, best.r], ...hexNeighbors(best.q, best.r)];
+      const dmg = mortarSplashDamagePerUnit(tower.level);
+      const splashKeys = new Set(splash.map(([sq, sr]) => tileKey(sq, sr)));
+      for (const u of enemies) {
+        if (!splashKeys.has(tileKey(u.q, u.r))) continue;
+        applyDefenseDamageToUnit(dmg, u, cities, killed, units, scrollAttachments, commanders);
+      }
+      for (const h of heroes) {
+        if (h.ownerId === tower.ownerId || heroHp(h) <= 0) continue;
+        if (!splashKeys.has(tileKey(h.q, h.r))) continue;
+        const hd = applyTowerDefense(dmg, h.q, h.r, cities);
+        h.hp = Math.max(0, (h.hp ?? HERO_BASE_HP) - hd);
+        if ((h.hp ?? 0) <= 0) killedHeroIds.push(h.id);
+      }
+      combatHexKeys.push(tileKey(tower.q, tower.r));
+      for (const [sq, sr] of splash) {
+        const hk = tileKey(sq, sr);
+        if (!combatHexKeys.includes(hk)) combatHexKeys.push(hk);
+      }
+      defenseVolleyFx.push({
+        kind: 'mortar',
+        fromQ: tower.q,
+        fromR: tower.r,
+        splashKeys: [...splashKeys],
+      });
+    } else if (tower.type === 'archer_tower') {
+      let best: Unit | null = null;
+      let bestD = Infinity;
+      for (const u of enemies) {
+        const d = hexDistance(tower.q, tower.r, u.q, u.r);
+        if (d > DEFENSE_TOWER_ARCHER_RANGE) continue;
+        if (d < bestD) {
+          bestD = d;
+          best = u;
+        }
+      }
+      if (!best) continue;
+      const dmg = archerTowerShotDamage(tower.level);
+      applyDefenseDamageToUnit(dmg, best, cities, killed, units, scrollAttachments, commanders);
+      combatHexKeys.push(tileKey(tower.q, tower.r));
+      const tk = tileKey(best.q, best.r);
+      if (!combatHexKeys.includes(tk)) combatHexKeys.push(tk);
+      defenseVolleyFx.push({
+        kind: 'archer_tower',
+        fromQ: tower.q,
+        fromR: tower.r,
+        targetQ: best.q,
+        targetR: best.r,
+      });
+    } else {
+      // ballista: two quick shots, range 3
+      for (let s = 0; s < 2; s++) {
+        let pick: Unit | null = null;
+        let bestD = Infinity;
+        for (const u of enemies) {
+          if (u.hp <= 0) continue;
+          const d = hexDistance(tower.q, tower.r, u.q, u.r);
+          if (d > DEFENSE_TOWER_BALLISTA_RANGE) continue;
+          if (d < bestD) {
+            bestD = d;
+            pick = u;
+          }
+        }
+        if (!pick) break;
+        const dmg = ballistaShotDamage(tower.level);
+        applyDefenseDamageToUnit(dmg, pick, cities, killed, units, scrollAttachments, commanders);
+        combatHexKeys.push(tileKey(tower.q, tower.r));
+        const tk = tileKey(pick.q, pick.r);
+        if (!combatHexKeys.includes(tk)) combatHexKeys.push(tk);
+        defenseVolleyFx.push({
+          kind: 'ballista',
+          fromQ: tower.q,
+          fromR: tower.r,
+          targetQ: pick.q,
+          targetR: pick.r,
+        });
+      }
+    }
+  }
+}
+
+function isBowUnitType(type: Unit['type']): boolean {
+  return type === 'ranged' || type === 'horse_archer';
+}
+
 /** Apply defender (and other unit) damage resistance. When defender is on friendly city hex, uses damageResistOnCityHex. */
-function applyDamageResist(damage: number, target: Unit, cities: City[]): number {
+function applyDamageResist(
+  damage: number,
+  target: Unit,
+  cities: City[],
+  units: Unit[],
+  scrollAttachments?: ScrollAttachment[],
+): number {
   const stats = getUnitStats(target);
   const resist = (stats as { damageResist?: number; damageResistOnCityHex?: number }).damageResist ?? 0;
   const onCityHex = target.type === 'defender' && cities.some(c => c.ownerId === target.ownerId && c.q === target.q && c.r === target.r);
   const resistVal = onCityHex
     ? ((stats as { damageResistOnCityHex?: number }).damageResistOnCityHex ?? resist)
     : resist;
-  if (resistVal <= 0) return damage;
-  return Math.max(1, Math.floor(damage * (1 - resistVal)));
+  let d = damage;
+  if (resistVal > 0) d = Math.max(1, Math.floor(d * (1 - resistVal)));
+  if (
+    scrollAttachments?.length &&
+    hexHasScrollKind(target.q, target.r, target.ownerId, 'defense', units, scrollAttachments)
+  ) {
+    d = Math.max(1, Math.floor(d * (1 - SCROLL_DEFENSE_BONUS)));
+  }
+  return d;
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -40,6 +283,28 @@ function isCityCenter(q: number, r: number, cities: City[]): boolean {
   return cities.some(c => c.q === q && c.r === r);
 }
 
+/** Land units that contest city capture (excludes builder, naval, units aboard a ship). */
+export function landMilitaryContestsCityCapture(u: Unit, q: number, r: number): boolean {
+  return (
+    u.q === q &&
+    u.r === r &&
+    u.hp > 0 &&
+    !u.aboardShipId &&
+    u.type !== 'builder' &&
+    !isNavalUnitType(u.type)
+  );
+}
+
+export function enemyIntactWallOnCityHex(wallSections: WallSection[], city: City): boolean {
+  return wallSections.some(
+    w =>
+      w.q === city.q &&
+      w.r === city.r &&
+      w.ownerId === city.ownerId &&
+      (w.hp ?? 0) > 0,
+  );
+}
+
 export function movementTick(
   units: Unit[],
   heroes: Hero[],
@@ -47,24 +312,29 @@ export function movementTick(
   wallSections: WallSection[] = [],
   cities: City[] = [],
   nowMs: number = Date.now(),
+  players: Player[] = [],
+  scrollAttachments?: ScrollAttachment[],
 ): void {
   const now = nowMs;
 
   // Retreat execution: when retreatAt has passed, set target to hex away from enemies (design §5, 30)
   for (const u of units) {
-    if (u.hp <= 0 || u.retreatAt == null || u.retreatAt > now) continue;
-    const best = pickRetreatHex(u.q, u.r, units, tiles, u.ownerId);
+    if (u.hp <= 0 || u.retreatAt == null || u.retreatAt > now || u.aboardShipId) continue;
+    const best = pickRetreatHex(u.q, u.r, units, tiles, u.ownerId, isNavalUnitType(u.type));
     if (best) {
       u.targetQ = best[0];
       u.targetR = best[1];
       u.status = 'moving';
       u.retreatAt = undefined;
+      u.marchInitialHexDistance = Math.max(1, hexDistance(u.q, u.r, best[0], best[1]));
     }
   }
 
-  const armies = groupArmies(units.filter(u => u.status === 'moving' && u.targetQ !== undefined && u.hp > 0));
+  const moving = units.filter(u => u.status === 'moving' && u.targetQ !== undefined && u.hp > 0 && !u.aboardShipId);
+  const landArmies = groupArmies(moving.filter(u => !isNavalUnitType(u.type)));
+  const navalArmies = groupArmies(moving.filter(u => isNavalUnitType(u.type)));
 
-  for (const army of armies) {
+  const advanceArmy = (army: Unit[], naval: boolean) => {
     const leader = army[0];
     const prevQ = leader.q;
     const prevR = leader.r;
@@ -72,42 +342,77 @@ export function movementTick(
     const targetR = leader.targetR!;
 
     if (leader.q === targetQ && leader.r === targetR) {
-      for (const u of army) { u.status = 'idle'; u.targetQ = undefined; u.targetR = undefined; }
-      continue;
+      for (const u of army) {
+        u.status = 'idle'; u.targetQ = undefined; u.targetR = undefined;
+        clearMarchFields(u);
+        tryReGarrisonIdleUnit(u, cities);
+      }
+      return;
     }
 
     const slowestSpeed = Math.min(...army.map(u => getUnitStats(u).speed));
     const earliestReady = Math.min(...army.map(u => u.nextMoveAt));
-    if (now < earliestReady) continue;
+    if (now < earliestReady) return;
 
-    const next = stepTowardZOC(leader.q, leader.r, targetQ, targetR, tiles, units, leader.ownerId, wallSections, cities);
+    const next = naval
+      ? stepTowardZOCNaval(leader.q, leader.r, targetQ, targetR, tiles, units, leader.ownerId)
+      : stepTowardZOC(leader.q, leader.r, targetQ, targetR, tiles, units, leader.ownerId, wallSections, cities);
 
     if (next[0] === leader.q && next[1] === leader.r) {
-      for (const u of army) { u.status = 'idle'; u.targetQ = undefined; u.targetR = undefined; }
-      continue;
+      for (const u of army) {
+        u.status = 'idle'; u.targetQ = undefined; u.targetR = undefined;
+        clearMarchFields(u);
+        tryReGarrisonIdleUnit(u, cities);
+      }
+      return;
     }
 
-    // Allow movement toward target even when out of supply (attack/expand); upkeepTick still applies HP loss for unsupplied units.
-    // Previously we idled units here when beyond SUPPLY_VICINITY_RADIUS and the next step was further from any friendly city,
-    // which stopped armies from ever reaching the enemy on 38x38 (enemy ~30+ hexes away, radius 24).
-
-    const enemiesAtNext = units.some(u => u.q === next[0] && u.r === next[1] && u.ownerId !== leader.ownerId && u.hp > 0);
+    const enemiesAtNext = units.some(
+      u => !u.aboardShipId && u.q === next[0] && u.r === next[1] && u.ownerId !== leader.ownerId && u.hp > 0,
+    );
     if (enemiesAtNext) {
-      for (const u of army) { u.status = 'fighting'; u.targetQ = undefined; u.targetR = undefined; }
-      continue;
+      for (const u of army) {
+        u.status = 'fighting'; u.targetQ = undefined; u.targetR = undefined;
+        clearMarchFields(u);
+        if (u.garrisonCityId) delete u.garrisonCityId;
+        if (u.defendCityId) delete u.defendCityId;
+        if (u.incorporateVillageAt) delete u.incorporateVillageAt;
+      }
+      return;
     }
 
     const destTile = tiles.get(tileKey(next[0], next[1]));
-    const onRoad = destTile?.hasRoad ?? false;
-    const effectiveSpeed = slowestSpeed * (onRoad ? ROAD_SPEED_BONUS : 1.0);
-    const moveDelay = Math.floor(1000 / effectiveSpeed);
+    const onRoad = !naval && (destTile?.hasRoad ?? false);
+    const mongolMult =
+      !naval && players.some(p => p.id === leader.ownerId && p.kingdomId === 'mongols')
+        ? MONGOL_LAND_SPEED_MULT
+        : 1.0;
+    const scrollMove =
+      !naval && scrollAttachments?.length
+        ? armyHasMovementScroll(army, leader.ownerId, units, scrollAttachments)
+        : false;
+    const scrollMoveMult = scrollMove ? 1 + SCROLL_MOVEMENT_BONUS : 1;
+    const effectiveSpeed = slowestSpeed * (onRoad ? ROAD_SPEED_BONUS : 1.0) * mongolMult * scrollMoveMult;
+    const moveDelay = Math.max(280, Math.floor((1000 / effectiveSpeed) * UNIT_MOVEMENT_DELAY_MULT));
 
     for (const u of army) {
       u.q = next[0];
       u.r = next[1];
       u.nextMoveAt = now + moveDelay;
+      u.moveLegMs = moveDelay;
+      if (u.cargoUnitIds?.length) {
+        for (const cid of u.cargoUnitIds) {
+          const cargo = units.find(x => x.id === cid);
+          if (cargo && cargo.aboardShipId === u.id) {
+            cargo.q = next[0];
+            cargo.r = next[1];
+          }
+        }
+      }
       if (u.q === targetQ && u.r === targetR) {
         u.status = 'idle'; u.targetQ = undefined; u.targetR = undefined;
+        clearMarchFields(u);
+        tryReGarrisonIdleUnit(u, cities);
       }
     }
 
@@ -117,12 +422,29 @@ export function movementTick(
         h.r = next[1];
       }
     }
-  }
+  };
+
+  for (const army of landArmies) advanceArmy(army, false);
+  for (const army of navalArmies) advanceArmy(army, true);
 }
 
 // ═══════════════════════════════════════════════════════════════════
 //  Combat Tick — automatic 1-second engagement resolution
 // ═══════════════════════════════════════════════════════════════════
+
+/** Client-only combat VFX: defense towers and bow volleys (see HexGrid). */
+export type DefenseVolleyFx =
+  | { kind: 'mortar'; fromQ: number; fromR: number; splashKeys: string[] }
+  | { kind: 'archer_tower'; fromQ: number; fromR: number; targetQ: number; targetR: number }
+  | { kind: 'ballista'; fromQ: number; fromR: number; targetQ: number; targetR: number };
+
+export type RangedShotFx = {
+  attackerId: string;
+  fromQ: number;
+  fromR: number;
+  toQ: number;
+  toR: number;
+};
 
 export interface CombatTickResult {
   killedUnitIds: string[];
@@ -130,6 +452,34 @@ export interface CombatTickResult {
   notifications: GameNotification[];
   /** Hex keys (q,r) where combat occurred this tick (for ancient city: no reward if combat on that hex) */
   combatHexKeys: string[];
+  defenseVolleyFx: DefenseVolleyFx[];
+  rangedShotFx: RangedShotFx[];
+}
+
+function tileIsWater(tiles: Map<string, Tile>, q: number, r: number): boolean {
+  return tiles.get(tileKey(q, r))?.biome === 'water';
+}
+
+/** Naval may only fight naval on water; land only fights land (no coastal bombardment in v1). */
+export function canUnitsFight(attacker: Unit, target: Unit, tiles: Map<string, Tile>): boolean {
+  const aNav = isNavalUnitType(attacker.type);
+  const tNav = isNavalUnitType(target.type);
+  const aW = tileIsWater(tiles, attacker.q, attacker.r);
+  const tW = tileIsWater(tiles, target.q, target.r);
+  if (aNav && tNav) return aW && tW;
+  if (!aNav && !tNav) return !aW || !tW;
+  return false;
+}
+
+function combatScrollMult(
+  units: Unit[],
+  u: Unit,
+  scrollAttachments: ScrollAttachment[] | undefined,
+): number {
+  if (!scrollAttachments?.length) return 1;
+  return hexHasScrollKind(u.q, u.r, u.ownerId, 'combat', units, scrollAttachments)
+    ? 1 + SCROLL_COMBAT_BONUS
+    : 1;
 }
 
 export function combatTick(
@@ -137,19 +487,25 @@ export function combatTick(
   heroes: Hero[],
   cycle: number,
   cities: City[] = [],
+  tiles: Map<string, Tile> = new Map(),
   nowMs: number = Date.now(),
+  defenseInstallations?: DefenseInstallation[],
+  territory?: Map<string, TerritoryInfo>,
+  scrollAttachments?: ScrollAttachment[],
+  commanders: Commander[] = [],
 ): CombatTickResult {
   const killed: string[] = [];
   const killedHeroIds: string[] = [];
   const notifications: GameNotification[] = [];
   const combatHexKeys: string[] = [];
+  const rangedShotFx: RangedShotFx[] = [];
   const processed = new Set<string>();
   const now = nowMs;
 
-  // Build hex -> units map
+  // Build hex -> units map (exclude passengers; they are not combatants until unloaded)
   const byHex: Record<string, Unit[]> = {};
   for (const u of units) {
-    if (u.hp <= 0) continue;
+    if (u.hp <= 0 || u.aboardShipId) continue;
     const key = tileKey(u.q, u.r);
     if (!byHex[key]) byHex[key] = [];
     byHex[key].push(u);
@@ -165,13 +521,34 @@ export function combatTick(
     const owners = Object.keys(ownerSet);
     if (owners.length < 2) continue;
 
-    const side1 = hexUnits.filter((u: Unit) => u.ownerId === owners[0] && u.hp > 0);
-    const side2 = hexUnits.filter((u: Unit) => u.ownerId === owners[1] && u.hp > 0);
+    for (const u of hexUnits) {
+      if (u.garrisonCityId) delete u.garrisonCityId;
+      if (u.defendCityId) delete u.defendCityId;
+      if (u.incorporateVillageAt) delete u.incorporateVillageAt;
+    }
+
+    let side1 = hexUnits.filter((u: Unit) => u.ownerId === owners[0] && u.hp > 0);
+    let side2 = hexUnits.filter((u: Unit) => u.ownerId === owners[1] && u.hp > 0);
+    const s1Nav = side1.some(u => isNavalUnitType(u.type));
+    const s2Nav = side2.some(u => isNavalUnitType(u.type));
+    if (s1Nav !== s2Nav || (s1Nav && !tileIsWater(tiles, side1[0].q, side1[0].r))) continue;
+    if (s1Nav) {
+      side1 = side1.filter(u => isNavalUnitType(u.type));
+      side2 = side2.filter(u => isNavalUnitType(u.type));
+    } else {
+      side1 = side1.filter(u => !isNavalUnitType(u.type));
+      side2 = side2.filter(u => !isNavalUnitType(u.type));
+    }
+    if (side1.length === 0 || side2.length === 0) continue;
+
     const hero1 = heroes.find(h => h.q === side1[0]?.q && h.r === side1[0]?.r && h.ownerId === owners[0]);
     const hero2 = heroes.find(h => h.q === side2[0]?.q && h.r === side2[0]?.r && h.ownerId === owners[1]);
 
     combatHexKeys.push(hexKey);
-    resolveMeleeRound(side1, side2, hero1, hero2, killed, killedHeroIds, notifications, cycle, cities);
+    resolveMeleeRound(
+      side1, side2, hero1, hero2, killed, killedHeroIds, notifications, cycle, cities, now, units, scrollAttachments,
+      commanders,
+    );
     for (const u of side1.concat(side2)) processed.add(u.id);
   }
 
@@ -207,19 +584,34 @@ export function combatTick(
         const unitRange = getUnitStats(atk).range;
         if (dist > unitRange) continue;
 
-        const target = enemies.find((e: Unit) => e.hp > 0);
+        const target = enemies.find((e: Unit) => e.hp > 0 && canUnitsFight(atk, e, tiles));
         if (target) {
-          let rawDamage = getUnitAttack(atk, attackerHero);
+          const atkMult = combatScrollMult(units, atk, scrollAttachments);
+          const cmdAtk = commanderAttackMultiplierForUnit(atk, commanders, cities, units);
+          let rawDamage = getUnitAttack(atk, attackerHero, { attackMult: atkMult, commanderAttackMult: cmdAtk });
           let damage = applyTowerDefense(rawDamage, target.q, target.r, cities);
           if (atk.assaulting && isCityCenter(target.q, target.r, cities)) {
             damage = Math.max(1, Math.floor(damage * ASSAULT_ATTACK_DEBUFF));
           }
-          damage = applyDamageResist(damage, target, cities);
+          damage = applyDamageResist(damage, target, cities, units, scrollAttachments);
+          damage = Math.max(1, Math.floor(damage * commanderDefenseDamageFactorForUnit(target, commanders, cities, units)));
+          damage = scaleLandCombatDamageToUnit(damage);
+          const ro = combatRoll01(cycle, now, atk.id, target.id, 210);
+          damage = applyHitOutcomeDamage(damage, hitOutcomeFromRoll(ro));
           target.hp -= damage;
           atk.status = 'fighting';
+          if (isBowUnitType(atk.type)) {
+            rangedShotFx.push({
+              attackerId: atk.id,
+              fromQ: q,
+              fromR: r,
+              toQ: target.q,
+              toR: target.r,
+            });
+          }
           if (target.hp <= 0) {
             killed.push(target.id);
-            const leveled = awardXp(atk, 10);
+            const leveled = awardXp(atk, COMBAT_KILL_XP);
             if (leveled) {
               notifications.push({
                 id: generateId('n'), turn: cycle,
@@ -228,8 +620,14 @@ export function combatTick(
               });
             }
           }
-        } else if (enemyHero) {
-          const damage = applyTowerDefense(getUnitAttack(atk, attackerHero), oq, or_, cities);
+        } else if (enemyHero && !isNavalUnitType(atk.type)) {
+          const atkMult = combatScrollMult(units, atk, scrollAttachments);
+          const cmdAtk = commanderAttackMultiplierForUnit(atk, commanders, cities, units);
+          let damage = scaleLandCombatDamageToUnit(
+            applyTowerDefense(getUnitAttack(atk, attackerHero, { attackMult: atkMult, commanderAttackMult: cmdAtk }), oq, or_, cities),
+          );
+          const ro = combatRoll01(cycle, now, atk.id, enemyHero.id, 211);
+          damage = applyHitOutcomeDamage(damage, hitOutcomeFromRoll(ro));
           const hp = (enemyHero.hp ?? HERO_BASE_HP) - damage;
           enemyHero.hp = Math.max(0, hp);
           if (enemyHero.hp <= 0) killedHeroIds.push(enemyHero.id);
@@ -244,20 +642,35 @@ export function combatTick(
         const defRange = getUnitStats(def).range;
         if (dist > defRange) continue;
 
-        const counterTarget = aggressors.find((a: Unit) => a.hp > 0);
+        const counterTarget = aggressors.find((a: Unit) => a.hp > 0 && canUnitsFight(def, a, tiles));
         if (!counterTarget) break;
 
-        let rawDamage = getUnitAttack(def, defenderHero);
+        const defMult = combatScrollMult(units, def, scrollAttachments);
+        const cmdAtkDef = commanderAttackMultiplierForUnit(def, commanders, cities, units);
+        let rawDamage = getUnitAttack(def, defenderHero, { attackMult: defMult, commanderAttackMult: cmdAtkDef });
         let damage = applyTowerDefense(rawDamage, counterTarget.q, counterTarget.r, cities);
         if (def.assaulting && isCityCenter(counterTarget.q, counterTarget.r, cities)) {
           damage = Math.max(1, Math.floor(damage * ASSAULT_ATTACK_DEBUFF));
         }
-        damage = applyDamageResist(damage, counterTarget, cities);
+        damage = applyDamageResist(damage, counterTarget, cities, units, scrollAttachments);
+        damage = Math.max(1, Math.floor(damage * commanderDefenseDamageFactorForUnit(counterTarget, commanders, cities, units)));
+        damage = scaleLandCombatDamageToUnit(damage);
+        const ro2 = combatRoll01(cycle, now, def.id, counterTarget.id, 212);
+        damage = applyHitOutcomeDamage(damage, hitOutcomeFromRoll(ro2));
         counterTarget.hp -= damage;
+        if (isBowUnitType(def.type)) {
+          rangedShotFx.push({
+            attackerId: def.id,
+            fromQ: oq,
+            fromR: or_,
+            toQ: counterTarget.q,
+            toR: counterTarget.r,
+          });
+        }
 
         if (counterTarget.hp <= 0) {
           killed.push(counterTarget.id);
-          const leveled = awardXp(def, 10);
+          const leveled = awardXp(def, COMBAT_KILL_XP);
           if (leveled) {
             notifications.push({
               id: generateId('n'), turn: cycle,
@@ -271,7 +684,49 @@ export function combatTick(
     }
   }
 
-  return { killedUnitIds: killed, killedHeroIds, notifications, combatHexKeys };
+  const defenseVolleyFx: DefenseVolleyFx[] = [];
+  if (defenseInstallations?.length && territory && territory.size > 0) {
+    defenseTowerVolley(
+      defenseInstallations,
+      territory,
+      tiles,
+      units,
+      heroes,
+      cities,
+      killed,
+      killedHeroIds,
+      combatHexKeys,
+      defenseVolleyFx,
+      scrollAttachments,
+      commanders,
+    );
+  }
+
+  const killedExpand = new Set(killed);
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const id of [...killedExpand]) {
+      const dead = units.find(u => u.id === id);
+      if (!dead?.cargoUnitIds?.length) continue;
+      for (const cid of dead.cargoUnitIds) {
+        const c = units.find(u => u.id === cid);
+        if (c?.aboardShipId === id && !killedExpand.has(cid)) {
+          killedExpand.add(cid);
+          grew = true;
+        }
+      }
+    }
+  }
+
+  return {
+    killedUnitIds: [...killedExpand],
+    killedHeroIds,
+    notifications,
+    combatHexKeys,
+    defenseVolleyFx,
+    rangedShotFx,
+  };
 }
 
 function heroHp(hero: Hero | undefined): number {
@@ -283,25 +738,36 @@ function resolveMeleeRound(
   hero1: Hero | undefined, hero2: Hero | undefined,
   killed: string[], killedHeroIds: string[], notifications: GameNotification[], cycle: number,
   cities: City[] = [],
+  nowMs: number = Date.now(),
+  allUnits: Unit[] = [],
+  scrollAttachments?: ScrollAttachment[],
+  commanders: Commander[] = [],
 ) {
-  const now = Date.now();
   for (const atk of side1) {
     if (atk.hp <= 0 || atk.retreatAt) continue;
     const unitTarget = side2.find(d => d.hp > 0);
     const heroTargetAlive = hero2 && heroHp(hero2) > 0;
     if (!unitTarget && !heroTargetAlive) break;
-    let rawDmg = getUnitAttack(atk, hero1);
+    const atkMult = combatScrollMult(allUnits, atk, scrollAttachments);
+    const cmdAtk1 = commanderAttackMultiplierForUnit(atk, commanders, cities, allUnits);
+    let rawDmg = getUnitAttack(atk, hero1, { attackMult: atkMult, commanderAttackMult: cmdAtk1 });
     if (unitTarget) {
       let dmg = applyTowerDefense(rawDmg, unitTarget.q, unitTarget.r, cities);
       if (atk.assaulting && isCityCenter(unitTarget.q, unitTarget.r, cities)) {
         dmg = Math.max(1, Math.floor(dmg * ASSAULT_ATTACK_DEBUFF));
       }
-      dmg = applyDamageResist(dmg, unitTarget, cities);
+      dmg = applyDamageResist(dmg, unitTarget, cities, allUnits, scrollAttachments);
+      dmg = Math.max(1, Math.floor(dmg * commanderDefenseDamageFactorForUnit(unitTarget, commanders, cities, allUnits)));
+      dmg = scaleLandCombatDamageToUnit(dmg);
+      const ro = combatRoll01(cycle, nowMs, atk.id, unitTarget.id, 11);
+      dmg = applyHitOutcomeDamage(dmg, hitOutcomeFromRoll(ro));
       unitTarget.hp -= dmg;
       atk.status = 'fighting';
-      if (unitTarget.hp <= 0) { killed.push(unitTarget.id); awardXp(atk, 10); }
+      if (unitTarget.hp <= 0) { killed.push(unitTarget.id); awardXp(atk, COMBAT_KILL_XP); }
     } else if (hero2) {
-      const dmg = applyTowerDefense(rawDmg, hero2.q, hero2.r, cities);
+      let dmg = scaleLandCombatDamageToUnit(applyTowerDefense(rawDmg, hero2.q, hero2.r, cities));
+      const ro = combatRoll01(cycle, nowMs, atk.id, hero2.id, 12);
+      dmg = applyHitOutcomeDamage(dmg, hitOutcomeFromRoll(ro));
       const hp = (hero2.hp ?? HERO_BASE_HP) - dmg;
       hero2.hp = Math.max(0, hp);
       atk.status = 'fighting';
@@ -313,18 +779,26 @@ function resolveMeleeRound(
     const unitTarget = side1.find(d => d.hp > 0);
     const heroTargetAlive = hero1 && heroHp(hero1) > 0;
     if (!unitTarget && !heroTargetAlive) break;
-    let rawDmg = getUnitAttack(atk, hero2);
+    const atkMult2 = combatScrollMult(allUnits, atk, scrollAttachments);
+    const cmdAtk2 = commanderAttackMultiplierForUnit(atk, commanders, cities, allUnits);
+    let rawDmg = getUnitAttack(atk, hero2, { attackMult: atkMult2, commanderAttackMult: cmdAtk2 });
     if (unitTarget) {
       let dmg = applyTowerDefense(rawDmg, unitTarget.q, unitTarget.r, cities);
       if (atk.assaulting && isCityCenter(unitTarget.q, unitTarget.r, cities)) {
         dmg = Math.max(1, Math.floor(dmg * ASSAULT_ATTACK_DEBUFF));
       }
-      dmg = applyDamageResist(dmg, unitTarget, cities);
+      dmg = applyDamageResist(dmg, unitTarget, cities, allUnits, scrollAttachments);
+      dmg = Math.max(1, Math.floor(dmg * commanderDefenseDamageFactorForUnit(unitTarget, commanders, cities, allUnits)));
+      dmg = scaleLandCombatDamageToUnit(dmg);
+      const ro = combatRoll01(cycle, nowMs, atk.id, unitTarget.id, 21);
+      dmg = applyHitOutcomeDamage(dmg, hitOutcomeFromRoll(ro));
       unitTarget.hp -= dmg;
       atk.status = 'fighting';
-      if (unitTarget.hp <= 0) { killed.push(unitTarget.id); awardXp(atk, 10); }
+      if (unitTarget.hp <= 0) { killed.push(unitTarget.id); awardXp(atk, COMBAT_KILL_XP); }
     } else if (hero1) {
-      const dmg = applyTowerDefense(rawDmg, hero1.q, hero1.r, cities);
+      let dmg = scaleLandCombatDamageToUnit(applyTowerDefense(rawDmg, hero1.q, hero1.r, cities));
+      const ro = combatRoll01(cycle, nowMs, atk.id, hero1.id, 22);
+      dmg = applyHitOutcomeDamage(dmg, hitOutcomeFromRoll(ro));
       const hp = (hero1.hp ?? HERO_BASE_HP) - dmg;
       hero1.hp = Math.max(0, hp);
       atk.status = 'fighting';
@@ -334,18 +808,28 @@ function resolveMeleeRound(
   if (hero1 && heroHp(hero1) > 0) {
     const target = side2.find(d => d.hp > 0);
     if (target) {
-      const dmg = applyTowerDefense(HERO_ATTACK, target.q, target.r, cities);
-      const afterResist = applyDamageResist(dmg, target, cities);
-      target.hp -= afterResist;
+      let dmg = applyTowerDefense(HERO_ATTACK, target.q, target.r, cities);
+      const afterResist = applyDamageResist(dmg, target, cities, allUnits, scrollAttachments);
+      let scaled = scaleLandCombatDamageToUnit(
+        Math.max(1, Math.floor(afterResist * commanderDefenseDamageFactorForUnit(target, commanders, cities, allUnits))),
+      );
+      const ro = combatRoll01(cycle, nowMs, hero1.id, target.id, 41);
+      scaled = applyHitOutcomeDamage(scaled, hitOutcomeFromRoll(ro));
+      target.hp -= scaled;
       if (target.hp <= 0) { killed.push(target.id); }
     }
   }
   if (hero2 && heroHp(hero2) > 0) {
     const target = side1.find(d => d.hp > 0);
     if (target) {
-      const dmg = applyTowerDefense(HERO_ATTACK, target.q, target.r, cities);
-      const afterResist = applyDamageResist(dmg, target, cities);
-      target.hp -= afterResist;
+      let dmg = applyTowerDefense(HERO_ATTACK, target.q, target.r, cities);
+      const afterResist = applyDamageResist(dmg, target, cities, allUnits, scrollAttachments);
+      let scaled = scaleLandCombatDamageToUnit(
+        Math.max(1, Math.floor(afterResist * commanderDefenseDamageFactorForUnit(target, commanders, cities, allUnits))),
+      );
+      const ro = combatRoll01(cycle, nowMs, hero2.id, target.id, 42);
+      scaled = applyHitOutcomeDamage(scaled, hitOutcomeFromRoll(ro));
+      target.hp -= scaled;
       if (target.hp <= 0) { killed.push(target.id); }
     }
   }
@@ -537,6 +1021,7 @@ function pickRetreatHex(
   allUnits: Unit[],
   tiles: Map<string, Tile>,
   ownerId: string,
+  naval: boolean,
 ): [number, number] | null {
   const enemies = allUnits.filter(u => u.ownerId !== ownerId && u.hp > 0);
   const neighbors = hexNeighbors(fromQ, fromR);
@@ -544,8 +1029,15 @@ function pickRetreatHex(
   let bestMinDist = -1;
   for (const [nq, nr] of neighbors) {
     const tile = tiles.get(tileKey(nq, nr));
-    if (!tile || tile.biome === 'water') continue;
-    const hasEnemy = allUnits.some(u => u.q === nq && u.r === nr && u.ownerId !== ownerId && u.hp > 0);
+    if (!tile) continue;
+    if (naval) {
+      if (tile.biome !== 'water') continue;
+    } else {
+      if (tile.biome === 'water') continue;
+    }
+    const hasEnemy = allUnits.some(
+      u => !u.aboardShipId && u.q === nq && u.r === nr && u.ownerId !== ownerId && u.hp > 0,
+    );
     if (hasEnemy) continue;
     const minEnemyDist = enemies.length === 0 ? 99 : Math.min(...enemies.map(u => hexDistance(nq, nr, u.q, u.r)));
     if (minEnemyDist > bestMinDist) {
@@ -554,6 +1046,53 @@ function pickRetreatHex(
     }
   }
   return best;
+}
+
+function stepTowardZOCNaval(
+  fromQ: number, fromR: number,
+  toQ: number, toR: number,
+  tiles: Map<string, Tile>,
+  allUnits: Unit[],
+  ownerId: string,
+): [number, number] {
+  const neighbors = hexNeighbors(fromQ, fromR);
+  let best: [number, number] = [fromQ, fromR];
+  let bestDist = Infinity;
+
+  for (const [nq, nr] of neighbors) {
+    const tile = tiles.get(tileKey(nq, nr));
+    if (!tile || tile.biome !== 'water') continue;
+    const hasEnemy = allUnits.some(
+      u => !u.aboardShipId && u.q === nq && u.r === nr && u.ownerId !== ownerId && u.hp > 0,
+    );
+    if (hasEnemy) continue;
+    const enemyMovingTowardUs = allUnits.some(
+      u => !u.aboardShipId && u.q === nq && u.r === nr && u.ownerId !== ownerId && u.hp > 0 &&
+        u.targetQ === fromQ && u.targetR === fromR
+    );
+    if (enemyMovingTowardUs) continue;
+    const d = hexDistance(nq, nr, toQ, toR);
+    if (d < bestDist) {
+      bestDist = d;
+      best = [nq, nr];
+    }
+  }
+  return best;
+}
+
+/** Land armies may enter a water hex only as the final step onto a friendly scout ship with cargo room. */
+function isScoutShipEmbarkWaterHex(
+  nq: number, nr: number, toQ: number, toR: number, allUnits: Unit[], ownerId: string,
+): boolean {
+  if (nq !== toQ || nr !== toR) return false;
+  const shipsHere = allUnits.filter(
+    u => !u.aboardShipId && u.q === nq && u.r === nr && u.ownerId === ownerId && u.hp > 0 && u.type === 'scout_ship',
+  );
+  if (shipsHere.length !== 1) return false;
+  const ship = shipsHere[0];
+  const cap = getShipMaxCargo('scout_ship');
+  const n = ship.cargoUnitIds?.length ?? 0;
+  return cap > n;
 }
 
 function stepTowardZOC(
@@ -577,12 +1116,16 @@ function stepTowardZOC(
 
   for (const [nq, nr] of neighbors) {
     const tile = tiles.get(tileKey(nq, nr));
-    if (!tile || tile.biome === 'water') continue;
-    const hasEnemy = allUnits.some(u => u.q === nq && u.r === nr && u.ownerId !== ownerId && u.hp > 0);
+    if (!tile) continue;
+    const embarkWater = tile.biome === 'water' && isScoutShipEmbarkWaterHex(nq, nr, toQ, toR, allUnits, ownerId);
+    if (tile.biome === 'water' && !embarkWater) continue;
+    const hasEnemy = allUnits.some(
+      u => !u.aboardShipId && u.q === nq && u.r === nr && u.ownerId !== ownerId && u.hp > 0,
+    );
     if (hasEnemy) continue;
     // Force engagement when paths cross: enemy at (nq,nr) moving toward us (design §26)
     const enemyMovingTowardUs = allUnits.some(
-      u => u.q === nq && u.r === nr && u.ownerId !== ownerId && u.hp > 0 &&
+      u => !u.aboardShipId && u.q === nq && u.r === nr && u.ownerId !== ownerId && u.hp > 0 &&
         u.targetQ === fromQ && u.targetR === fromR
     );
     if (enemyMovingTowardUs) continue;
@@ -598,6 +1141,39 @@ function stepTowardZOC(
     }
   }
   return best;
+}
+
+/** When land units share a water hex with a friendly scout ship, board if there is cargo room. */
+export function autoEmbarkLandUnitsOntoScoutShipsAtHex(units: Unit[], tiles: Map<string, Tile>): void {
+  for (const u of units) {
+    if (u.hp <= 0 || u.aboardShipId || isNavalUnitType(u.type)) continue;
+    const t = tiles.get(tileKey(u.q, u.r));
+    if (t?.biome !== 'water') continue;
+    const ships = units.filter(
+      x =>
+        x.type === 'scout_ship' &&
+        x.ownerId === u.ownerId &&
+        x.q === u.q &&
+        x.r === u.r &&
+        x.hp > 0 &&
+        !x.aboardShipId,
+    );
+    if (ships.length !== 1) continue;
+    const ship = ships[0];
+    const cap = getShipMaxCargo('scout_ship');
+    const cargo = [...(ship.cargoUnitIds ?? [])];
+    if (cargo.length >= cap) continue;
+    if (cargo.includes(u.id)) continue;
+    cargo.push(u.id);
+    ship.cargoUnitIds = cargo;
+    u.aboardShipId = ship.id;
+    u.targetQ = undefined;
+    u.targetR = undefined;
+    u.status = 'idle';
+    clearMarchFields(u);
+    if (u.garrisonCityId) delete u.garrisonCityId;
+    if (u.defendCityId) delete u.defendCityId;
+  }
 }
 
 /** Siege tick: trebuchet (range 3) and battering ram (range 1) damage enemy wall sections (design §17–19, 29). */

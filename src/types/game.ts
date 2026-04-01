@@ -20,6 +20,12 @@ export type Tile = {
   hasMineDeposit: boolean;
   hasAncientCity: boolean;
   hasGoldMineDeposit: boolean;
+  /** Rich-forest marker (map flavor / UI); logging huts may be built on any forest tile. */
+  hasWoodDeposit: boolean;
+  /** Land tile not connected to map border via land (used for village flavor). */
+  isIsland: boolean;
+  /** Set when this hex is part of a named special scroll region (see {@link SpecialRegion}). */
+  specialRegionId?: string;
 };
 
 export type MapConfig = {
@@ -43,7 +49,8 @@ export const DEFAULT_MAP_CONFIG: MapConfig = {
   moistureScale: 0.045,
   provinceDensity: 0.015,
   ruinDensity: 0.03,
-  villageDensity: 0.02,
+  /** 20% fewer villages vs original 0.02 */
+  villageDensity: 0.016,
 };
 
 // ─── Visual Constants (Map) ────────────────────────────────────────
@@ -51,42 +58,185 @@ export const DEFAULT_MAP_CONFIG: MapConfig = {
 export const HEX_RADIUS = 1.0;
 export const HEX_INNER_RATIO = 0.92;
 
+/** Hand-tinted “illuminated manuscript” palette: muted, readable, fantasy-medieval. */
 export const BIOME_COLORS: Record<Biome, string> = {
-  water: '#5aacff', plains: '#a8d84e', forest: '#4a9e32',
-  mountain: '#f0f4f8', desert: '#ecd47a',
+  water: '#3d7ea8',
+  plains: '#9cb85c',
+  forest: '#3d7a3a',
+  mountain: '#aeb6c4',
+  desert: '#d4b06a',
 };
 export const BIOME_COLORS_DARK: Record<Biome, string> = {
-  water: '#3888dd', plains: '#80b830', forest: '#2d7a1c',
-  mountain: '#d8dce4', desert: '#c4aa50',
+  water: '#2a5a78',
+  plains: '#6f8a3e',
+  forest: '#285c28',
+  mountain: '#6a7382',
+  desert: '#a68442',
 };
-export const MOUNTAIN_SNOW_COLOR = '#e8e8f0';
+/** Cool summit white — reads on ink-stone rock in the 3D snow cap pass. */
+export const MOUNTAIN_SNOW_COLOR = '#dce6f4';
 /** Mountains are flat (same as plains) so clicking is reliable; color makes them distinctly white. */
 export const BIOME_HEIGHTS: Record<Biome, { base: number; variation: number }> = {
   water: { base: 0.12, variation: 0.03 }, plains: { base: 0.30, variation: 0.10 },
   forest: { base: 0.45, variation: 0.12 }, mountain: { base: 0.30, variation: 0.08 },
   desert: { base: 0.25, variation: 0.08 },
 };
-export const ROAD_COLOR = '#6b5b4a';  // darker brown for visibility on terrain (distinct from ruins)
-export const RUINS_COLOR = '#6d5b4a';  // brown-tan, distinct from road
+export const ROAD_COLOR = '#5a4a38';
+export const RUINS_COLOR = '#6b5348';
 export const PROVINCE_CENTER_COLOR = '#f0c860';  // gold
 export const VILLAGE_COLOR = '#c49560';  // tan, distinct from ruins
 export const VILLAGE_ROOF_COLOR = '#8a5520';
 export const ANCIENT_CITY_COLOR = '#7c3aed';  // purple for easy distinction
+/** Hotspot between the two main rivals; flat overlay on map (distinct from ancient-city violet). */
+export const CONTESTED_ZONE_COLOR = '#a855f7';
+/**
+ * Payout every 2nd economy cycle (cycles 2, 4, 6, …) if one rival has more troops+heroes in the zone.
+ * Random gold OR iron per tick; ~16g implied per iron so expected value matches (~16g vs 1 iron/roll × 2 iron).
+ */
+export const CONTESTED_ZONE_GOLD_REWARD = 32;
+export const CONTESTED_ZONE_IRON_REWARD = 2;
 export const GOLD_MINE_DEPOSIT_COLOR = '#e8c030';  // gold/yellow
 export const QUARRY_DEPOSIT_COLOR = '#6b7280';  // gray for stone deposits
+export const WOOD_DEPOSIT_COLOR = '#166534';  // deep green
+
+// ─── Special map regions & scrolls ─────────────────────────────────
+
+/** Named wilderness zones (large hex-radius areas) where scrolls can be discovered. */
+export type SpecialRegionKind = 'mexca' | 'hills_lost' | 'forest_secrets' | 'isle_lost';
+
+export type ScrollKind = 'combat' | 'defense' | 'movement';
+
+export interface SpecialRegion {
+  id: string;
+  kind: SpecialRegionKind;
+  /** Display name */
+  name: string;
+  centerQ: number;
+  centerR: number;
+  /** Hex distance from center; tiles with distance ≤ radius belong to the region. */
+  radius: number;
+  /** Which scroll type is awarded when a player finishes searching this region. */
+  scrollReward: ScrollKind;
+}
+
+export interface ScrollItem {
+  id: string;
+  kind: ScrollKind;
+}
+
+/** A scroll assigned to a unit; the whole stack at that hex shares bonuses. */
+export interface ScrollAttachment {
+  id: string;
+  scrollId: string;
+  kind: ScrollKind;
+  carrierUnitId: string;
+  ownerId: string;
+}
+
+/** Hex distance from center; tiles with distance ≤ this form the region (~“5×5” footprint). */
+export const SPECIAL_REGION_HEX_RADIUS = 5;
+
+/** Economy cycles with military present in the region to reveal the scroll. */
+export const SCROLL_SEARCH_CYCLES_REQUIRED = 5;
+
+export const SCROLL_COMBAT_BONUS = 0.1;
+export const SCROLL_DEFENSE_BONUS = 0.1;
+export const SCROLL_MOVEMENT_BONUS = 0.1;
+
+export const SPECIAL_REGION_DISPLAY_NAME: Record<SpecialRegionKind, string> = {
+  mexca: 'The Abandoned Cities of Mexca',
+  hills_lost: 'Hills of the Lost Tribes',
+  forest_secrets: 'Forest of Secrets',
+  isle_lost: 'Isle of Lost',
+};
+
+/** Map overlay tint (distinct from contested purple / ancient city). */
+export const SPECIAL_REGION_OVERLAY_COLORS: Record<SpecialRegionKind, string> = {
+  mexca: '#c4a574',
+  hills_lost: '#8b7d6b',
+  forest_secrets: '#2d6a4f',
+  isle_lost: '#0891b2',
+};
+
+export const SCROLL_DISPLAY_NAME: Record<ScrollKind, string> = {
+  combat: 'Scroll of Victory',
+  defense: 'Scroll of Warding',
+  movement: 'Scroll of Celerity',
+};
+
+/** One UI slot per kind; an army uses up to three carriers (one scroll each) to cover all three. */
+export const SCROLL_ARMY_SLOT_ORDER: ScrollKind[] = ['combat', 'defense', 'movement'];
+
+export const SCROLL_SLOT_LABEL: Record<ScrollKind, string> = {
+  combat: 'Attack',
+  defense: 'Defense',
+  movement: 'Movement',
+};
 
 // ─── Game Phase & UI ───────────────────────────────────────────────
 
-export type GamePhase = 'setup' | 'place_city' | 'playing' | 'victory' | 'total_starvation';
-export type UIMode = 'normal' | 'move' | 'build' | 'build_mine' | 'build_quarry' | 'build_gold_mine' | 'build_road' | 'defend' | 'intercept';
+export type GamePhase =
+  | 'setup'
+  | 'place_city'
+  | 'commander_setup'
+  | 'playing'
+  | 'victory'
+  | 'total_starvation';
+export type UIMode = 'normal' | 'move' | 'build' | 'build_mine' | 'build_quarry' | 'build_gold_mine' | 'build_logging_hut' | 'build_road' | 'defend' | 'intercept';
 export type FoodPriority = 'civilian' | 'military';
-export type BuildingType = 'city_center' | 'farm' | 'factory' | 'barracks' | 'academy' | 'market' | 'quarry' | 'mine' | 'gold_mine';
-/** Construction site type: buildings (in city) or field-built siege/scout (builder on hex). */
-export type ConstructionSiteType = BuildingType | 'trebuchet' | 'scout_tower';
-export type UnitType = 'infantry' | 'cavalry' | 'ranged' | 'builder' | 'trebuchet' | 'battering_ram' | 'defender';
+
+/** Playable kingdoms — human selection at game start; affects spawn, bonuses, and some units. */
+export type KingdomId = 'mongols' | 'fishers' | 'crusaders' | 'traders';
+
+export const KINGDOM_IDS: KingdomId[] = ['mongols', 'fishers', 'crusaders', 'traders'];
+
+export const KINGDOM_DISPLAY_NAMES: Record<KingdomId, string> = {
+  mongols: 'The Mongols',
+  fishers: 'Fishers',
+  crusaders: 'The Crusaders',
+  traders: 'The Trading Tribe',
+};
+
+/** 1v1 AI uses a different tribe than the human so kingdom-locked units and labels stay consistent. */
+export function pickAiKingdom(humanKingdom: KingdomId): KingdomId {
+  const i = KINGDOM_IDS.indexOf(humanKingdom);
+  return KINGDOM_IDS[(i + 1) % KINGDOM_IDS.length]!;
+}
+
+/** Setup-screen art: distinctive unit/building sprites per tribe (public paths). */
+export const KINGDOM_SETUP_ICONS: Record<KingdomId, string> = {
+  mongols: '/sprites/units/horse_archer.png',
+  fishers: '/sprites/units/fisher_transport.png',
+  crusaders: '/sprites/units/crusader_knight.png',
+  traders: '/sprites/buildings/market.png',
+};
+
+/** Default when UI has not set a kingdom (e.g. mechanics test shortcut). */
+export const DEFAULT_KINGDOM_ID: KingdomId = 'traders';
+
+export type BuildingType =
+  | 'city_center' | 'farm' | 'banana_farm' | 'factory' | 'barracks' | 'academy' | 'market' | 'quarry' | 'mine' | 'gold_mine'
+  | 'sawmill' | 'port' | 'shipyard' | 'fishery' | 'logging_hut';
+/** Construction site type: buildings (in city) or field-built siege/scout/defense (builder on hex). */
+export type ConstructionSiteType = BuildingType | 'trebuchet' | 'scout_tower' | 'city_defense';
+export type UnitType =
+  | 'infantry' | 'cavalry' | 'ranged' | 'horse_archer' | 'crusader_knight' | 'builder' | 'trebuchet' | 'battering_ram' | 'defender'
+  | 'scout_ship' | 'warship' | 'transport_ship' | 'fisher_transport' | 'capital_ship';
+
+/** Naval units: move on water only; combat only vs naval on water. */
+export const NAVAL_UNIT_TYPES: ReadonlySet<UnitType> = new Set([
+  'scout_ship', 'warship', 'transport_ship', 'fisher_transport', 'capital_ship',
+]);
+
+export function isNavalUnitType(type: UnitType): boolean {
+  return NAVAL_UNIT_TYPES.has(type);
+}
 export type UnitStatus = 'idle' | 'moving' | 'fighting' | 'starving';
 export type ArmyStance = 'aggressive' | 'defensive' | 'passive';
 export type HeroType = 'general' | 'logistician';
+
+/** Human tactical attack plan vs an enemy city. */
+export type AttackCityStyle = 'siege' | 'direct' | 'assault';
 
 // ─── Player ────────────────────────────────────────────────────────
 
@@ -98,6 +248,8 @@ export interface Player {
   taxRate: number;
   foodPriority: FoodPriority;
   isHuman: boolean;
+  /** Chosen kingdom (human); 1v1 AI rival uses {@link pickAiKingdom}. */
+  kingdomId?: KingdomId;
 }
 
 // ─── City ──────────────────────────────────────────────────────────
@@ -108,6 +260,8 @@ export interface CityBuilding {
   r: number;
   level?: number;  // default 1; used for barracks, factory, quarry, mine, farm
   assignedWorkers?: number;  // all job buildings; employment tracked separately from population
+  /** Port: ship unit ids currently assigned to this port (docked / home). */
+  dockedShipIds?: string[];
 }
 
 export interface City {
@@ -118,11 +272,13 @@ export interface City {
   ownerId: string;
   population: number;
   morale: number;
-  storage: { food: number; goods: number; guns: number; gunsL2: number; iron: number; stone: number };
-  storageCap: { food: number; goods: number; guns: number; gunsL2: number; iron: number; stone: number };
+  storage: { food: number; goods: number; guns: number; gunsL2: number; iron: number; stone: number; wood: number; refinedWood: number };
+  storageCap: { food: number; goods: number; guns: number; gunsL2: number; iron: number; stone: number; wood: number; refinedWood: number };
   buildings: CityBuilding[];
   /** Cycles remaining as frontier city (+25% migration); only for incorporated villages */
   frontierCity?: number;
+  /** Hex steps from center included in this city's territory; default {@link TERRITORY_RADIUS}. */
+  territoryRadius?: number;
   /** Last cycle: natural growth (births − deaths) */
   lastNaturalGrowth?: number;
   /** Last cycle: migration (positive = immigrants, negative = emigrants) */
@@ -149,6 +305,10 @@ export interface Unit {
   targetQ?: number;
   targetR?: number;
   nextMoveAt: number;
+  /** Hex distance to destination when the current march order was issued (UI progress). Cleared when not moving. */
+  marchInitialHexDistance?: number;
+  /** Duration (ms) of the current inter-hex cooldown after last step; used for progress bar smoothing. */
+  moveLegMs?: number;
   /** City that recruited this unit; when unit dies, that city loses 1 population (design: pop not deducted until death). */
   originCityId?: string;
   /** When set, this unit is defending this city (stack → Defend → city). */
@@ -157,6 +317,30 @@ export interface Unit {
   retreatAt?: number;
   /** When true, unit is assaulting a city (massive attack debuff for attacker). */
   assaulting?: boolean;
+  /** Camped outside an enemy city (siege); use siege UI to begin a center assault. */
+  siegingCityId?: string;
+  /** Later wave: waits until wave-1 units reach the rally hex (or are gone). */
+  attackWaveHold?: {
+    waitForUnitIds: string[];
+    cityId: string;
+    rallyQ: number;
+    rallyR: number;
+    centerQ: number;
+    centerR: number;
+    attackStyle: AttackCityStyle;
+  };
+  /** Land units carried by a transport/scout ship; excluded from combat/map stack until unloaded. */
+  aboardShipId?: string;
+  /** Naval: ids of carried land units (capacity limits apply). */
+  cargoUnitIds?: string[];
+  /** When set, land military unit is in this city's garrison (shown as badge on city hex until deployed). */
+  garrisonCityId?: string;
+  /** When set, land military will auto-incorporate this neutral village on arrival (tactical order). */
+  incorporateVillageAt?: { q: number; r: number };
+  /** Unit was ordered to interdict this supply cluster (MVP: move to cluster path hex). */
+  interdictClusterKey?: string;
+  /** Unit is defending trade routes for this cluster (tag for engagement). */
+  tradeDefenseClusterKey?: string;
 }
 
 // ─── Hero ──────────────────────────────────────────────────────────
@@ -176,6 +360,95 @@ export interface Hero {
   maxHp?: number;
 }
 
+// ─── Commander (assign to city defense or a field army anchor unit) ─
+
+export type CommanderTraitId =
+  | 'duelist'
+  | 'stalwart'
+  | 'tactician'
+  | 'siege_born'
+  | 'skirmisher'
+  | 'warden';
+
+export const COMMANDER_TRAIT_INFO: Record<
+  CommanderTraitId,
+  { label: string; desc: string; attackBonus: number; defenseBonus: number }
+> = {
+  duelist: {
+    label: 'Duelist',
+    desc: '+8% attack (melee focus)',
+    attackBonus: 0.08,
+    defenseBonus: 0,
+  },
+  stalwart: {
+    label: 'Stalwart',
+    desc: '+10% defense (incoming damage)',
+    attackBonus: 0,
+    defenseBonus: 0.1,
+  },
+  tactician: {
+    label: 'Tactician',
+    desc: '+4% attack and +4% defense',
+    attackBonus: 0.04,
+    defenseBonus: 0.04,
+  },
+  siege_born: {
+    label: 'Siege-born',
+    desc: '+6% attack when holding ground',
+    attackBonus: 0.06,
+    defenseBonus: 0.02,
+  },
+  skirmisher: {
+    label: 'Skirmisher',
+    desc: '+7% attack for mobile stacks',
+    attackBonus: 0.07,
+    defenseBonus: 0,
+  },
+  warden: {
+    label: 'Warden',
+    desc: '+12% defense on city tile',
+    attackBonus: 0,
+    defenseBonus: 0.12,
+  },
+};
+
+export type CommanderAssignment =
+  | { kind: 'city_defense'; cityId: string }
+  | { kind: 'field'; anchorUnitId: string };
+
+export interface Commander {
+  id: string;
+  name: string;
+  ownerId: string;
+  q: number;
+  r: number;
+  /** Seeded portrait + combat variance; stable for the match. */
+  portraitSeed: number;
+  /** Client-generated data URL (knight bust); optional if generation failed. */
+  portraitDataUrl?: string;
+  traitIds: CommanderTraitId[];
+  backstory: string;
+  assignment: CommanderAssignment | null;
+}
+
+/** Draft pool at match start: pick {@link COMMANDER_STARTING_PICK} of these. */
+export interface CommanderDraftOption {
+  draftId: string;
+  name: string;
+  backstory: string;
+  traitIds: CommanderTraitId[];
+  portraitSeed: number;
+  portraitDataUrl?: string;
+}
+
+/** Candidates shown before you choose five; independent of barracks. */
+export const COMMANDER_DRAFT_POOL_SIZE = 8;
+/** How many commanders you field after the draft. */
+export const COMMANDER_STARTING_PICK = 5;
+
+/** Additional commanders after the starting five (not limited by barracks). */
+export const COMMANDER_RECRUIT_GOLD = 50;
+
 // ─── Road construction (builder-built; free, takes builder time) ───
 
 export interface RoadConstructionSite {
@@ -189,6 +462,60 @@ export interface RoadConstructionSite {
 
 export const ROAD_BP_COST = 25; // ~75s with 1 builder so construction progress is visible
 
+// ─── City defense towers (builder-built on territory) ──────────────
+
+/** Built by builders on city territory; auto-fires at enemies in combat ticks. */
+export type DefenseTowerType = 'mortar' | 'archer_tower' | 'ballista';
+
+export type DefenseTowerLevel = 1 | 2 | 3 | 4 | 5;
+
+export interface DefenseInstallation {
+  id: string;
+  q: number;
+  r: number;
+  ownerId: string;
+  /** Territory city this defense counts against (max per city). */
+  cityId: string;
+  type: DefenseTowerType;
+  level: DefenseTowerLevel;
+}
+
+export const DEFENSE_TOWER_MAX_PER_CITY: Record<DefenseTowerType, number> = {
+  mortar: 1,
+  archer_tower: 2,
+  ballista: 2,
+};
+
+/** Per-level costs: L1 gold only → L5 all resources (most expensive). */
+export interface DefenseTowerLevelCost {
+  gold: number;
+  wood?: number;
+  stone?: number;
+  iron?: number;
+}
+
+export const DEFENSE_TOWER_LEVEL_COSTS: Record<DefenseTowerLevel, DefenseTowerLevelCost> = {
+  1: { gold: 12 },
+  2: { gold: 18, wood: 6 },
+  3: { gold: 28, stone: 10 },
+  4: { gold: 40, iron: 8 },
+  5: { gold: 65, wood: 15, stone: 12, iron: 10 },
+};
+
+export function getDefenseTowerBpCost(type: DefenseTowerType, level: DefenseTowerLevel): number {
+  const base = type === 'mortar' ? 48 : type === 'archer_tower' ? 42 : 44;
+  return base + level * 10;
+}
+
+export const DEFENSE_TOWER_ARCHER_RANGE = 3;
+export const DEFENSE_TOWER_BALLISTA_RANGE = 3;
+
+export const DEFENSE_TOWER_DISPLAY_NAME: Record<DefenseTowerType, string> = {
+  mortar: 'Mortar',
+  archer_tower: 'Archer tower',
+  ballista: 'Ballista',
+};
+
 // ─── Construction ─────────────────────────────────────────────────
 
 export interface ConstructionSite {
@@ -201,6 +528,11 @@ export interface ConstructionSite {
   ownerId: string;
   bpRequired: number;
   bpAccumulated: number;
+  /** When type === 'city_defense': which tower and target level (1–5). */
+  defenseTowerType?: DefenseTowerType;
+  defenseTowerTargetLevel?: DefenseTowerLevel;
+  /** When type === 'city_defense': also count builders here (site may differ when placing from a pending move). */
+  cityDefenseBuilderBpHex?: { q: number; r: number };
 }
 
 // ─── Wall Sections (block enemy movement; built with stone) ───────
@@ -241,13 +573,16 @@ export const SCOUT_MISSION_COST = 5;
 export const SCOUT_MISSION_DURATION_SEC = 30;
 
 export const BUILDING_BP_COST: Record<BuildingType, number> = {
-  city_center: 0, farm: 50, factory: 50, barracks: 100, academy: 75, market: 30, quarry: 50, mine: 50, gold_mine: 60,
+  city_center: 0, farm: 50, banana_farm: 50, factory: 50, barracks: 100, academy: 75, market: 30, quarry: 50, mine: 50, gold_mine: 60,
+  sawmill: 45, port: 80, shipyard: 90, fishery: 50, logging_hut: 50,
 };
 
 /** BP required for builder to build a trebuchet in the field (on the hex). */
 export const TREBUCHET_FIELD_BP_COST = 60;
 /** Gold cost to start field trebuchet construction (same as barracks recruit). */
 export const TREBUCHET_FIELD_GOLD_COST = 8;
+/** Refined wood from city storage (sawmill) for trebuchet — barracks recruit and field build. */
+export const TREBUCHET_REFINED_WOOD_COST = 4;
 
 export const CITY_BUILDING_POWER = 100;
 export const BUILDER_POWER = 10;
@@ -272,6 +607,13 @@ export interface TerritoryInfo {
 // ─── Game Constants ────────────────────────────────────────────────
 
 export const TERRITORY_RADIUS = 3;
+/** Incorporated villages use the same territory radius as starting capitals. */
+export const VILLAGE_CITY_TERRITORY_RADIUS = TERRITORY_RADIUS;
+/** If a move destination is within this many hexes of your territory, you may issue orders up to MOVE_ORDER_MAX_IN_TERRITORY_BAND hexes; otherwise cap is MOVE_ORDER_MAX_OUTSIDE_BAND. */
+export const MOVE_ORDER_TERRITORY_BAND_HEXES = 20;
+export const MOVE_ORDER_MAX_IN_TERRITORY_BAND = 20;
+export const MOVE_ORDER_MAX_OUTSIDE_BAND = 10;
+
 /** Rough max hexes a unit can move in one sim cycle (30s) at speed 1. Supply radius should be >= this so movement and supply are aligned. */
 export const MOVEMENT_HEXES_PER_CYCLE_ESTIMATE = 24;
 /** Units/builders get supply when within this hex distance of any friendly city. No roads required.
@@ -282,8 +624,8 @@ export const STARTING_GOLD = 150;
 export const STARTING_CITY_TEMPLATE: Omit<City, 'id' | 'name' | 'q' | 'r' | 'ownerId'> = {
   population: 50,
   morale: 75,
-  storage: { food: 50, goods: 20, guns: 10, gunsL2: 0, iron: 0, stone: 0 },
-  storageCap: { food: 100, goods: 100, guns: 100, gunsL2: 100, iron: 50, stone: 50 },
+  storage: { food: 50, goods: 20, guns: 10, gunsL2: 0, iron: 0, stone: 0, wood: 0, refinedWood: 0 },
+  storageCap: { food: 100, goods: 100, guns: 100, gunsL2: 100, iron: 50, stone: 50, wood: 50, refinedWood: 50 },
   buildings: [],
 };
 
@@ -292,14 +634,16 @@ export const VILLAGE_INCORPORATE_COST = 25;
 export const VILLAGE_CITY_TEMPLATE: Omit<City, 'id' | 'name' | 'q' | 'r' | 'ownerId'> = {
   population: 10,
   morale: 50,
-  storage: { food: 15, goods: 5, guns: 0, gunsL2: 0, iron: 0, stone: 0 },
-  storageCap: { food: 50, goods: 50, guns: 50, gunsL2: 50, iron: 50, stone: 50 },
+  storage: { food: 15, goods: 5, guns: 0, gunsL2: 0, iron: 0, stone: 0, wood: 0, refinedWood: 0 },
+  storageCap: { food: 50, goods: 50, guns: 50, gunsL2: 50, iron: 50, stone: 50, wood: 50, refinedWood: 50 },
   buildings: [],
+  territoryRadius: VILLAGE_CITY_TERRITORY_RADIUS,
 };
 
 export const BUILDING_COLORS: Record<BuildingType, string> = {
   city_center: '#8b5cf6', // purple (administrative)
   farm:        '#4ade80', // green
+  banana_farm: '#86efac', // lighter green (Fishers)
   factory:     '#f59e0b', // amber/orange
   barracks:    '#ef4444', // red
   academy:     '#0ea5e9', // sky blue (civilian)
@@ -307,10 +651,16 @@ export const BUILDING_COLORS: Record<BuildingType, string> = {
   quarry:      '#78716c', // stone
   mine:        '#57534e', // iron
   gold_mine:   '#e8c030', // gold
+  sawmill:     '#ca8a04', // amber wood
+  port:        '#0369a1', // harbor blue
+  shipyard:    '#1e3a5f', // dock gray-blue
+  fishery:     '#0d9488', // teal
+  logging_hut: '#365314', // forest green
 };
 
 export const BUILDING_COSTS: Record<BuildingType, number> = {
-  city_center: 0, farm: 15, factory: 25, barracks: 50, academy: 35, market: 2, quarry: 10, mine: 10, gold_mine: 20,
+  city_center: 0, farm: 15, banana_farm: 15, factory: 25, barracks: 50, academy: 35, market: 2, quarry: 10, mine: 10, gold_mine: 20,
+  sawmill: 20, port: 40, shipyard: 45, fishery: 18, logging_hut: 12,
 };
 
 /** Iron cost for buildings that require it (e.g. gold_mine). Others are 0. */
@@ -320,17 +670,25 @@ export const BUILDING_IRON_COSTS: Partial<Record<BuildingType, number>> = {
 
 /** Jobs per building (flat 2 for production, 2 for barracks/academy, 1 for city_center). Use getBuildingJobs(b) for level-aware count. */
 export const BUILDING_JOBS: Record<BuildingType, number> = {
-  city_center: 1, farm: 2, factory: 2, barracks: 2, academy: 2, market: 2, quarry: 2, mine: 2, gold_mine: 2,
+  city_center: 1, farm: 2, banana_farm: 2, factory: 2, barracks: 2, academy: 2, market: 2, quarry: 2, mine: 2, gold_mine: 2,
+  sawmill: 2, port: 1, shipyard: 2, fishery: 2, logging_hut: 2,
 };
+
+/** Farms and Fishers banana farms share production rules. */
+export function isFarmBuildingType(t: BuildingType): boolean {
+  return t === 'farm' || t === 'banana_farm';
+}
 
 /** Level-aware job count (e.g. L2 farm has 3 jobs). Use when the building instance is available. */
 export function getBuildingJobs(b: { type: BuildingType; level?: number }): number {
   const base = BUILDING_JOBS[b.type] ?? 0;
-  if (b.type === 'farm' && (b.level ?? 1) >= 2) return 3;
+  if (isFarmBuildingType(b.type) && (b.level ?? 1) >= 2) return 3;
   return base;
 }
 
 export const BARACKS_UPGRADE_COST = 25;
+/** Barracks L2 → L3 (Crusader knight unlock). */
+export const BARACKS_L3_UPGRADE_COST = 40;
 export const FACTORY_UPGRADE_COST = 15;
 export const FARM_UPGRADE_COST = 20;
 /** L2 farm total food per cycle (higher productivity per job than L1). */
@@ -339,11 +697,18 @@ export const WALL_SECTION_STONE_COST = 5;
 export const WORKERS_PER_LEVEL = 5;
 export const MIN_STAFFING_RATIO = 0.4;
 
-export type BuildingProduction = { food: number; goods: number; guns: number; stone?: number; iron?: number; gold?: number };
+export type BuildingProduction = {
+  food: number; goods: number; guns: number;
+  stone?: number; iron?: number; gold?: number; wood?: number; refinedWood?: number;
+};
+
+/** Sawmill: refined output per staffed level per cycle; wood consumed separately in economy tick. */
+export const SAWMILL_WOOD_PER_REFINED = 2;
 
 export const BUILDING_PRODUCTION: Record<BuildingType, BuildingProduction> = {
   city_center: { food: 0, goods: 0, guns: 0 },
   farm:        { food: 25, goods: 0, guns: 0 },
+  banana_farm: { food: 25, goods: 0, guns: 0 },
   factory:     { food: 0, goods: 0, guns: 2 },
   barracks:    { food: 0, goods: 0, guns: 0 },
   academy:     { food: 0, goods: 0, guns: 0 },
@@ -351,6 +716,11 @@ export const BUILDING_PRODUCTION: Record<BuildingType, BuildingProduction> = {
   quarry:      { food: 0, goods: 0, guns: 0, stone: 5 },
   mine:        { food: 0, goods: 0, guns: 0, iron: 2 },
   gold_mine:   { food: 0, goods: 0, guns: 0, gold: 10 },
+  sawmill:     { food: 0, goods: 0, guns: 0, refinedWood: 2 },
+  port:        { food: 0, goods: 0, guns: 0 },
+  shipyard:    { food: 0, goods: 0, guns: 0 },
+  fishery:     { food: 22, goods: 0, guns: 0 },
+  logging_hut: { food: 0, goods: 0, guns: 0, wood: 3 },
 };
 
 // L2 factory: 1 iron -> 10 gunsL2 per cycle
@@ -360,7 +730,15 @@ export const FACTORY_L2_ARMS_PER_CYCLE = 10;
 export const MARKET_GOLD_PER_CYCLE = 2;
 
 /** Storage cap provided by city center (1 per city, required) */
-export const CITY_CENTER_STORAGE = { food: 100, goods: 100, guns: 100, gunsL2: 100, iron: 50, stone: 50 };
+export const CITY_CENTER_STORAGE = { food: 100, goods: 100, guns: 100, gunsL2: 100, iron: 50, stone: 50, wood: 50, refinedWood: 50 };
+
+/** Extra food multiplier for farms on plains biome (design: fertile soil). */
+export const PLAINS_FARM_FOOD_MULT = 1.2;
+
+/** Mongol land armies: effective speed multiplier in movement tick. */
+export const MONGOL_LAND_SPEED_MULT = 1.1;
+/** Trading tribe: BP/sec multiplier for city building + road construction. */
+export const TRADER_CONSTRUCTION_SPEED_MULT = 1.2;
 
 // ─── Migration Constants ─────────────────────────────────────────
 export const FRONTIER_CYCLES = 3;
@@ -373,47 +751,95 @@ export const UNEMPLOYMENT_MORALE_PENALTY_CAP = 5;
 /** Scale for productivity term in migration pull (foodProduced / this = multiplier component). */
 export const PRODUCTIVITY_NORMALIZE = 50;
 
+/** Ship purchase at shipyard (PDF costs). */
+export const SHIP_RECRUIT_COSTS: Record<
+  'scout_ship' | 'warship' | 'transport_ship' | 'fisher_transport' | 'capital_ship',
+  { gold: number; wood?: number; refinedWood?: number }
+> = {
+  scout_ship:       { gold: 1, wood: 1 },
+  warship:          { gold: 2, wood: 2 },
+  transport_ship:   { gold: 5, refinedWood: 5 },
+  fisher_transport: { gold: 1 },
+  capital_ship:     { gold: 5, refinedWood: 5 },
+};
+
+export function getShipMaxCargo(type: UnitType): number {
+  if (type === 'scout_ship') return 5;
+  if (type === 'transport_ship') return 20;
+  if (type === 'fisher_transport') return 1;
+  return 0;
+}
+
 /** L1 recruit costs (gold only for combat; defender not recruitable at L1). */
-export const UNIT_COSTS: Record<UnitType, { gold: number; iron?: number }> = {
-  infantry:       { gold: 1 },
-  cavalry:        { gold: 3 },
-  ranged:         { gold: 2 },
-  builder:        { gold: 2 },
-  trebuchet:      { gold: 8 },
-  battering_ram:  { gold: 6 },
-  defender:       { gold: 0, iron: 2 },  // L3 only; cost comes from UNIT_L3_COSTS
+export const UNIT_COSTS: Record<UnitType, { gold: number; iron?: number; refinedWood?: number }> = {
+  infantry:        { gold: 1 },
+  cavalry:         { gold: 3 },
+  ranged:          { gold: 2 },
+  horse_archer:    { gold: 3 },
+  crusader_knight: { gold: 0 },
+  builder:         { gold: 2 },
+  trebuchet:       { gold: 8, refinedWood: TREBUCHET_REFINED_WOOD_COST },
+  battering_ram:   { gold: 6 },
+  defender:        { gold: 0, iron: 2 },  // L3 only; cost comes from UNIT_L3_COSTS
+  scout_ship:      { gold: 0 },
+  warship:         { gold: 0 },
+  transport_ship:  { gold: 0 },
+  fisher_transport: { gold: 0 },
+  capital_ship:    { gold: 0 },
 };
 /** L2 recruit costs (gold + stone); siege/builder/defender have no L2. */
-export const UNIT_L2_COSTS: Record<UnitType, { gold: number; stone?: number }> = {
-  infantry:       { gold: 1, stone: 2 },
-  cavalry:        { gold: 3, stone: 3 },
-  ranged:         { gold: 2, stone: 2 },
-  builder:        { gold: 2 },
-  trebuchet:      { gold: 8 },
-  battering_ram:  { gold: 6 },
-  defender:       { gold: 0 },  // defender has no L2; L3 only
+export const UNIT_L2_COSTS: Record<UnitType, { gold: number; stone?: number; refinedWood?: number }> = {
+  infantry:        { gold: 1, stone: 2 },
+  cavalry:         { gold: 3, stone: 3 },
+  ranged:          { gold: 2, stone: 2 },
+  horse_archer:    { gold: 3, stone: 2 },
+  crusader_knight: { gold: 0 },
+  builder:         { gold: 2 },
+  trebuchet:       { gold: 8, refinedWood: TREBUCHET_REFINED_WOOD_COST },
+  battering_ram:   { gold: 6 },
+  defender:        { gold: 0 },  // defender has no L2; L3 only
+  scout_ship:      { gold: 0 },
+  warship:         { gold: 0 },
+  transport_ship:  { gold: 0 },
+  fisher_transport: { gold: 0 },
+  capital_ship:    { gold: 0 },
 };
 /** L3 recruit costs (gold + iron); defender is iron only. */
-export const UNIT_L3_COSTS: Record<UnitType, { gold: number; iron?: number }> = {
-  infantry:       { gold: 2, iron: 1 },
-  cavalry:        { gold: 5, iron: 2 },
-  ranged:         { gold: 3, iron: 1 },
-  builder:        { gold: 2 },
-  trebuchet:      { gold: 8 },
-  battering_ram:  { gold: 6 },
-  defender:       { gold: 0, iron: 2 },  // L3 only, iron only
+export const UNIT_L3_COSTS: Record<UnitType, { gold: number; iron?: number; refinedWood?: number }> = {
+  infantry:        { gold: 2, iron: 1 },
+  cavalry:         { gold: 5, iron: 2 },
+  ranged:          { gold: 3, iron: 1 },
+  horse_archer:    { gold: 5, iron: 2 },
+  /** Best infantry; Crusaders only; requires L3 barracks; higher iron than standard L3 infantry. */
+  crusader_knight: { gold: 4, iron: 3 },
+  builder:         { gold: 2 },
+  trebuchet:       { gold: 8, refinedWood: TREBUCHET_REFINED_WOOD_COST },
+  battering_ram:   { gold: 6 },
+  defender:        { gold: 0, iron: 2 },  // L3 only, iron only
+  scout_ship:      { gold: 0 },
+  warship:         { gold: 0 },
+  transport_ship:  { gold: 0 },
+  fisher_transport: { gold: 0 },
+  capital_ship:    { gold: 0 },
 };
 /** Defender (L3 only) iron cost from city storage. */
 export const DEFENDER_IRON_COST = 2;
 
 export const UNIT_DISPLAY_NAMES: Record<UnitType, string> = {
-  infantry:       'Infantry',
-  cavalry:        'Cavalry',
-  ranged:         'Archer',
-  builder:        'Builder',
-  trebuchet:      'Trebuchet',
-  battering_ram:  'Battering Ram',
-  defender:       'Defender',
+  infantry:         'Infantry',
+  cavalry:          'Cavalry',
+  ranged:           'Archer',
+  horse_archer:     'Horse Archer',
+  crusader_knight:  'Crusader Knight',
+  builder:          'Builder',
+  trebuchet:        'Trebuchet',
+  battering_ram:    'Battering Ram',
+  defender:         'Defender',
+  scout_ship:       'Scout Ship',
+  warship:          'Warship',
+  transport_ship:   'Transport',
+  fisher_transport: 'Fisher Boat',
+  capital_ship:     'Capital Ship',
 };
 
 export const UNIT_BASE_STATS: Record<UnitType, {
@@ -429,10 +855,17 @@ export const UNIT_BASE_STATS: Record<UnitType, {
   infantry:       { maxHp: 100, attack: 15, range: 1, speed: 1.0, foodUpkeep: 1, gunUpkeep: 0 },
   cavalry:        { maxHp: 75,  attack: 20, range: 1, speed: 1.5, foodUpkeep: 2, gunUpkeep: 0 },
   ranged:         { maxHp: 50,  attack: 12, range: 2, speed: 1.0, foodUpkeep: 1, gunUpkeep: 0 },
+  horse_archer:   { maxHp: 65,  attack: 14, range: 2, speed: 1.35, foodUpkeep: 2, gunUpkeep: 0 },
+  crusader_knight:{ maxHp: 100, attack: 12, range: 1, speed: 0.9, foodUpkeep: 1, gunUpkeep: 0 },
   builder:        { maxHp: 40,  attack: 0,  range: 0, speed: 1.0, foodUpkeep: 1, gunUpkeep: 0 },
   trebuchet:      { maxHp: 60,  attack: 5,  range: 3, speed: 0.6, foodUpkeep: 2, gunUpkeep: 0, siegeAttack: 25 },
   battering_ram:  { maxHp: 120, attack: 10, range: 1, speed: 0.5, foodUpkeep: 2, gunUpkeep: 0, siegeAttack: 40 },
   defender:       { maxHp: 130, attack: 8,  range: 1, speed: 0.9, foodUpkeep: 1, gunUpkeep: 0, damageResist: 0.25, damageResistOnCityHex: 0.4 },
+  scout_ship:     { maxHp: 70,  attack: 6,  range: 1, speed: 1.2, foodUpkeep: 1, gunUpkeep: 0 },
+  warship:        { maxHp: 110, attack: 18, range: 2, speed: 1.0, foodUpkeep: 2, gunUpkeep: 0 },
+  transport_ship: { maxHp: 140, attack: 0,  range: 0, speed: 0.75, foodUpkeep: 2, gunUpkeep: 0 },
+  fisher_transport: { maxHp: 55, attack: 0, range: 0, speed: 0.9, foodUpkeep: 1, gunUpkeep: 0 },
+  capital_ship:   { maxHp: 160, attack: 28, range: 2, speed: 0.85, foodUpkeep: 3, gunUpkeep: 0 },
 };
 
 // Level 2 unit stats (require L2 arms); siege and defender have no L2 variant
@@ -446,11 +879,21 @@ export const UNIT_L2_STATS: Record<UnitType, {
   infantry:       { maxHp: 120, attack: 18, range: 1, speed: 1.0, foodUpkeep: 1, gunUpkeep: 0, gunL2Upkeep: 1 },
   cavalry:        { maxHp: 90,  attack: 24, range: 1, speed: 1.5, foodUpkeep: 2, gunUpkeep: 0, gunL2Upkeep: 1 },
   ranged:         { maxHp: 60,  attack: 14, range: 2, speed: 1.0, foodUpkeep: 1, gunUpkeep: 0, gunL2Upkeep: 2 },
+  horse_archer:   { maxHp: 78,  attack: 17, range: 2, speed: 1.35, foodUpkeep: 2, gunUpkeep: 0, gunL2Upkeep: 2 },
+  crusader_knight:{ maxHp: 120, attack: 15, range: 1, speed: 0.9, foodUpkeep: 1, gunUpkeep: 0, gunL2Upkeep: 2 },
   builder:        { maxHp: 40,  attack: 0,  range: 0, speed: 1.0, foodUpkeep: 1, gunUpkeep: 0, gunL2Upkeep: 0 },
   trebuchet:      { maxHp: 60,  attack: 5,  range: 3, speed: 0.6, foodUpkeep: 2, gunUpkeep: 0, gunL2Upkeep: 0, siegeAttack: 25 },
   battering_ram:  { maxHp: 120, attack: 10, range: 1, speed: 0.5, foodUpkeep: 2, gunUpkeep: 0, gunL2Upkeep: 0, siegeAttack: 40 },
   defender:       { maxHp: 130, attack: 8,  range: 1, speed: 0.9, foodUpkeep: 1, gunUpkeep: 0, gunL2Upkeep: 0, damageResist: 0.25, damageResistOnCityHex: 0.4 },
+  scout_ship:     { maxHp: 70,  attack: 6,  range: 1, speed: 1.2, foodUpkeep: 1, gunUpkeep: 0, gunL2Upkeep: 0 },
+  warship:        { maxHp: 110, attack: 18, range: 2, speed: 1.0, foodUpkeep: 2, gunUpkeep: 0, gunL2Upkeep: 0 },
+  transport_ship: { maxHp: 140, attack: 0,  range: 0, speed: 0.75, foodUpkeep: 2, gunUpkeep: 0, gunL2Upkeep: 0 },
+  fisher_transport: { maxHp: 55, attack: 0, range: 0, speed: 0.9, foodUpkeep: 1, gunUpkeep: 0, gunL2Upkeep: 0 },
+  capital_ship:   { maxHp: 160, attack: 28, range: 2, speed: 0.85, foodUpkeep: 3, gunUpkeep: 0, gunL2Upkeep: 0 },
 };
+
+/** Same ranged reach as field {@link UNIT_BASE_STATS} trebuchet. */
+export const DEFENSE_TOWER_MORTAR_RANGE = UNIT_BASE_STATS.trebuchet.range;
 
 // Level 3 unit stats (require L2 barracks, iron cost); defender is L3 only
 export const UNIT_L3_STATS: Record<UnitType, {
@@ -463,14 +906,24 @@ export const UNIT_L3_STATS: Record<UnitType, {
   infantry:       { maxHp: 140, attack: 21, range: 1, speed: 1.0, foodUpkeep: 1, gunUpkeep: 0, gunL2Upkeep: 2 },
   cavalry:        { maxHp: 105, attack: 28, range: 1, speed: 1.5, foodUpkeep: 2, gunUpkeep: 0, gunL2Upkeep: 2 },
   ranged:         { maxHp: 70,  attack: 17, range: 2, speed: 1.0, foodUpkeep: 1, gunUpkeep: 0, gunL2Upkeep: 2 },
+  horse_archer:   { maxHp: 92,  attack: 20, range: 2, speed: 1.35, foodUpkeep: 2, gunUpkeep: 0, gunL2Upkeep: 2 },
+  crusader_knight:{ maxHp: 175, attack: 32, range: 1, speed: 0.95, foodUpkeep: 2, gunUpkeep: 0, gunL2Upkeep: 3, damageResist: 0.15 },
   builder:        { maxHp: 40,  attack: 0,  range: 0, speed: 1.0, foodUpkeep: 1, gunUpkeep: 0, gunL2Upkeep: 0 },
   trebuchet:      { maxHp: 60,  attack: 5,  range: 3, speed: 0.6, foodUpkeep: 2, gunUpkeep: 0, gunL2Upkeep: 0, siegeAttack: 25 },
   battering_ram:  { maxHp: 120, attack: 10, range: 1, speed: 0.5, foodUpkeep: 2, gunUpkeep: 0, gunL2Upkeep: 0, siegeAttack: 40 },
   defender:       { maxHp: 130, attack: 8,  range: 1, speed: 0.9, foodUpkeep: 1, gunUpkeep: 0, gunL2Upkeep: 0, damageResist: 0.25, damageResistOnCityHex: 0.4 },
+  scout_ship:     { maxHp: 70,  attack: 6,  range: 1, speed: 1.2, foodUpkeep: 1, gunUpkeep: 0, gunL2Upkeep: 0 },
+  warship:        { maxHp: 110, attack: 18, range: 2, speed: 1.0, foodUpkeep: 2, gunUpkeep: 0, gunL2Upkeep: 0 },
+  transport_ship: { maxHp: 140, attack: 0,  range: 0, speed: 0.75, foodUpkeep: 2, gunUpkeep: 0, gunL2Upkeep: 0 },
+  fisher_transport: { maxHp: 55, attack: 0, range: 0, speed: 0.9, foodUpkeep: 1, gunUpkeep: 0, gunL2Upkeep: 0 },
+  capital_ship:   { maxHp: 160, attack: 28, range: 2, speed: 0.85, foodUpkeep: 3, gunUpkeep: 0, gunL2Upkeep: 0 },
 };
 
-/** Resolve unit stats by arms level (L1/L2/L3). Defender uses L3. */
+/** Resolve unit stats by arms level (L1/L2/L3). Defender uses L3. Ships ignore arms tiers. */
 export function getUnitStats(u: { type: UnitType; armsLevel?: 1 | 2 | 3 }) {
+  if (isNavalUnitType(u.type)) return UNIT_BASE_STATS[u.type];
+  /** Crusader knight is always treated as L3-tier stats (recruit requires L3 barracks). */
+  if (u.type === 'crusader_knight') return UNIT_L3_STATS.crusader_knight;
   const level = u.armsLevel ?? 1;
   if (level === 3) return UNIT_L3_STATS[u.type];
   if (level === 2) return UNIT_L2_STATS[u.type];
@@ -551,6 +1004,26 @@ export const WEATHER_DISPLAY: Record<WeatherEventType, {
 export const GAME_DURATION_SEC = 35 * 60;   // 35 minutes
 export const CYCLE_INTERVAL_SEC = 30;        // economy cycle every 30s
 export const COMBAT_TICK_MS = 1000;           // combat resolution every 1s
+/**
+ * Multiplier on time between hex steps (1 = legacy pace). Above 1 slows armies (better for multiplayer readability).
+ * Applied in movement tick: moveDelay = (1000 / effectiveSpeed) * this factor.
+ */
+export const UNIT_MOVEMENT_DELAY_MULT = 1.45;
+/**
+ * Multiplier on unit-vs-unit combat damage (melee same-hex, ranged/counter, hero vs unit).
+ * Tuned with {@link COMBAT_KILL_XP} and hit/glance rolls so ~5v5 L1 infantry on one hex lasts ~{@link CYCLE_INTERVAL_SEC} combat ticks (~1 economy cycle).
+ * Does not apply to defense towers, siege vs walls, or starvation/upkeep.
+ */
+export const COMBAT_UNIT_DAMAGE_SCALE = 0.61;
+/** XP granted to killer on unit kill in combat (kept low so brawls don’t spike level mid-fight). */
+export const COMBAT_KILL_XP = 4;
+/**
+ * Deterministic hit model for unit-vs-unit combat (melee + Phase B). Rolls use cycle + time + ids + salt.
+ * Full hit portion, then glance ({@link COMBAT_GLANCE_DAMAGE_MULT}), remainder miss.
+ */
+export const COMBAT_HIT_FULL_CHANCE = 0.72;
+export const COMBAT_HIT_GLANCE_CHANCE = 0.18;
+export const COMBAT_GLANCE_DAMAGE_MULT = 0.42;
 /** Retreat command: delay before retreat executes (design §5, 30). */
 export const RETREAT_DELAY_MS = 2000;
 /** Hold city center this long (ms) to capture (design §13). */
@@ -653,4 +1126,14 @@ export function stepToward(
     }
   }
   return best;
+}
+
+/** True if any neighbor hex has the given biome. */
+export function hexTouchesBiome(
+  tiles: Map<string, Tile>,
+  q: number,
+  r: number,
+  biome: Biome,
+): boolean {
+  return hexNeighbors(q, r).some(([nq, nr]) => tiles.get(tileKey(nq, nr))?.biome === biome);
 }

@@ -6,8 +6,10 @@ import {
   STARTING_CITY_TEMPLATE, HERO_NAMES, CITY_CENTER_STORAGE,
   BUILDING_IRON_COSTS, SCOUT_MISSION_COST, VILLAGE_INCORPORATE_COST, DEFENDER_IRON_COST, HERO_BASE_HP,
   WALL_SECTION_STONE_COST, WALL_SECTION_HP,
+  MapConfig,
 } from '@/types/game';
 import { computeCityProductionRate } from '@/lib/gameLoop';
+import { appendStartingBarracksToCity, appendStartingAcademyToCity } from '@/lib/kingdomSpawn';
 
 // ─── AI Action Types ───────────────────────────────────────────────
 
@@ -22,7 +24,7 @@ export interface AiUpgradeAction {
   cityId: string;
   buildingQ: number;
   buildingR: number;
-  type: 'barracks' | 'factory' | 'farm';
+  type: 'barracks' | 'factory' | 'farm' | 'banana_farm';
 }
 
 
@@ -439,6 +441,7 @@ export function planAiTurn(
       const allowSiege = foodStats.surplus >= foodThreshold; // hard: siege only when surplus >= threshold
       let stoneBudget = city.storage.stone ?? 0;
       let ironBudget = city.storage.iron ?? 0;
+      let refinedWoodBudget = city.storage.refinedWood ?? 0;
       for (let i = 0; i < maxRecruits; i++) {
         const useSiege = allowSiege && Math.random() < params.siegeChance;
         const pick = useSiege
@@ -447,6 +450,7 @@ export function planAiTurn(
         let goldCost: number;
         let stoneCost = 0;
         let ironCost = 0;
+        let refinedWoodCost = 0;
         let armsLevel: 1 | 2 | 3 | undefined = undefined;
         if (pick === 'defender') {
           armsLevel = 3;
@@ -454,29 +458,37 @@ export function planAiTurn(
           ironCost = UNIT_L3_COSTS.defender.iron ?? 0;
         } else if (useSiege || pick === 'builder') {
           goldCost = UNIT_COSTS[pick].gold;
+          if (pick === 'trebuchet') refinedWoodCost = UNIT_COSTS.trebuchet.refinedWood ?? 0;
         } else {
-          const canL3 = barracksLvl >= 2 && hasGunsL2 && goldBudget >= UNIT_L3_COSTS[pick].gold && ironBudget >= (UNIT_L3_COSTS[pick].iron ?? 0);
-          const canL2 = barracksLvl >= 2 && hasGunsL2 && goldBudget >= UNIT_L2_COSTS[pick].gold && stoneBudget >= (UNIT_L2_COSTS[pick].stone ?? 0);
-          const canL1 = goldBudget >= UNIT_COSTS[pick].gold;
+          const rwL3 = UNIT_L3_COSTS[pick].refinedWood ?? 0;
+          const rwL2 = UNIT_L2_COSTS[pick].refinedWood ?? 0;
+          const rwL1 = UNIT_COSTS[pick].refinedWood ?? 0;
+          const canL3 = barracksLvl >= 2 && hasGunsL2 && goldBudget >= UNIT_L3_COSTS[pick].gold && ironBudget >= (UNIT_L3_COSTS[pick].iron ?? 0) && refinedWoodBudget >= rwL3;
+          const canL2 = barracksLvl >= 2 && hasGunsL2 && goldBudget >= UNIT_L2_COSTS[pick].gold && stoneBudget >= (UNIT_L2_COSTS[pick].stone ?? 0) && refinedWoodBudget >= rwL2;
+          const canL1 = goldBudget >= UNIT_COSTS[pick].gold && refinedWoodBudget >= rwL1;
           if (canL3 && (Math.random() < 0.35 || !canL2)) {
             armsLevel = 3;
             goldCost = UNIT_L3_COSTS[pick].gold;
             ironCost = UNIT_L3_COSTS[pick].iron ?? 0;
+            refinedWoodCost = rwL3;
           } else if (canL2) {
             armsLevel = 2;
             goldCost = UNIT_L2_COSTS[pick].gold;
             stoneCost = UNIT_L2_COSTS[pick].stone ?? 0;
+            refinedWoodCost = rwL2;
           } else if (canL1) {
             goldCost = UNIT_COSTS[pick].gold;
+            refinedWoodCost = rwL1;
           } else {
             break;
           }
         }
-        if (goldBudget >= goldCost && stoneBudget >= stoneCost && ironBudget >= ironCost) {
+        if (goldBudget >= goldCost && stoneBudget >= stoneCost && ironBudget >= ironCost && refinedWoodBudget >= refinedWoodCost) {
           actions.recruits.push({ cityId: city.id, type: pick, armsLevel });
           goldBudget -= goldCost;
           stoneBudget -= stoneCost;
           ironBudget -= ironCost;
+          refinedWoodBudget -= refinedWoodCost;
         } else break;
       }
     }
@@ -795,45 +807,97 @@ export function placeAiStartingCityAt(
   };
   city.buildings = [{ type: 'city_center', q: atQ, r: atR, assignedWorkers: 0 }];
   city.storageCap = { ...CITY_CENTER_STORAGE };
+  appendStartingBarracksToCity(city, tiles, atQ * 524287 + atR * 65521);
+  appendStartingAcademyToCity(city, tiles, atQ * 524287 + atR * 65521 + 0xaced);
   return city;
+}
+
+/** Hex radius for “local land” check: center tile must have a majority land in this disk (not ocean rim). */
+const AI_START_LAND_DISK_RADIUS = 5;
+
+function landFractionInDisk(
+  tiles: Map<string, Tile>,
+  cq: number,
+  cr: number,
+  radius: number,
+): number {
+  let land = 0;
+  let total = 0;
+  for (const t of tiles.values()) {
+    if (hexDistance(t.q, t.r, cq, cr) > radius) continue;
+    total++;
+    if (t.biome !== 'water') land++;
+  }
+  return total === 0 ? 0 : land / total;
+}
+
+type AiStartCand = { q: number; r: number; landFrac: number; d: number };
+
+function compareAiStartFair(a: AiStartCand, b: AiStartCand, idealD: number): number {
+  if (a.landFrac !== b.landFrac) return b.landFrac - a.landFrac;
+  const da = Math.abs(a.d - idealD);
+  const db = Math.abs(b.d - idealD);
+  if (da !== db) return da - db;
+  if (a.q !== b.q) return a.q - b.q;
+  return a.r - b.r;
 }
 
 export function placeAiStartingCity(
   humanCityQ: number,
   humanCityR: number,
   tiles: Map<string, Tile>,
-  config: { width: number; height: number },
+  config: Pick<MapConfig, 'width' | 'height' | 'seed'>,
   aiPlayerId: string,
 ): City | null {
-  const targetQ = config.width - 1 - humanCityQ;
-  const targetR = config.height - 1 - humanCityR;
+  const w = config.width;
+  const h = config.height;
+  const seedMix = config.seed ^ humanCityQ * 1315423911 ^ humanCityR * 9737333;
+  /** Minimum hex distance from the human capital so 1v1 starts aren’t adjacent. */
+  const minSep = Math.max(10, Math.floor(Math.min(w, h) * 0.18));
+  /** Prefer a moderate separation — not the farthest corner of the map. */
+  const idealD = minSep + Math.floor(Math.min(w, h) * 0.2);
 
-  const checked = new Set<string>();
-  const queue: [number, number][] = [[targetQ, targetR]];
-  checked.add(tileKey(targetQ, targetR));
+  const placeAt = (q: number, r: number, seedSalt: number) => {
+    const city: City = {
+      id: generateId('city'),
+      name: 'AI Capital',
+      q,
+      r,
+      ownerId: aiPlayerId,
+      ...structuredClone(STARTING_CITY_TEMPLATE),
+    };
+    city.buildings = [{ type: 'city_center', q, r, assignedWorkers: 0 }];
+    city.storageCap = { ...CITY_CENTER_STORAGE };
+    const seed = humanCityQ * 1315423911 + humanCityR * 9737333 + q * 524287 + r * 65521 + seedSalt;
+    appendStartingBarracksToCity(city, tiles, seed);
+    appendStartingAcademyToCity(city, tiles, seed ^ 0xaced);
+    return city;
+  };
 
-  while (queue.length > 0) {
-    const [q, r] = queue.shift()!;
-    const tile = tiles.get(tileKey(q, r));
-    if (tile && tile.biome !== 'water' && tile.biome !== 'mountain') {
-      const city: City = {
-        id: generateId('city'),
-        name: 'AI Capital',
-        q, r,
-        ownerId: aiPlayerId,
-        ...structuredClone(STARTING_CITY_TEMPLATE),
-      };
-      city.buildings = [{ type: 'city_center', q, r, assignedWorkers: 0 }];
-      city.storageCap = { ...CITY_CENTER_STORAGE };
-      return city;
-    }
-    for (const [nq, nr] of hexNeighbors(q, r)) {
-      const nk = tileKey(nq, nr);
-      if (!checked.has(nk) && nq >= 0 && nq < config.width && nr >= 0 && nr < config.height) {
-        checked.add(nk);
-        queue.push([nq, nr]);
-      }
-    }
+  const all: AiStartCand[] = [];
+  for (const tile of tiles.values()) {
+    if (!tile || tile.biome === 'water' || tile.biome === 'mountain') continue;
+    if (tile.q === humanCityQ && tile.r === humanCityR) continue;
+    const d = hexDistance(tile.q, tile.r, humanCityQ, humanCityR);
+    const landFrac = landFractionInDisk(tiles, tile.q, tile.r, AI_START_LAND_DISK_RADIUS);
+    all.push({ q: tile.q, r: tile.r, landFrac, d });
   }
-  return null;
+
+  const pickFrom = (pred: (c: AiStartCand) => boolean): AiStartCand | null => {
+    const sub = all.filter(pred);
+    if (sub.length === 0) return null;
+    sub.sort((a, b) => compareAiStartFair(a, b, idealD));
+    const topN = Math.min(5, sub.length);
+    const idx = Math.abs(seedMix) % topN;
+    return sub[idx]!;
+  };
+
+  const chosen =
+    pickFrom((c) => c.landFrac > 0.5 && c.d >= minSep)
+    ?? pickFrom((c) => c.landFrac > 0.4 && c.d >= minSep)
+    ?? pickFrom((c) => c.d >= minSep)
+    ?? pickFrom((c) => c.landFrac > 0.5)
+    ?? pickFrom(() => true);
+
+  return chosen ? placeAt(chosen.q, chosen.r, 0) : null;
 }

@@ -1,5 +1,5 @@
 import {
-  Tile, City, Unit, Hero, ScoutTower,
+  Tile, City, Unit, Hero, ScoutTower, Commander,
   VISION_RANGE, CITY_VISION_RANGE, BUILDING_VISION_RANGE, SCOUT_TOWER_VISION_RANGE,
   hexDistance, tileKey,
 } from '@/types/game';
@@ -21,6 +21,7 @@ export function computeVisibleHexes(
   heroes: Hero[],
   tiles: Map<string, Tile>,
   scoutTowers: ScoutTower[] = [],
+  commanders: Commander[] = [],
 ): Set<string> {
   const sources: VisionSource[] = [];
 
@@ -35,6 +36,12 @@ export function computeVisibleHexes(
   for (const h of heroes) {
     if (h.ownerId === playerId) {
       sources.push({ q: h.q, r: h.r, range: VISION_RANGE });
+    }
+  }
+
+  for (const c of commanders) {
+    if (c.ownerId === playerId) {
+      sources.push({ q: c.q, r: c.r, range: VISION_RANGE });
     }
   }
 

@@ -16,9 +16,10 @@ function ensureFullParams(p: Partial<AiParams>): AiParams {
   return { ...DEFAULT_AI_PARAMS, ...p };
 }
 
-const DRAW_PENALTY = 10;
-const WON_QUICKLY_BONUS_PER_CYCLE = 0.05;
-const LOST_SLOWLY_BONUS_PER_CYCLE = 0.03;
+/** Keep in sync with scripts/train-ai.ts (worker inherits parent env). */
+const DRAW_PENALTY = parseFloat(process.env.TRAIN_DRAW_PENALTY || '10') || 10;
+const WON_QUICKLY_BONUS_PER_CYCLE = parseFloat(process.env.TRAIN_WON_QUICKLY_BONUS || '0.05') || 0.05;
+const LOST_SLOWLY_BONUS_PER_CYCLE = parseFloat(process.env.TRAIN_LOST_SLOWLY_BONUS || '0.03') || 0.03;
 
 function scoreResult(
   result: SimResult,
