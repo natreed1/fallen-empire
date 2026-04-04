@@ -12,15 +12,19 @@ import {
   isNavalUnitType, SHIP_RECRUIT_COSTS, getShipMaxCargo,
   PLAYER_COLORS, CITY_NAMES,
   BUILDING_COSTS, UNIT_COSTS, UNIT_L2_COSTS, UNIT_L3_COSTS, UNIT_BASE_STATS, UNIT_L2_STATS, UNIT_DISPLAY_NAMES, HERO_NAMES,
-  BUILDING_BP_COST, BUILDING_JOBS, getBuildingJobs, getUnitStats, CITY_BUILDING_POWER, BUILDER_POWER, BP_RATE_BASE,
+  BUILDING_BP_COST, BUILDING_JOBS, getBuildingJobs, getUnitStats, BP_RATE_BASE,
   TREBUCHET_FIELD_BP_COST, TREBUCHET_FIELD_GOLD_COST, TREBUCHET_REFINED_WOOD_COST,
   DEFENDER_IRON_COST,
   SCOUT_TOWER_BP_COST, SCOUT_TOWER_GOLD_COST,
   SCOUT_MISSION_COST, SCOUT_MISSION_DURATION_SEC,
   GAME_DURATION_SEC, CYCLE_INTERVAL_SEC,
   BARACKS_UPGRADE_COST, BARACKS_L3_UPGRADE_COST, FACTORY_UPGRADE_COST, FARM_UPGRADE_COST, WALL_SECTION_STONE_COST,
+  UNIVERSITY_UPGRADE_COSTS,
+  BUILDER_TASK_LABELS,
+  type BuilderTask,
   KingdomId, DEFAULT_KINGDOM_ID, TRADER_CONSTRUCTION_SPEED_MULT,
-  KINGDOM_DISPLAY_NAMES, pickAiKingdom,
+  KINGDOM_DISPLAY_NAMES, pickAiKingdom, pickOpponentKingdoms, pickKingdomsForSpectateBots,
+  AI_PLAYER_IDS, aiPlayerColorBySlot,
   CITY_CAPTURE_HOLD_MS,
   WORKERS_PER_LEVEL, BUILDING_IRON_COSTS,
   RETREAT_DELAY_MS, ASSAULT_ATTACK_DEBUFF, WALL_SECTION_HP, HERO_BASE_HP,
@@ -31,9 +35,9 @@ import {
   SCROLL_DISPLAY_NAME,
   Commander,
   CommanderDraftOption,
-  COMMANDER_DRAFT_POOL_SIZE,
   COMMANDER_STARTING_PICK,
   COMMANDER_RECRUIT_GOLD,
+  HERO_POPULATION_UNLOCK,
 } from '@/types/game';
 import { renderCommanderPortraitDataUrl } from '@/lib/commanderPortrait';
 import {
@@ -44,16 +48,31 @@ import {
   unassignCommandersWithDeadAnchors,
 } from '@/lib/commanders';
 import { generateMap, placeAncientCity } from '@/lib/mapGenerator';
-import { appendStartingBarracksToCity, appendStartingAcademyToCity, findBestStartHex, findFishersStartingBuildings } from '@/lib/kingdomSpawn';
+import {
+  appendStartingBarracksToCity,
+  appendStartingAcademyToCity,
+  findBestStartHex,
+  findFishersStartingBuildings,
+  isCapitalStartHex,
+  clearVillageForCapitalTile,
+} from '@/lib/kingdomSpawn';
 import { getCityTerritory } from '@/lib/territory';
 import { computeContestedZoneHexKeys, applyContestedZonePayout } from '@/lib/contestedZone';
 import { calculateTerritory, findCityForRefinedWoodSpend, maxMoveOrderDistanceForDestination, isWithinPlayerMoveOrderRange } from '@/lib/territory';
 import { processEconomyTurn, computeClusterIncomeStatement } from '@/lib/gameLoop';
-import { planAiTurn, placeAiStartingCity, placeAiStartingCityAt, createAiHero } from '@/lib/ai';
+import {
+  planAiTurn,
+  placeAiStartingCity,
+  placeAiStartingCityAt,
+  placeAiStartingCitiesSequential,
+  placeManyAiCapitalsApart,
+  createAiHero,
+} from '@/lib/ai';
 import { getAiParams } from '@/lib/aiParams';
 import {
   movementTick,
   combatTick,
+  coastalBombardmentTick,
   upkeepTick,
   siegeTick,
   autoEmbarkLandUnitsOntoScoutShipsAtHex,
@@ -72,6 +91,8 @@ import {
   releaseAttackWaveHolds,
 } from '@/lib/siege';
 import { tickScrollRegionSearch, returnScrollsForDeadCarriers } from '@/lib/scrolls';
+import { computeConstructionAvailableBp, computeRoadAvailableBp } from '@/lib/builders';
+import { planHumanBuilderAutomation } from '@/lib/builderAutomation';
 
 // ─── Module-level timers ────────────────────────────────────────────
 
@@ -123,11 +144,11 @@ interface GameState {
   /** Purple hotspot between the two main rivals; gold or iron every 2nd cycle if one side has more troops in zone. */
   contestedZoneHexKeys: string[];
 
-  /** Large named regions on the map (scroll discovery). */
+  /** Metadata for scroll terrain flavors (names/tints); actual tiles use Tile.specialTerrainKind). */
   specialRegions: SpecialRegion[];
-  /** regionId -> playerId -> cycles spent searching (with military in zone). */
+  /** scrollKind -> playerId -> cycles with military on matching terrain. */
   scrollSearchProgress: Record<string, Record<string, number>>;
-  /** regionId -> player ids who already received that region's scroll. */
+  /** scrollKind -> player ids who received that scroll from exploration. */
   scrollSearchClaimed: Record<string, string[]>;
   /** playerId -> scroll items not assigned to a unit. */
   scrollInventory: Record<string, ScrollItem[]>;
@@ -158,9 +179,12 @@ interface GameState {
   selectedHex: { q: number; r: number } | null;
   uiMode: UIMode;
   pendingMove: { toQ: number; toR: number } | null;
+  pendingDefenseBuild: { towerType: DefenseTowerType; level: DefenseTowerLevel; cityId: string } | null;
   wallSections: WallSection[];
   roadPathSelection: { q: number; r: number }[];  // hexes selected for road drag
   supplyViewTab: 'normal' | 'supply';
+  /** Territory on the map: tinted hex fill vs dashed outline on borders. */
+  territoryDisplayStyle: 'fill' | 'dashed';
   selectedClusterKey: string | null;
   lastClickHex: { q: number; r: number } | null;
   lastClickTime: number;
@@ -204,7 +228,9 @@ interface GameState {
   getTile: (q: number, r: number) => Tile | undefined;
 
   // Game flow
-  startPlacement: () => void;
+  startPlacement: (opts?: { opponentCount?: number }) => void;
+  /** Spectate: same opponent count as Play (N) → N+1 AI empires (matches 1 human + N AI slots). */
+  startSpectateMatch: (opts: { opponentCount: number }) => void;
   /** Human only, no rival AI — compact map recommended (e.g. generateWorld 38×38 first). */
   startSoloPlacement: () => void;
   startBotVsBot: () => void;
@@ -245,6 +271,9 @@ interface GameState {
   upgradeBarracks: (cityId: string, buildingQ: number, buildingR: number) => void;
   upgradeFactory: (cityId: string, buildingQ: number, buildingR: number) => void;
   upgradeFarm: (cityId: string, buildingQ: number, buildingR: number) => void;
+  /** University (academy) L2–L5 — more builder workforce slots. */
+  upgradeUniversity: (cityId: string, academyQ: number, academyR: number) => void;
+  setUniversityBuilderTask: (cityId: string, task: BuilderTask) => void;
   adjustWorkers: (cityId: string, buildingQ: number, buildingR: number, delta: number) => void;
   recruitUnit: (cityId: string, type: UnitType, armsLevel?: 1 | 2 | 3) => void;
   recruitShip: (cityId: string, shipyardQ: number, shipyardR: number, shipType: 'scout_ship' | 'warship' | 'transport_ship' | 'fisher_transport' | 'capital_ship') => void;
@@ -252,15 +281,22 @@ interface GameState {
   disembarkShip: (shipId: string) => void;
   recruitHero: (cityId: string) => void;
   recruitCommander: (cityId: string) => void;
+  recruitCommanderInstant: () => void;
   assignCommanderToCityDefense: (commanderId: string, cityId: string) => void;
   /** Attach commander to the first land military unit at the selected hex (stack). */
   assignCommanderToFieldAtSelectedHex: (commanderId: string) => void;
+  /** Attach commander to the land army at (q,r) (first unit = anchor). Works from Army panel without hex selection. */
+  assignCommanderToFieldStack: (commanderId: string, q: number, r: number) => void;
   unassignCommander: (commanderId: string) => void;
   setFoodPriority: (priority: FoodPriority) => void;
   setTaxRate: (rate: number) => void;
 
   // Wall building (ring around city, from build menu; stone cost)
   buildWallRing: (cityId: string, ring: number) => void;
+
+  // Defense placement from University panel
+  startDefensePlacement: (towerType: DefenseTowerType, level: DefenseTowerLevel, cityId: string) => void;
+  cancelDefensePlacement: () => void;
 
   // Builder build (Mine, Quarry, Road, Scout Tower outside territory)
   startBuilderBuild: (mode: 'mine' | 'quarry' | 'gold_mine' | 'logging_hut' | 'road') => void;
@@ -269,6 +305,7 @@ interface GameState {
   addRoadPathHex: (q: number, r: number) => void;
   confirmRoadPath: () => void;
   setSupplyViewTab: (tab: 'normal' | 'supply') => void;
+  setTerritoryDisplayStyle: (style: 'fill' | 'dashed') => void;
   setSelectedClusterKey: (key: string | null) => void;
 
   // Unit
@@ -358,7 +395,7 @@ const HUMAN_ID = 'player_human';
 const AI_ID = 'player_ai';
 const AI_ID_2 = 'player_ai_2';
 
-export type GameMode = 'human_vs_ai' | 'human_solo' | 'bot_vs_bot' | 'bot_vs_bot_4';
+export type GameMode = 'human_vs_ai' | 'human_solo' | 'bot_vs_bot' | 'bot_vs_bot_4' | 'spectate';
 
 /** Pending order per stack while tactical mode is open (confirmed in one batch). */
 export type TacticalStackOrder =
@@ -513,10 +550,10 @@ function incorporateVillagePatch(
 }
 
 function spawnUnitFromPendingLand(item: PendingLandRecruit, cities: City[]): Unit | null {
+  if (item.type === 'builder') return null;
   const city = cities.find(c => c.id === item.cityId);
   if (!city) return null;
   const stats = getUnitStats({ type: item.type, armsLevel: item.effectiveArmsLevel });
-  const isBuilder = item.type === 'builder';
   const u: Unit = {
     id: generateId('unit'),
     type: item.type,
@@ -534,7 +571,7 @@ function spawnUnitFromPendingLand(item: PendingLandRecruit, cities: City[]): Uni
   };
   if (item.effectiveArmsLevel === 2 && item.type !== 'defender') u.armsLevel = 2;
   if (item.effectiveArmsLevel === 3 || item.type === 'defender') u.armsLevel = 3;
-  if (!isBuilder && !isNavalUnitType(item.type)) {
+  if (!isNavalUnitType(item.type)) {
     u.garrisonCityId = city.id;
     u.defendCityId = city.id;
   }
@@ -610,8 +647,10 @@ export const useGameStore = create<GameState>((set, get) => ({
   selectedKingdom: DEFAULT_KINGDOM_ID,
   setSelectedKingdom: (k) => set({ selectedKingdom: k }),
   visibleHexes: new Set(), pendingCityHex: null,
-  selectedHex: null, uiMode: 'normal', pendingMove: null, wallSections: [], roadPathSelection: [],
+  selectedHex: null, uiMode: 'normal', pendingMove: null, pendingDefenseBuild: null, wallSections: [], roadPathSelection: [],
   supplyViewTab: 'normal',
+  territoryDisplayStyle: 'fill',
+  setTerritoryDisplayStyle: (style) => set({ territoryDisplayStyle: style }),
   selectedClusterKey: null,
   lastClickHex: null,
   lastClickTime: 0,
@@ -651,18 +690,30 @@ export const useGameStore = create<GameState>((set, get) => ({
   getTile: (q, r) => get().tiles.get(tileKey(q, r)),
 
   // ─── Game Flow ──────────────────────────────────────────────
-  startPlacement: () => {
+  startPlacement: (opts) => {
     cityNameIdx = 0;
     heroNameIdx = 0;
     const kingdom = get().selectedKingdom;
-    const aiKingdom = pickAiKingdom(kingdom);
+    const opponentCount = Math.min(5, Math.max(1, opts?.opponentCount ?? 1));
+    const aiKingdoms = pickOpponentKingdoms(kingdom, opponentCount);
+    const aiIds = AI_PLAYER_IDS.slice(0, opponentCount) as string[];
+    const aiPlayers: Player[] = aiIds.map((id, i) => ({
+      id,
+      name: KINGDOM_DISPLAY_NAMES[aiKingdoms[i]!],
+      color: aiPlayerColorBySlot(i),
+      gold: STARTING_GOLD,
+      taxRate: 0.3,
+      foodPriority: 'military' as const,
+      isHuman: false,
+      kingdomId: aiKingdoms[i],
+    }));
     const suggested = findBestStartHex(kingdom, get().tiles, get().config);
     set({
       phase: 'place_city',
       gameMode: 'human_vs_ai',
       players: [
         { id: HUMAN_ID, name: 'You', color: PLAYER_COLORS.human, gold: STARTING_GOLD, taxRate: 0.3, foodPriority: 'civilian', isHuman: true, kingdomId: kingdom },
-        { id: AI_ID, name: KINGDOM_DISPLAY_NAMES[aiKingdom], color: PLAYER_COLORS.ai, gold: STARTING_GOLD, taxRate: 0.3, foodPriority: 'military', isHuman: false, kingdomId: aiKingdom },
+        ...aiPlayers,
       ],
       cities: [], units: [], heroes: [], commanders: [],
       commanderDraftOptions: [], commanderDraftSelectedIds: [], commanderDraftAssignment: {},
@@ -790,6 +841,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     set({
       phase: 'playing',
       gameMode: 'bot_vs_bot',
+      tiles: new Map(tiles),
       players: [
         { id: AI_ID, name: 'North Empire', color: PLAYER_COLORS.ai, gold: STARTING_GOLD, taxRate: 0.3, foodPriority: 'military', isHuman: false },
         { id: AI_ID_2, name: 'South Empire', color: PLAYER_COLORS.ai2, gold: STARTING_GOLD, taxRate: 0.3, foodPriority: 'military', isHuman: false },
@@ -843,10 +895,120 @@ export const useGameStore = create<GameState>((set, get) => ({
     get().startBotVsBot();
   },
 
+  startSpectateMatch: ({ opponentCount }) => {
+    const s = get();
+    if (!s.isGenerated) {
+      get().addNotification('Generate a map first.', 'warning');
+      return;
+    }
+    const n = Math.min(5, Math.max(1, opponentCount));
+    const totalBots = n + 1;
+    const { tiles, config } = get();
+    if (!tiles || tiles.size === 0) return;
+
+    const aiIds = AI_PLAYER_IDS.slice(0, totalBots) as string[];
+    const kingdoms = pickKingdomsForSpectateBots(totalBots);
+    const players: Player[] = aiIds.map((id, i) => ({
+      id,
+      name: KINGDOM_DISPLAY_NAMES[kingdoms[i]!],
+      color: aiPlayerColorBySlot(i),
+      gold: STARTING_GOLD,
+      taxRate: 0.3,
+      foodPriority: 'military' as const,
+      isHuman: false,
+      kingdomId: kingdoms[i],
+    }));
+
+    cityNameIdx = 0;
+    heroNameIdx = 0;
+
+    const cities = placeManyAiCapitalsApart(totalBots, aiIds, tiles, config);
+    if (cities.length < 2) {
+      get().addNotification('Could not place AI capitals. Try a larger map or different seed.', 'danger');
+      return;
+    }
+    for (const c of cities) {
+      c.name = nextCityName();
+    }
+
+    const c0 = cities[0]!;
+    const c1 = cities[1]!;
+    placeAncientCity(tiles, c0.q, c0.r, c1.q, c1.r);
+    const contestedZoneHexKeys = computeContestedZoneHexKeys(tiles, c0.q, c0.r, c1.q, c1.r, config);
+    const territory = calculateTerritory(cities, tiles);
+
+    const heroes: Hero[] = cities.map(c => createAiHero(c.q, c.r, c.ownerId));
+
+    const allTileKeys = new Set<string>();
+    tiles.forEach((_, key) => allTileKeys.add(key));
+
+    const scrollInvBot: Record<string, ScrollItem[]> = {};
+    for (const p of players) scrollInvBot[p.id] = [];
+
+    const commanders: Commander[] = [];
+    for (const city of cities) {
+      for (let i = 0; i < COMMANDER_STARTING_PICK; i++) {
+        const seed = (config.seed ^ city.q * 1315423911 ^ city.r * 9737333 ^ i * 0xcafebabe) >>> 0;
+        const rolled = rollCommanderIdentity(seed);
+        commanders.push(
+          createCommanderRecord(
+            city.ownerId,
+            rolled,
+            renderCommanderPortraitDataUrl(rolled.portraitSeed),
+            city.q,
+            city.r,
+            { kind: 'city_defense', cityId: city.id },
+          ),
+        );
+      }
+    }
+
+    set({
+      phase: 'playing',
+      gameMode: 'spectate',
+      tiles: new Map(tiles),
+      players,
+      cities,
+      units: [],
+      heroes,
+      commanders,
+      commanderDraftOptions: [],
+      commanderDraftSelectedIds: [],
+      commanderDraftAssignment: {},
+      territory,
+      visibleHexes: allTileKeys,
+      wallSections: [],
+      cityCaptureHold: {},
+      pendingRecruits: [],
+      pendingIncorporations: [],
+      constructions: [],
+      roadConstructions: [],
+      scoutTowers: [],
+      defenseInstallations: [],
+      combatHexesThisCycle: new Set(),
+      lastCombatFxAtMs: 0,
+      lastDefenseVolleyFx: [],
+      lastRangedShotFx: [],
+      rangedShooterUnitIds: [],
+      contestedZoneHexKeys,
+      specialRegions: s.specialRegions ?? [],
+      scrollSearchProgress: {},
+      scrollSearchClaimed: {},
+      scrollInventory: scrollInvBot,
+      scrollAttachments: [],
+      notifications: [
+        { id: generateId('n'), turn: 0, message: `Spectating ${totalBots} AI empires.`, type: 'success' },
+      ],
+      battleModalHexKey: null,
+    });
+    get().startRealTimeLoop();
+    get().runCycle();
+  },
+
   setPendingCity: (q, r) => {
     const { tiles } = get();
     const tile = tiles.get(tileKey(q, r));
-    if (!tile || tile.biome === 'water' || tile.biome === 'mountain') return;
+    if (!tile || !isCapitalStartHex(tile)) return;
     set({ pendingCityHex: { q, r } });
   },
 
@@ -862,9 +1024,12 @@ export const useGameStore = create<GameState>((set, get) => ({
   },
 
   placeStartingCity: (q, r) => {
-    const { tiles, config, gameMode } = get();
-    const tile = tiles.get(tileKey(q, r));
-    if (!tile || tile.biome === 'water' || tile.biome === 'mountain') return;
+    const { tiles: tilesState, config, gameMode } = get();
+    const tile = tilesState.get(tileKey(q, r));
+    if (!tile || !isCapitalStartHex(tile)) return;
+
+    const tiles = new Map(tilesState);
+    clearVillageForCapitalTile(tiles, q, r);
 
     const solo = gameMode === 'human_solo';
 
@@ -874,12 +1039,27 @@ export const useGameStore = create<GameState>((set, get) => ({
     };
     humanCity.buildings = [{ type: 'city_center', q, r, assignedWorkers: 0 }];
     humanCity.storageCap = { ...CITY_CENTER_STORAGE };
-    const aiCity = placeAiStartingCity(q, r, tiles, config, AI_ID);
-    if (aiCity) aiCity.name = solo ? 'Training camp' : nextCityName();
-    const cities = aiCity ? [humanCity, aiCity] : [humanCity];
-    placeAncientCity(tiles, q, r, aiCity?.q, aiCity?.r);
-    const contestedZoneHexKeys = aiCity
-      ? computeContestedZoneHexKeys(tiles, q, r, aiCity.q, aiCity.r, config)
+
+    const aiIds = get().players.filter(p => !p.isHuman).map(p => p.id);
+    let aiCities: City[] = [];
+    if (solo) {
+      const aiCity = placeAiStartingCity(q, r, tiles, config, AI_ID);
+      if (aiCity) {
+        aiCity.name = 'Training camp';
+        aiCities = [aiCity];
+      }
+    } else {
+      aiCities = placeAiStartingCitiesSequential(q, r, aiIds, tiles, config);
+      for (const c of aiCities) {
+        c.name = nextCityName();
+      }
+    }
+
+    const firstAi = aiCities[0];
+    const cities = [humanCity, ...aiCities];
+    placeAncientCity(tiles, q, r, firstAi?.q, firstAi?.r);
+    const contestedZoneHexKeys = firstAi
+      ? computeContestedZoneHexKeys(tiles, q, r, firstAi.q, firstAi.r, config)
       : [];
     const territory = calculateTerritory(cities, tiles);
 
@@ -941,17 +1121,13 @@ export const useGameStore = create<GameState>((set, get) => ({
 
     appendStartingBarracksToCity(humanCity, tiles, config.seed ^ (q * 524287) ^ (r * 65521));
     appendStartingAcademyToCity(humanCity, tiles, config.seed ^ (q * 524287) ^ (r * 65521) ^ 0xaced);
-    if (aiCity) {
-      appendStartingBarracksToCity(aiCity, tiles, config.seed ^ (aiCity.q * 524287) ^ (aiCity.r * 65521));
-      appendStartingAcademyToCity(aiCity, tiles, config.seed ^ (aiCity.q * 524287) ^ (aiCity.r * 65521) ^ 0xaced);
-    }
 
-    // Each player starts with a General hero at their capital
-    const heroes: Hero[] = [
-      { id: generateId('hero'), name: nextHeroName(), type: 'general', q, r, ownerId: HUMAN_ID, hp: HERO_BASE_HP, maxHp: HERO_BASE_HP },
-    ];
-    if (aiCity && !solo) {
-      heroes.push(createAiHero(aiCity.q, aiCity.r, AI_ID));
+    // Human: no starting hero — heroes unlock at HERO_POPULATION_UNLOCK via barracks. AI keeps a hero at each capital.
+    const heroes: Hero[] = [];
+    if (!solo) {
+      for (const ac of aiCities) {
+        heroes.push(createAiHero(ac.q, ac.r, ac.ownerId));
+      }
     }
 
     // Human vs AI: no pre-spawned AI army. AI uses champion params (from ai-params.json) and builds up from its city on the opposite side.
@@ -997,12 +1173,20 @@ export const useGameStore = create<GameState>((set, get) => ({
         id: generateId('n'),
         turn: 0,
         message:
-          'Tinted zones are ancient scroll regions. Station an army in a region for 5 economy cycles to claim its scroll; assign scrolls to units in the hex panel (+10% attack, defense, or movement for that stack).',
+          'Colored wilds mark ancient scroll terrain (sprinkled across the map). Hold an army on matching terrain for 3 economy cycles to claim that scroll line; assign scrolls in the hex panel (+10% attack, defense, or movement per stack).',
         type: 'info',
       });
     }
     if (!solo) {
-      startNotifs.push({ id: generateId('n'), turn: 0, message: `A rival empire stirs across the land.`, type: 'warning' });
+      startNotifs.push({
+        id: generateId('n'),
+        turn: 0,
+        message:
+          aiCities.length > 1
+            ? `Rival empires stir across the land (${aiCities.length} opponents).`
+            : `A rival empire stirs across the land.`,
+        type: 'warning',
+      });
       if (contestedZoneHexKeys.length > 0) {
         startNotifs.push({
           id: generateId('n'),
@@ -1015,7 +1199,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       startNotifs.push({
         id: generateId('n'),
         turn: 0,
-        message: aiCity
+        message: aiCities[0]
           ? 'Mechanics test — inert enemy capital on the far side (no AI moves or builds).'
           : 'Mechanics test — no inert target placed (map full?); no AI opponent.',
         type: 'success',
@@ -1033,30 +1217,34 @@ export const useGameStore = create<GameState>((set, get) => ({
     const scrollInv: Record<string, ScrollItem[]> = {};
     for (const p of get().players) scrollInv[p.id] = [];
 
-    const needsCommanderDraft = get().gameMode === 'human_vs_ai' || get().gameMode === 'human_solo';
-    const commanderDraftOptions: CommanderDraftOption[] = [];
-    if (needsCommanderDraft) {
-      for (let i = 0; i < COMMANDER_DRAFT_POOL_SIZE; i++) {
-        const seed = (config.seed ^ q * 1315423911 ^ r * 9737333 ^ i * 0x9e3779b9) >>> 0;
+    /** Human assigns commanders from the city panel (defense) or Army panel / hex panel; no random draft at start. */
+    const aiCmds: Commander[] = [];
+    for (const ac of aiCities) {
+      const pid = ac.ownerId;
+      for (let i = 0; i < COMMANDER_STARTING_PICK; i++) {
+        const seed = (config.seed ^ ac.q * 1315423911 ^ ac.r * 9737333 ^ i * 0xcafebabe) >>> 0;
         const rolled = rollCommanderIdentity(seed);
-        commanderDraftOptions.push({
-          draftId: generateId('draft'),
-          name: rolled.name,
-          backstory: rolled.backstory,
-          traitIds: rolled.traitIds,
-          portraitSeed: rolled.portraitSeed,
-          portraitDataUrl: renderCommanderPortraitDataUrl(rolled.portraitSeed),
-        });
+        aiCmds.push(
+          createCommanderRecord(
+            pid,
+            rolled,
+            renderCommanderPortraitDataUrl(rolled.portraitSeed),
+            ac.q,
+            ac.r,
+            { kind: 'city_defense', cityId: ac.id },
+          ),
+        );
       }
     }
 
     set({
-      phase: needsCommanderDraft ? 'commander_setup' : 'playing',
+      phase: 'playing',
+      tiles,
       cities,
       territory,
       heroes,
-      commanders: [],
-      commanderDraftOptions: needsCommanderDraft ? commanderDraftOptions : [],
+      commanders: aiCmds,
+      commanderDraftOptions: [],
       commanderDraftSelectedIds: [],
       commanderDraftAssignment: {},
       wallSections: kingdomWalls,
@@ -1082,9 +1270,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       cityLogisticsOpen: false,
     });
 
-    if (!needsCommanderDraft) {
-      get().startRealTimeLoop();
-    }
+    get().startRealTimeLoop();
   },
 
   toggleCommanderDraftSelection: (draftId) => {
@@ -1138,7 +1324,13 @@ export const useGameStore = create<GameState>((set, get) => ({
       humanCmds.push(
         createCommanderRecord(
           HUMAN_ID,
-          { name: opt.name, backstory: opt.backstory, traitIds: opt.traitIds, portraitSeed: opt.portraitSeed },
+          {
+            name: opt.name,
+            backstory: opt.backstory,
+            traitIds: opt.traitIds,
+            portraitSeed: opt.portraitSeed,
+            commanderKind: opt.commanderKind ?? 'land',
+          },
           opt.portraitDataUrl,
           humanCity.q,
           humanCity.r,
@@ -1190,7 +1382,11 @@ export const useGameStore = create<GameState>((set, get) => ({
   startRealTimeLoop: (opts?: { preserveTimes?: boolean }) => {
     clearAllTimers();
     const s = get();
-    const isBot = s.gameMode === 'bot_vs_bot' || s.gameMode === 'bot_vs_bot_4';
+    const unitsNoBuilders = s.units.filter(u => u.type !== 'builder');
+    if (unitsNoBuilders.length !== s.units.length) {
+      set({ units: unitsNoBuilders });
+    }
+    const isBot = s.gameMode === 'bot_vs_bot' || s.gameMode === 'bot_vs_bot_4' || s.gameMode === 'spectate';
     const isSolo = s.gameMode === 'human_solo';
     const speed = isBot ? (s.simSpeedMultiplier || 1) : 1;
     const intervalMs = 1000 / speed;
@@ -1219,7 +1415,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       // -- Movement tick --
       const movingUnits = s.units.map(u => ({ ...u }));
       const movingHeroes = s.heroes.map(h => ({ ...h }));
-      movementTick(
+      const movingCommanders = s.commanders.map(c => ({ ...c }));
+      const closingFire = movementTick(
         movingUnits,
         movingHeroes,
         s.tiles,
@@ -1228,11 +1425,11 @@ export const useGameStore = create<GameState>((set, get) => ({
         Date.now(),
         s.players,
         s.scrollAttachments,
+        s.cycle,
+        movingCommanders,
       );
       autoEmbarkLandUnitsOntoScoutShipsAtHex(movingUnits, s.tiles);
       releaseAttackWaveHolds(movingUnits, s.cities);
-
-      const movingCommanders = s.commanders.map(c => ({ ...c }));
       syncCommandersToAssignments(movingCommanders, s.cities, movingUnits);
 
       // -- Combat tick (pass movingHeroes so hp mutations apply; then remove killed heroes) --
@@ -1249,27 +1446,47 @@ export const useGameStore = create<GameState>((set, get) => ({
         movingCommanders,
       );
 
-      // -- Siege tick: trebuchet/ram damage walls (design §17–19) --
       const wallSectionsMut = s.wallSections.map(w => ({ ...w }));
+      const coastalResult = coastalBombardmentTick(
+        movingUnits,
+        movingHeroes,
+        wallSectionsMut,
+        s.cycle,
+        s.cities,
+        s.tiles,
+        now,
+        s.scrollAttachments,
+        movingCommanders,
+      );
+
+      // -- Siege tick: trebuchet/ram damage walls (design §17–19) --
       siegeTick(wallSectionsMut, movingUnits);
+
+      const mergedKilledUnitIds = [
+        ...new Set([...closingFire.killedUnitIds, ...combatResult.killedUnitIds, ...coastalResult.killedUnitIds]),
+      ];
+      const mergedKilledHeroIds = [
+        ...new Set([...(combatResult.killedHeroIds ?? []), ...(coastalResult.killedHeroIds ?? [])]),
+      ];
 
       // Accumulate combat hexes for this cycle (ancient city: no reward if combat on that hex)
       const nextCombatHexes = new Set(s.combatHexesThisCycle);
       for (const key of combatResult.combatHexKeys) nextCombatHexes.add(key);
+      for (const key of coastalResult.combatHexKeys) nextCombatHexes.add(key);
 
       // Remove dead units; return scrolls from fallen carriers
-      const killedSet = new Set(combatResult.killedUnitIds);
+      const killedSet = new Set(mergedKilledUnitIds);
       const scrollReturn = returnScrollsForDeadCarriers(
         killedSet,
         s.scrollAttachments ?? [],
         { ...s.scrollInventory },
       );
 
-      const aliveUnits = movingUnits.filter(u => u.hp > 0 && !combatResult.killedUnitIds.includes(u.id));
+      const aliveUnits = movingUnits.filter(u => u.hp > 0 && !mergedKilledUnitIds.includes(u.id));
       unassignCommandersWithDeadAnchors(movingCommanders, aliveUnits);
 
       // Population: when a unit dies, its origin city loses 1 population (design doc §22)
-      const killedIds = new Set(combatResult.killedUnitIds);
+      const killedIds = new Set(mergedKilledUnitIds);
       const popDeductByCityId: Record<string, number> = {};
       for (const u of s.units) {
         if (killedIds.has(u.id) && u.originCityId) {
@@ -1343,17 +1560,15 @@ export const useGameStore = create<GameState>((set, get) => ({
 
       const territoryAfterCapture = citiesFinal !== updatedCities ? calculateTerritory(citiesFinal, s.tiles) : undefined;
       let phaseAfterCapture: GamePhase = s.phase;
-      if (s.gameMode === 'bot_vs_bot') {
-        const ai1Cities = citiesFinal.filter(c => c.ownerId === AI_ID);
-        const ai2Cities = citiesFinal.filter(c => c.ownerId === AI_ID_2);
-        if (ai1Cities.length === 0) {
+      if (s.gameMode === 'bot_vs_bot' || s.gameMode === 'spectate') {
+        const aiIds = s.players.filter(p => !p.isHuman).map(p => p.id);
+        const alive = aiIds.filter(pid => citiesFinal.some(c => c.ownerId === pid));
+        if (alive.length <= 1) {
           phaseAfterCapture = 'victory';
           clearAllTimers();
-          captureNotifs.push({ id: generateId('n'), turn: s.cycle, message: 'South Empire conquers!', type: 'success' });
-        } else if (ai2Cities.length === 0) {
-          phaseAfterCapture = 'victory';
-          clearAllTimers();
-          captureNotifs.push({ id: generateId('n'), turn: s.cycle, message: 'North Empire conquers!', type: 'success' });
+          const w = alive[0];
+          const wname = w ? s.players.find(p => p.id === w)?.name ?? 'Empire' : 'Empire';
+          captureNotifs.push({ id: generateId('n'), turn: s.cycle, message: `${wname} conquers!`, type: 'success' });
         }
       } else if (s.gameMode === 'human_solo') {
         const humanCitiesAfter = citiesFinal.filter(c => c.ownerId === HUMAN_ID);
@@ -1369,23 +1584,34 @@ export const useGameStore = create<GameState>((set, get) => ({
         }
       } else {
         const humanCitiesAfter = citiesFinal.filter(c => c.ownerId === HUMAN_ID);
-        const aiCitiesAfter = citiesFinal.filter(c => c.ownerId === AI_ID);
+        const aiIds = s.players.filter(p => !p.isHuman).map(p => p.id);
+        const anyAiAlive = citiesFinal.some(c => aiIds.includes(c.ownerId));
         if (humanCitiesAfter.length === 0) {
           phaseAfterCapture = 'victory';
           clearAllTimers();
           captureNotifs.push({ id: generateId('n'), turn: s.cycle, message: 'Defeat! Your empire has fallen.', type: 'danger' });
-        } else if (aiCitiesAfter.length === 0) {
+        } else if (!anyAiAlive) {
           phaseAfterCapture = 'victory';
           clearAllTimers();
-          captureNotifs.push({ id: generateId('n'), turn: s.cycle, message: 'Victory! You conquered the rival empire!', type: 'success' });
+          captureNotifs.push({ id: generateId('n'), turn: s.cycle, message: 'Victory! You conquered all rival empires!', type: 'success' });
         }
       }
 
-      const newNotifs = combatResult.notifications.length > 0 || captureNotifs.length > 0
-        ? [...s.notifications.slice(-8), ...combatResult.notifications, ...captureNotifs]
-        : s.notifications;
+      const newNotifs =
+        closingFire.notifications.length > 0 ||
+        combatResult.notifications.length > 0 ||
+        coastalResult.notifications.length > 0 ||
+        captureNotifs.length > 0
+          ? [
+              ...s.notifications.slice(-8),
+              ...closingFire.notifications,
+              ...combatResult.notifications,
+              ...coastalResult.notifications,
+              ...captureNotifs,
+            ]
+          : s.notifications;
 
-      const aliveHeroes = movingHeroes.filter(h => !(combatResult.killedHeroIds ?? []).includes(h.id));
+      const aliveHeroes = movingHeroes.filter(h => !mergedKilledHeroIds.includes(h.id));
       const ownerByCity = new Map(citiesFinal.map(c => [c.id, c.ownerId]));
       const syncedDefenses = (s.defenseInstallations ?? []).map(d => {
         const ow = ownerByCity.get(d.cityId);
@@ -1393,8 +1619,13 @@ export const useGameStore = create<GameState>((set, get) => ({
         return d;
       });
       const fxNow = Date.now();
+      const defenseVolleyCombined = [
+        ...combatResult.defenseVolleyFx,
+        ...coastalResult.defenseVolleyFx,
+      ];
+      const allRangedShotFx = [...closingFire.rangedShotFx, ...combatResult.rangedShotFx];
       const hasFx =
-        combatResult.defenseVolleyFx.length > 0 || combatResult.rangedShotFx.length > 0;
+        defenseVolleyCombined.length > 0 || allRangedShotFx.length > 0;
       set({
         units: aliveUnits,
         cities: citiesFinal,
@@ -1410,9 +1641,9 @@ export const useGameStore = create<GameState>((set, get) => ({
         scrollAttachments: scrollReturn.attachments,
         scrollInventory: scrollReturn.scrollInventory,
         lastCombatFxAtMs: hasFx ? fxNow : s.lastCombatFxAtMs,
-        lastDefenseVolleyFx: combatResult.defenseVolleyFx,
-        lastRangedShotFx: combatResult.rangedShotFx,
-        rangedShooterUnitIds: [...new Set(combatResult.rangedShotFx.map(r => r.attackerId))],
+        lastDefenseVolleyFx: defenseVolleyCombined,
+        lastRangedShotFx: allRangedShotFx,
+        rangedShooterUnitIds: [...new Set(allRangedShotFx.map(r => r.attackerId))],
       });
 
       // Tactical incorporate: queue one-cycle delayed incorporation when idle on target village
@@ -1453,37 +1684,7 @@ export const useGameStore = create<GameState>((set, get) => ({
           let defenseOut = [...st.defenseInstallations];
 
           for (const site of st.constructions) {
-            // Calculate available BP at this hex
-            let availBP = 0;
-
-            // If in territory of owning player, city provides CITY_BUILDING_POWER (buildings only; trebuchet/scout_tower/city_defense are builder-only)
-            if (site.type !== 'trebuchet' && site.type !== 'scout_tower' && site.type !== 'city_defense') {
-              const terr = st.territory.get(tileKey(site.q, site.r));
-              if (terr && terr.playerId === site.ownerId) {
-                availBP += CITY_BUILDING_POWER;
-              }
-            }
-
-            // Count builder units at the hex (city_defense may also draw BP from cityDefenseBuilderBpHex)
-            const bpHexes: { q: number; r: number }[] = [{ q: site.q, r: site.r }];
-            if (site.type === 'city_defense' && site.cityDefenseBuilderBpHex) {
-              bpHexes.push(site.cityDefenseBuilderBpHex);
-            }
-            const builderIds = new Set<string>();
-            for (const { q: hq, r: hr } of bpHexes) {
-              for (const u of st.units) {
-                if (
-                  u.q === hq &&
-                  u.r === hr &&
-                  u.ownerId === site.ownerId &&
-                  u.type === 'builder' &&
-                  u.hp > 0
-                ) {
-                  builderIds.add(u.id);
-                }
-              }
-            }
-            availBP += builderIds.size * BUILDER_POWER;
+            let availBP = computeConstructionAvailableBp(site, st.territory, st.cities);
 
             if (availBP === 0) {
               remaining.push(site);
@@ -1605,15 +1806,11 @@ export const useGameStore = create<GameState>((set, get) => ({
         if (st.roadConstructions.length > 0) {
           const remaining: RoadConstructionSite[] = [];
           const completedNotifs: GameNotification[] = [];
-          const completedHexes: [number, number][] = [];
           let tilesUpdated = false;
           const newTiles = new Map(st.tiles);
 
           for (const site of st.roadConstructions) {
-            const builders = st.units.filter(
-              u => u.q === site.q && u.r === site.r && u.ownerId === site.ownerId && u.type === 'builder' && u.hp > 0
-            );
-            const availBP = builders.length * BUILDER_POWER;
+            const availBP = computeRoadAvailableBp(site, st.territory, st.cities);
             if (availBP === 0) {
               remaining.push(site);
               continue;
@@ -1632,7 +1829,6 @@ export const useGameStore = create<GameState>((set, get) => ({
                 newTiles.set(key, { ...t, hasRoad: true });
                 tilesUpdated = true;
               }
-              completedHexes.push([site.q, site.r]);
               completedNotifs.push({
                 id: generateId('n'), turn: st.cycle,
                 message: `Road completed at (${site.q}, ${site.r})!`,
@@ -1643,32 +1839,11 @@ export const useGameStore = create<GameState>((set, get) => ({
             }
           }
 
-          // Reassign builders that just finished to the next road site so path-building continues
-          let newUnits = st.units;
-          if (completedHexes.length > 0 && remaining.length > 0) {
-            newUnits = st.units.map(u => {
-              if (u.type !== 'builder' || u.ownerId !== HUMAN_ID || u.hp <= 0) return u;
-              const onCompletedHex = completedHexes.some(([q, r]) => u.q === q && u.r === r);
-              if (!onCompletedHex) return u;
-              const closest = remaining.reduce((best, site) => {
-                const d = hexDistance(u.q, u.r, site.q, site.r);
-                return d < best.d ? { site, d } : best;
-              }, { site: remaining[0], d: hexDistance(u.q, u.r, remaining[0].q, remaining[0].r) });
-              return {
-                ...u,
-                targetQ: closest.site.q,
-                targetR: closest.site.r,
-                status: 'moving' as const,
-                marchInitialHexDistance: marchHexDistanceAtOrder(u, closest.site.q, closest.site.r),
-              };
-            });
-          }
-
           // Always write back so BP accumulation persists each tick (otherwise progress never saves)
           const allNotifs = completedNotifs.length > 0
             ? [...st.notifications.slice(-8), ...completedNotifs]
             : st.notifications;
-          set({ roadConstructions: remaining, tiles: newTiles, units: newUnits, notifications: allNotifs });
+          set({ roadConstructions: remaining, tiles: newTiles, notifications: allNotifs });
         }
       }
 
@@ -1712,7 +1887,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       // Run economy cycle?
       if (now >= s.nextCycleTime) {
         get().runCycle();
-        const speedForCycle = (s.gameMode === 'bot_vs_bot' || s.gameMode === 'bot_vs_bot_4') ? (s.simSpeedMultiplier || 1) : 1;
+        const speedForCycle = (s.gameMode === 'bot_vs_bot' || s.gameMode === 'bot_vs_bot_4' || s.gameMode === 'spectate') ? (s.simSpeedMultiplier || 1) : 1;
         set({ nextCycleTime: now + (CYCLE_INTERVAL_SEC * 1000) / speedForCycle });
       }
 
@@ -1732,30 +1907,37 @@ export const useGameStore = create<GameState>((set, get) => ({
           });
         } else {
           clearAllTimers();
-          if (st.gameMode === 'bot_vs_bot') {
-            const ai1Cities = st.cities.filter(c => c.ownerId === AI_ID);
-            const ai2Cities = st.cities.filter(c => c.ownerId === AI_ID_2);
-            const ai1Pop = ai1Cities.reduce((a, c) => a + c.population, 0);
-            const ai2Pop = ai2Cities.reduce((a, c) => a + c.population, 0);
-            const ai1Wins = ai1Cities.length > ai2Cities.length ||
-              (ai1Cities.length === ai2Cities.length && ai1Pop >= ai2Pop);
-            const msg = ai1Wins
-              ? `Time's up! North Empire wins (${ai1Cities.length} cities, ${ai1Pop} pop).`
-              : `Time's up! South Empire wins (${ai2Cities.length} cities, ${ai2Pop} pop).`;
+          if (st.gameMode === 'bot_vs_bot' || st.gameMode === 'spectate') {
+            const aiIds = st.players.filter(p => !p.isHuman).map(p => p.id);
+            let bestId = aiIds[0];
+            let bestScore = -1;
+            for (const pid of aiIds) {
+              const cs = st.cities.filter(c => c.ownerId === pid);
+              const pop = cs.reduce((a, c) => a + c.population, 0);
+              const score = cs.length * 1e6 + pop;
+              if (score > bestScore) {
+                bestScore = score;
+                bestId = pid;
+              }
+            }
+            const wname = st.players.find(p => p.id === bestId)?.name ?? 'Empire';
+            const wc = st.cities.filter(c => c.ownerId === bestId);
+            const wpop = wc.reduce((a, c) => a + c.population, 0);
             set({
               phase: 'victory',
-              notifications: [...st.notifications.slice(-8), { id: generateId('n'), turn: st.cycle, message: msg, type: 'success' }],
+              notifications: [...st.notifications.slice(-8), { id: generateId('n'), turn: st.cycle, message: `Time's up! ${wname} wins (${wc.length} cities, ${wpop} pop).`, type: 'success' }],
             });
           } else {
             const humanCities = st.cities.filter(c => c.ownerId === HUMAN_ID);
-            const aiCities = st.cities.filter(c => c.ownerId === AI_ID);
+            const aiIds = st.players.filter(p => !p.isHuman).map(p => p.id);
+            const aiCities = st.cities.filter(c => aiIds.includes(c.ownerId));
             const humanPop = humanCities.reduce((a, c) => a + c.population, 0);
             const aiPop = aiCities.reduce((a, c) => a + c.population, 0);
             const humanWins = humanCities.length > aiCities.length ||
               (humanCities.length === aiCities.length && humanPop >= aiPop);
             const msg = humanWins
               ? 'Time\'s up! You control more territory. Victory!'
-              : 'Time\'s up! The rival empire dominates. Defeat.';
+              : 'Time\'s up! The rival empires dominate. Defeat.';
             set({
               phase: 'victory',
               notifications: [...st.notifications.slice(-8), { id: generateId('n'), turn: st.cycle, message: msg, type: humanWins ? 'success' : 'danger' }],
@@ -1768,7 +1950,7 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   setSimSpeedMultiplier: (speed: 1 | 2 | 4) => {
     const s = get();
-    if (s.phase !== 'playing' || (s.gameMode !== 'bot_vs_bot' && s.gameMode !== 'bot_vs_bot_4')) return;
+    if (s.phase !== 'playing' || (s.gameMode !== 'bot_vs_bot' && s.gameMode !== 'bot_vs_bot_4' && s.gameMode !== 'spectate')) return;
     const now = Date.now();
     const curSpeed = s.simSpeedMultiplier || 1;
     const gameRemSec = Math.max(0, (s.gameEndTime - now) / 1000) * curSpeed;
@@ -1833,13 +2015,15 @@ export const useGameStore = create<GameState>((set, get) => ({
               traitIds: rolled.traitIds,
               backstory: rolled.backstory,
               assignment: null,
+              commanderKind: rolled.commanderKind,
             },
           ];
           if (pr.playerId === HUMAN_ID) {
+            const kindLabel = rolled.commanderKind === 'naval' ? 'Naval commander' : 'Commander';
             flushNotifs.push({
               id: generateId('n'),
               turn: newCycle,
-              message: `Commander ${rolled.name} has arrived.`,
+              message: `${kindLabel} ${rolled.name} has arrived.`,
               type: 'success',
             });
           }
@@ -1905,6 +2089,19 @@ export const useGameStore = create<GameState>((set, get) => ({
               turn: newCycle,
               message: `${tier}${UNIT_DISPLAY_NAMES[pr.type]} training complete.`,
               type: 'success',
+            });
+          }
+        } else if (pr.type === 'builder') {
+          const refund = UNIT_COSTS.builder.gold;
+          flushPlayers = flushPlayers.map(p =>
+            p.id === pr.playerId ? { ...p, gold: p.gold + refund } : p,
+          );
+          if (pr.playerId === HUMAN_ID) {
+            flushNotifs.push({
+              id: generateId('n'),
+              turn: newCycle,
+              message: 'Builder recruits are obsolete; gold refunded.',
+              type: 'info',
             });
           }
         }
@@ -1990,22 +2187,53 @@ export const useGameStore = create<GameState>((set, get) => ({
     let cities = econ.cities;
     let units = econ.units;
     let players = econ.players;
-    const notifs = [...flushNotifs, ...weatherNotifs, ...econ.notifications];
+    let notifs = [...flushNotifs, ...weatherNotifs, ...econ.notifications];
 
     // Military upkeep (food + guns consumption, per cluster); reuse clusters from economy
     const upkeepResult = upkeepTick(units, cities, flushHeroes, newCycle, flushTiles, flushTerritory, econ.clusters);
     notifs.push(...upkeepResult.notifications);
 
+    let constructionsForSet = s.constructions;
+    const autoBuild = planHumanBuilderAutomation({
+      cities,
+      players,
+      tiles: flushTiles,
+      territory: flushTerritory,
+      constructions: constructionsForSet,
+      defenseInstallations: s.defenseInstallations ?? [],
+      scoutTowers: s.scoutTowers ?? [],
+      humanPlayerId: HUMAN_ID,
+      generateId,
+    });
+    if (autoBuild) {
+      cities = autoBuild.nextCities;
+      players = players.map(p => (p.id === HUMAN_ID ? { ...p, gold: autoBuild.nextGold } : p));
+      constructionsForSet = [...constructionsForSet, ...autoBuild.newConstructions];
+      if (autoBuild.notification) {
+        notifs.push({
+          id: generateId('n'),
+          turn: newCycle,
+          message: autoBuild.notification,
+          type: 'info',
+        });
+      }
+    }
+
     // AI turn(s): for each AI player, plan and apply builds, upgrades, recruits, moves, scouts, village incorporation, wall rings
     const aiPlayerIds =
-      s.gameMode === 'human_solo' ? [] : s.gameMode === 'bot_vs_bot' ? [AI_ID, AI_ID_2] : [AI_ID];
+      s.gameMode === 'human_solo' ? [] : s.players.filter(p => !p.isHuman).map(p => p.id);
     let scoutMissions = s.scoutMissions;
     let scoutedHexes = s.scoutedHexes;
     let tilesMut = flushTiles;
     let wallSectionsMut: WallSection[] = s.wallSections.map(w => ({ ...w }));
+    const pendingScrollAttachments: ScrollAttachment[] = [];
+    const pendingScrollRemovals: string[] = [];
 
     for (const aiPlayerId of aiPlayerIds) {
-      const aiPlan = planAiTurn(aiPlayerId, cities, units, players, tilesMut, flushTerritory, getAiParams(), wallSectionsMut);
+      const aiPlan = planAiTurn(
+        aiPlayerId, cities, units, players, tilesMut, flushTerritory, getAiParams(), wallSectionsMut,
+        s.contestedZoneHexKeys ?? [], s.commanders ?? [], s.scrollInventory ?? {}, s.scrollAttachments ?? [],
+      );
       const aiPlayer = players.find(p => p.id === aiPlayerId);
       if (!aiPlayer) continue;
 
@@ -2065,11 +2293,13 @@ export const useGameStore = create<GameState>((set, get) => ({
           const totalGunsL2 = cities.filter(c => c.ownerId === aiPlayerId).reduce((sum, c) => sum + (c.storage.gunsL2 ?? 0), 0);
           if (totalGunsL2 < gunL2Upkeep) continue;
         }
-        const isBuilder = rec.type === 'builder';
-        const academy = city.buildings.find(b => b.type === 'academy');
+        if (rec.type === 'builder') continue;
         const barracks = city.buildings.find(b => b.type === 'barracks');
-        const sq = isBuilder ? (academy ? academy.q : city.q) : city.q;
-        const sr = isBuilder ? (academy ? academy.r : city.r) : city.r;
+        if (rec.type === 'defender' || wantL2 || wantL3) {
+          if ((barracks?.level ?? 1) < 2) continue;
+        }
+        const sq = city.q;
+        const sr = city.r;
         const effArms: 1 | 2 | 3 = rec.type === 'defender' ? 3 : wantL3 ? 3 : wantL2 ? 2 : 1;
         if (gunL2Upkeep > 0) {
           for (const oc of cities.filter(c => c.ownerId === aiPlayerId)) {
@@ -2182,6 +2412,37 @@ export const useGameStore = create<GameState>((set, get) => ({
           });
         }
       }
+
+      // AI commander field assignments
+      for (const ca of aiPlan.commanderAssignments ?? []) {
+        const cmd = flushCommanders.find(c => c.id === ca.commanderId && c.ownerId === aiPlayerId);
+        if (cmd) cmd.assignment = ca.assignment;
+      }
+
+      // AI scroll attachments
+      for (const sa of aiPlan.scrollAttachments ?? []) {
+        const inv = s.scrollInventory[aiPlayerId] ?? [];
+        const scrollItem = inv.find(si => si.id === sa.scrollId);
+        if (!scrollItem) continue;
+        const carrier = units.find(u => u.id === sa.carrierUnitId && u.ownerId === aiPlayerId);
+        if (!carrier || carrier.hp <= 0) continue;
+        const already = s.scrollAttachments.some(a => a.scrollId === sa.scrollId);
+        if (already) continue;
+        pendingScrollAttachments.push({
+          id: generateId('sa'),
+          scrollId: scrollItem.id,
+          kind: scrollItem.kind,
+          carrierUnitId: carrier.id,
+          ownerId: aiPlayerId,
+        });
+        pendingScrollRemovals.push(sa.scrollId);
+      }
+
+      // AI university task selection
+      for (const ut of aiPlan.universityTasks ?? []) {
+        const city = cities.find(c => c.id === ut.cityId && c.ownerId === aiPlayerId);
+        if (city) city.universityBuilderTask = ut.task;
+      }
     }
 
     let aliveUnits = units.filter(u => u.hp > 0);
@@ -2218,11 +2479,11 @@ export const useGameStore = create<GameState>((set, get) => ({
           p.id === winnerId ? { ...p, gold: p.gold + 50 } : p
         );
         const winnerName =
-          s.gameMode === 'bot_vs_bot'
-            ? (winnerId === AI_ID ? 'North Empire' : 'South Empire')
+          s.gameMode === 'bot_vs_bot' || s.gameMode === 'spectate'
+            ? (s.players.find(p => p.id === winnerId)?.name ?? 'Empire')
             : winnerId === HUMAN_ID
               ? 'You'
-              : (s.gameMode === 'human_solo' ? 'Training target' : 'Enemy');
+              : (s.gameMode === 'human_solo' ? 'Training target' : (s.players.find(p => p.id === winnerId)?.name ?? 'Enemy'));
         notifs.push({ id: generateId('n'), turn: newCycle, message: `Ancient city: +50 gold (${winnerName} held it).`, type: 'success' });
       }
     }
@@ -2242,7 +2503,6 @@ export const useGameStore = create<GameState>((set, get) => ({
 
     const scrollTick = tickScrollRegionSearch({
       newCycle,
-      specialRegions: s.specialRegions ?? [],
       tiles: tilesMut,
       units: aliveUnits,
       players: playersForSet,
@@ -2254,15 +2514,15 @@ export const useGameStore = create<GameState>((set, get) => ({
 
     // Victory check
     let phase: GamePhase = 'playing';
-    if (s.gameMode === 'bot_vs_bot') {
-      const ai1Cities = citiesForSet.filter(c => c.ownerId === AI_ID);
-      const ai2Cities = citiesForSet.filter(c => c.ownerId === AI_ID_2);
-      if (ai1Cities.length === 0) {
-        phase = 'victory'; clearAllTimers();
-        notifs.push({ id: generateId('n'), turn: newCycle, message: 'South Empire conquers! Victory.', type: 'success' });
-      } else if (ai2Cities.length === 0) {
-        phase = 'victory'; clearAllTimers();
-        notifs.push({ id: generateId('n'), turn: newCycle, message: 'North Empire conquers! Victory.', type: 'success' });
+    if (s.gameMode === 'bot_vs_bot' || s.gameMode === 'spectate') {
+      const aiIds = s.players.filter(p => !p.isHuman).map(p => p.id);
+      const alive = aiIds.filter(pid => citiesForSet.some(c => c.ownerId === pid));
+      if (alive.length <= 1) {
+        phase = 'victory';
+        clearAllTimers();
+        const w = alive[0];
+        const wname = w ? players.find(p => p.id === w)?.name ?? 'Empire' : 'Empire';
+        notifs.push({ id: generateId('n'), turn: newCycle, message: `${wname} wins!`, type: 'success' });
       }
     } else if (s.gameMode === 'human_solo') {
       const humanCities = citiesForSet.filter(c => c.ownerId === HUMAN_ID);
@@ -2276,13 +2536,14 @@ export const useGameStore = create<GameState>((set, get) => ({
       }
     } else {
       const humanCities = citiesForSet.filter(c => c.ownerId === HUMAN_ID);
-      const aiCities = citiesForSet.filter(c => c.ownerId === AI_ID);
+      const aiIds = s.players.filter(p => !p.isHuman).map(p => p.id);
+      const anyAiAlive = citiesForSet.some(c => aiIds.includes(c.ownerId));
       if (humanCities.length === 0) {
         phase = 'victory'; clearAllTimers();
         notifs.push({ id: generateId('n'), turn: newCycle, message: 'Defeat! Your empire has fallen.', type: 'danger' });
-      } else if (aiCities.length === 0) {
+      } else if (!anyAiAlive) {
         phase = 'victory'; clearAllTimers();
-        notifs.push({ id: generateId('n'), turn: newCycle, message: 'Victory! You conquered the rival empire!', type: 'success' });
+        notifs.push({ id: generateId('n'), turn: newCycle, message: 'Victory! You conquered all rival empires!', type: 'success' });
       }
     }
 
@@ -2308,10 +2569,21 @@ export const useGameStore = create<GameState>((set, get) => ({
       tiles: tilesMut,
       pendingRecruits: pendingRecruitsAcc,
       pendingIncorporations: pendingIncorporationsAcc,
+      constructions: constructionsForSet,
       visibleHexes: flushVisible,
       scrollSearchProgress: scrollTick.scrollSearchProgress,
       scrollSearchClaimed: scrollTick.scrollSearchClaimed,
-      scrollInventory: scrollTick.scrollInventory,
+      scrollInventory: pendingScrollRemovals.length > 0
+        ? Object.fromEntries(
+            Object.entries(scrollTick.scrollInventory).map(([pid, items]) => [
+              pid,
+              items.filter(si => !pendingScrollRemovals.includes(si.id)),
+            ]),
+          )
+        : scrollTick.scrollInventory,
+      scrollAttachments: pendingScrollAttachments.length > 0
+        ? [...s.scrollAttachments, ...pendingScrollAttachments]
+        : s.scrollAttachments,
       notifications: [...s.notifications.slice(-8), ...notifs],
     });
   },
@@ -2367,6 +2639,14 @@ export const useGameStore = create<GameState>((set, get) => ({
     if (s.uiMode === 'build_gold_mine') { get().builderSelectDeposit(q, r, 'gold_mine'); return; }
     if (s.uiMode === 'build_logging_hut') { get().builderSelectDeposit(q, r, 'logging_hut'); return; }
     if (s.uiMode === 'build_road') { get().addRoadPathHex(q, r); return; }
+    if (s.uiMode === 'build_defense') {
+      const pd = s.pendingDefenseBuild;
+      if (pd) {
+        get().startCityDefenseTowerBuild(q, r, pd.towerType, pd.level);
+        set({ uiMode: 'normal', pendingDefenseBuild: null });
+      }
+      return;
+    }
     if (s.uiMode === 'move') {
       // Re-clicking the same hex (where units are) cancels move mode
       if (s.selectedHex && s.selectedHex.q === q && s.selectedHex.r === r) {
@@ -2485,6 +2765,10 @@ export const useGameStore = create<GameState>((set, get) => ({
       get().cancelBuilderBuild();
       return;
     }
+    if (s.uiMode === 'build_defense') {
+      get().cancelDefensePlacement();
+      return;
+    }
     if (s.splitStackPending !== null) {
       set({ splitStackPending: null });
       return;
@@ -2506,6 +2790,8 @@ export const useGameStore = create<GameState>((set, get) => ({
     }
     if (s.uiMode === 'build_mine' || s.uiMode === 'build_quarry' || s.uiMode === 'build_gold_mine' || s.uiMode === 'build_logging_hut' || s.uiMode === 'build_road') {
       set({ selectedHex: null, uiMode: 'normal', pendingMove: null, roadPathSelection: [], selectedClusterKey: null, cityLogisticsOpen: false });
+    } else if (s.uiMode === 'build_defense') {
+      set({ selectedHex: null, uiMode: 'normal', pendingMove: null, pendingDefenseBuild: null, cityLogisticsOpen: false });
     } else if (s.uiMode === 'defend' || s.uiMode === 'intercept') {
       set({ selectedHex: null, uiMode: 'normal', pendingMove: null, cityLogisticsOpen: false });
     } else {
@@ -2525,7 +2811,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     if (!s.selectedHex) return;
     const city = s.getCityAt(s.selectedHex.q, s.selectedHex.r);
     if (!city) return;
-    const observer = s.gameMode === 'bot_vs_bot' || s.gameMode === 'bot_vs_bot_4';
+    const observer = s.gameMode === 'bot_vs_bot' || s.gameMode === 'bot_vs_bot_4' || s.gameMode === 'spectate';
     if (!observer && city.ownerId !== HUMAN_ID) return;
     set({ cityLogisticsOpen: true });
   },
@@ -2556,17 +2842,6 @@ export const useGameStore = create<GameState>((set, get) => ({
     const inTerritory = s.territory.get(hexKey);
     const isPlayerTerritory = inTerritory && inTerritory.playerId === HUMAN_ID;
 
-    // Outside territory: require builder units at the hex
-    if (!isPlayerTerritory) {
-      const buildersAtHex = s.units.filter(
-        u => u.q === q && u.r === r && u.ownerId === HUMAN_ID && u.type === 'builder' && u.hp > 0
-      );
-      if (buildersAtHex.length === 0) {
-        get().addNotification('Need Builder units here to build outside territory!', 'warning');
-        return;
-      }
-    }
-
     // Find nearest owned city to assign the building to
     let cityId: string | undefined;
     if (isPlayerTerritory) {
@@ -2585,20 +2860,14 @@ export const useGameStore = create<GameState>((set, get) => ({
     if (type === 'quarry') {
       if (!tile.hasQuarryDeposit) { get().addNotification('Quarry must be built on a quarry deposit!', 'warning'); return; }
       if (city.population < 10) { get().addNotification('Need 10 population at city for quarry!', 'warning'); return; }
-      const unitsHere = s.units.filter(u => u.q === q && u.r === r && u.ownerId === HUMAN_ID && u.hp > 0);
-      if (unitsHere.length === 0) { get().addNotification('Units must be present on the deposit to build!', 'warning'); return; }
     } else if (type === 'mine') {
       if (!tile.hasMineDeposit) { get().addNotification('Mine must be built on a mine deposit!', 'warning'); return; }
       if (city.population < 10) { get().addNotification('Need 10 population at city for mine!', 'warning'); return; }
-      const unitsHere = s.units.filter(u => u.q === q && u.r === r && u.ownerId === HUMAN_ID && u.hp > 0);
-      if (unitsHere.length === 0) { get().addNotification('Units must be present on the deposit to build!', 'warning'); return; }
     } else if (type === 'logging_hut') {
       if (tile.biome !== 'forest') {
         get().addNotification('Logging hut must be built on forest!', 'warning'); return;
       }
       if (city.population < 10) { get().addNotification('Need 10 population at city for logging hut!', 'warning'); return; }
-      const unitsHere = s.units.filter(u => u.q === q && u.r === r && u.ownerId === HUMAN_ID && u.hp > 0);
-      if (unitsHere.length === 0) { get().addNotification('Units must be present on the deposit to build!', 'warning'); return; }
     } else if (type === 'fishery' || type === 'port' || type === 'shipyard') {
       if (!hexTouchesBiome(s.tiles, q, r, 'water')) {
         get().addNotification(`${type} must be adjacent to water!`, 'warning'); return;
@@ -2617,7 +2886,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       constructions: [...s.constructions, site],
     });
 
-    const inTerr = isPlayerTerritory ? ' (city power)' : ' (builders)';
+    const inTerr = isPlayerTerritory ? ' (city power + University if task matches)' : ' (University workforce if task matches)';
     get().addNotification(`Construction started: ${type} (${BUILDING_COSTS[type]}g)${inTerr}`, 'info');
   },
 
@@ -2640,13 +2909,6 @@ export const useGameStore = create<GameState>((set, get) => ({
     }
     if (s.defenseInstallations.some(d => d.q === q && d.r === r)) {
       get().addNotification('A city defense occupies this hex.', 'warning');
-      return;
-    }
-    const buildersAtHex = s.units.filter(
-      u => u.q === q && u.r === r && u.ownerId === HUMAN_ID && u.type === 'builder' && u.hp > 0
-    );
-    if (buildersAtHex.length === 0) {
-      get().addNotification('Need a Builder on this hex to build trebuchet!', 'warning');
       return;
     }
     const rwCity = findCityForRefinedWoodSpend(q, r, HUMAN_ID, TREBUCHET_REFINED_WOOD_COST, s.cities, s.territory);
@@ -2680,7 +2942,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       constructions: [...s.constructions, site],
     });
     get().addNotification(
-      `Trebuchet construction started (${TREBUCHET_FIELD_GOLD_COST}g, ${TREBUCHET_REFINED_WOOD_COST} ref., ${TREBUCHET_FIELD_BP_COST} BP). Builder builds on this hex.`,
+      `Trebuchet construction started (${TREBUCHET_FIELD_GOLD_COST}g, ${TREBUCHET_REFINED_WOOD_COST} ref., ${TREBUCHET_FIELD_BP_COST} BP). Nearest University provides BP.`,
       'info',
     );
   },
@@ -2708,13 +2970,6 @@ export const useGameStore = create<GameState>((set, get) => ({
     }
     if (s.defenseInstallations.some(d => d.q === q && d.r === r)) {
       get().addNotification('A city defense occupies this hex.', 'warning');
-      return;
-    }
-    const buildersAtHex = s.units.filter(
-      u => u.q === q && u.r === r && u.ownerId === HUMAN_ID && u.type === 'builder' && u.hp > 0
-    );
-    if (buildersAtHex.length === 0) {
-      get().addNotification('Need a Builder on this hex to build scout tower!', 'warning');
       return;
     }
     const site: ConstructionSite = {
@@ -2751,18 +3006,6 @@ export const useGameStore = create<GameState>((set, get) => ({
     }
     if (s.constructions.some(cs => cs.q === siteQ && cs.r === siteR)) {
       get().addNotification('Already under construction here!', 'warning');
-      return;
-    }
-    const buildersAtHex = s.units.filter(
-      u =>
-        u.q === siteQ &&
-        u.r === siteR &&
-        u.ownerId === HUMAN_ID &&
-        u.type === 'builder' &&
-        u.hp > 0,
-    );
-    if (buildersAtHex.length === 0) {
-      get().addNotification('Need a Builder on this hex.', 'warning');
       return;
     }
     const hexKey = tileKey(siteQ, siteR);
@@ -2840,7 +3083,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       constructions: [...s.constructions, site],
     });
     get().addNotification(
-      `${DEFENSE_TOWER_DISPLAY_NAME[towerType]} L${targetLevel} construction started (${bpRequired} BP, builder on this hex).`,
+      `${DEFENSE_TOWER_DISPLAY_NAME[towerType]} L${targetLevel} construction started (${bpRequired} BP, University workforce if City defenses task).`,
       'info',
     );
   },
@@ -2851,8 +3094,16 @@ export const useGameStore = create<GameState>((set, get) => ({
     if (!tile || tile.biome === 'water') return;  // allow roads on mountains for mine connectivity
     if (tile.hasRoad) { get().addNotification('Road already here!', 'info'); return; }
     if (s.roadConstructions.some(rc => rc.q === q && rc.r === r)) return;
-    const buildersAtHex = s.units.filter(u => u.q === q && u.r === r && u.ownerId === HUMAN_ID && u.type === 'builder' && u.hp > 0);
-    if (buildersAtHex.length === 0) { get().addNotification('Need Builder here to build road!', 'warning'); return; }
+    const terr = s.territory.get(tileKey(q, r));
+    if (!terr || terr.playerId !== HUMAN_ID) {
+      get().addNotification('Roads must be in your territory (University workforce builds them).', 'warning');
+      return;
+    }
+    const city = s.cities.find(c => c.id === terr.cityId);
+    if (!city?.buildings.some(b => b.type === 'academy')) {
+      get().addNotification('Need a University in this territory to build roads.', 'warning');
+      return;
+    }
     const site: RoadConstructionSite = { id: generateId('road'), q, r, ownerId: HUMAN_ID, bpRequired: ROAD_BP_COST, bpAccumulated: 0 };
     set({ roadConstructions: [...s.roadConstructions, site] });
     get().addNotification(`Road construction started (${ROAD_BP_COST} BP, free)`, 'info');
@@ -2965,6 +3216,53 @@ export const useGameStore = create<GameState>((set, get) => ({
     get().addNotification('Farm upgraded! +50 grain/cycle (L2).', 'success');
   },
 
+  upgradeUniversity: (cityId, academyQ, academyR) => {
+    const s = get();
+    const player = s.players.find(p => p.id === HUMAN_ID);
+    const city = s.cities.find(c => c.id === cityId);
+    if (!player || !city) return;
+    const building = city.buildings.find(b => b.type === 'academy' && b.q === academyQ && b.r === academyR);
+    if (!building) return;
+    const lvl = building.level ?? 1;
+    if (lvl >= 5) {
+      get().addNotification('University is at max level (L5).', 'info');
+      return;
+    }
+    const cost = UNIVERSITY_UPGRADE_COSTS[lvl - 1];
+    if (cost === undefined || player.gold < cost) {
+      get().addNotification(`Need ${cost ?? '?'} gold to upgrade University.`, 'warning');
+      return;
+    }
+    const newLevel = lvl + 1;
+    const newCities = s.cities.map(c => {
+      if (c.id !== cityId) return c;
+      return {
+        ...c,
+        buildings: c.buildings.map(b =>
+          b.type === 'academy' && b.q === academyQ && b.r === academyR ? { ...b, level: newLevel } : b
+        ),
+      };
+    });
+    set({
+      players: s.players.map(p => (p.id === HUMAN_ID ? { ...p, gold: p.gold - cost } : p)),
+      cities: newCities,
+    });
+    get().addNotification(`University upgraded to L${newLevel}! Workforce: ${newLevel} builder slot${newLevel > 1 ? 's' : ''}.`, 'success');
+  },
+
+  setUniversityBuilderTask: (cityId, task) => {
+    const s = get();
+    const city = s.cities.find(c => c.id === cityId && c.ownerId === HUMAN_ID);
+    if (!city?.buildings.some(b => b.type === 'academy')) {
+      get().addNotification('Need a University in that city.', 'warning');
+      return;
+    }
+    set({
+      cities: s.cities.map(c => (c.id === cityId ? { ...c, universityBuilderTask: task } : c)),
+    });
+    get().addNotification(`University workforce: ${BUILDER_TASK_LABELS[task]}.`, 'info');
+  },
+
   adjustWorkers: (cityId, buildingQ, buildingR, delta) => {
     const s = get();
     const city = s.cities.find(c => c.id === cityId);
@@ -3024,7 +3322,6 @@ export const useGameStore = create<GameState>((set, get) => ({
 
     const isBuilder = type === 'builder';
     const barracks = city.buildings.find(b => b.type === 'barracks');
-    const academy = city.buildings.find(b => b.type === 'academy');
     const barracksLvl = barracks ? (barracks.level ?? 1) : 1;
     // Defender is always L3; other units use requested armsLevel (1/2/3)
     let effectiveLevel: 1 | 2 | 3 = type === 'defender' ? 3 : (armsLevel ?? 1);
@@ -3045,9 +3342,8 @@ export const useGameStore = create<GameState>((set, get) => ({
     }
 
     if (isBuilder) {
-      if (!academy) {
-        get().addNotification('Build an Academy to recruit Builders!', 'warning'); return;
-      }
+      get().addNotification('Builders are tied to your University level — open the University to set workforce tasks.', 'info');
+      return;
     } else {
       if (!barracks) {
         get().addNotification('Build a Barracks to recruit military units!', 'warning'); return;
@@ -3059,13 +3355,6 @@ export const useGameStore = create<GameState>((set, get) => ({
         get().addNotification('Upgrade barracks first to recruit L2/L3 units!', 'warning'); return;
       }
     }
-    if (wantL2 && type === 'builder') {
-      get().addNotification('Builders have no L2 variant.', 'info'); return;
-    }
-    if (wantL3 && type === 'builder') {
-      get().addNotification('Builders have no L3 variant.', 'info'); return;
-    }
-
     // Resolve cost by tier: L1 = UNIT_COSTS, L2 = UNIT_L2_COSTS (gold+stone), L3/defender = UNIT_L3_COSTS (gold+iron; defender iron only)
     const goldCost = wantL3 ? UNIT_L3_COSTS[type].gold : wantL2 ? UNIT_L2_COSTS[type].gold : UNIT_COSTS[type].gold;
     const stoneCost = wantL2 ? (UNIT_L2_COSTS[type].stone ?? 0) : 0;
@@ -3117,8 +3406,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       }
     }
 
-    const spawnQ = isBuilder ? (academy ? academy.q : city.q) : city.q;
-    const spawnR = isBuilder ? (academy ? academy.r : city.r) : city.r;
+    const spawnQ = city.q;
+    const spawnR = city.r;
     const effArms: 1 | 2 | 3 =
       type === 'defender' || type === 'crusader_knight' ? 3 : wantL3 ? 3 : wantL2 ? 2 : 1;
 
@@ -3307,6 +3596,15 @@ export const useGameStore = create<GameState>((set, get) => ({
     const city = s.cities.find(c => c.id === cityId);
     if (!player || !city) return;
 
+    const empirePop = s.cities.filter(c => c.ownerId === HUMAN_ID).reduce((sum, c) => sum + c.population, 0);
+    if (empirePop < HERO_POPULATION_UNLOCK) {
+      get().addNotification(
+        `Heroes unlock at ${HERO_POPULATION_UNLOCK} empire population (currently ${empirePop}).`,
+        'warning',
+      );
+      return;
+    }
+
     // Heroes use barracks slots only (commanders are separate).
     const playerBarracks = s.cities
       .filter(c => c.ownerId === HUMAN_ID)
@@ -3373,6 +3671,38 @@ export const useGameStore = create<GameState>((set, get) => ({
     get().addNotification('Commander training — ready next economy cycle.', 'info');
   },
 
+  recruitCommanderInstant: () => {
+    const s = get();
+    const player = s.players.find(p => p.id === HUMAN_ID);
+    if (!player) return;
+    if (player.gold < COMMANDER_RECRUIT_GOLD) {
+      get().addNotification(`Need ${COMMANDER_RECRUIT_GOLD} gold to recruit a commander!`, 'warning');
+      return;
+    }
+    const seed = (Date.now() ^ (Math.floor(Math.random() * 0x7fffffff) << 3)) >>> 0;
+    const rolled = rollCommanderIdentity(seed);
+    const portraitDataUrl = renderCommanderPortraitDataUrl(rolled.portraitSeed);
+    const cmd = {
+      id: generateId('cmd'),
+      name: rolled.name,
+      ownerId: HUMAN_ID,
+      q: 0,
+      r: 0,
+      portraitSeed: rolled.portraitSeed,
+      portraitDataUrl,
+      traitIds: rolled.traitIds,
+      backstory: rolled.backstory,
+      assignment: null,
+      commanderKind: rolled.commanderKind,
+    };
+    set({
+      players: s.players.map(p => (p.id === HUMAN_ID ? { ...p, gold: p.gold - COMMANDER_RECRUIT_GOLD } : p)),
+      commanders: [...s.commanders, cmd],
+    });
+    const kindLabel = rolled.commanderKind === 'naval' ? 'Naval commander' : 'Commander';
+    get().addNotification(`${kindLabel} ${rolled.name} recruited.`, 'success');
+  },
+
   assignCommanderToCityDefense: (commanderId, cityId) => {
     const s = get();
     const cmd = s.commanders.find(c => c.id === commanderId && c.ownerId === HUMAN_ID);
@@ -3381,39 +3711,55 @@ export const useGameStore = create<GameState>((set, get) => ({
       get().addNotification('Invalid commander or city.', 'warning');
       return;
     }
+    if ((cmd.commanderKind ?? 'land') === 'naval') {
+      get().addNotification('Naval commanders lead fleets, not city garrisons.', 'warning');
+      return;
+    }
     set({
-      commanders: s.commanders.map(c =>
-        c.id === commanderId
-          ? { ...c, assignment: { kind: 'city_defense' as const, cityId }, q: city.q, r: city.r }
-          : c,
-      ),
+      commanders: s.commanders.map(c => {
+        if (c.ownerId !== HUMAN_ID) return c;
+        if (c.id === commanderId) {
+          return { ...c, assignment: { kind: 'city_defense' as const, cityId }, q: city.q, r: city.r };
+        }
+        if (c.assignment?.kind === 'city_defense' && c.assignment.cityId === cityId) {
+          return { ...c, assignment: null };
+        }
+        return c;
+      }),
     });
     get().addNotification(`${cmd.name} assigned to defend ${city.name}.`, 'success');
   },
 
-  assignCommanderToFieldAtSelectedHex: (commanderId) => {
+  assignCommanderToFieldStack: (commanderId, q, r) => {
     const s = get();
-    const sel = s.selectedHex;
-    if (!sel) {
-      get().addNotification('Select a hex with your troops first.', 'warning');
-      return;
-    }
     const cmd = s.commanders.find(c => c.id === commanderId && c.ownerId === HUMAN_ID);
     if (!cmd) return;
-    const stack = s.units.filter(
+    const kind = cmd.commanderKind ?? 'land';
+    const base = s.units.filter(
       u =>
-        u.q === sel.q &&
-        u.r === sel.r &&
+        u.q === q &&
+        u.r === r &&
         u.ownerId === HUMAN_ID &&
         u.hp > 0 &&
         !u.aboardShipId &&
-        u.type !== 'builder' &&
-        !isNavalUnitType(u.type),
+        u.type !== 'builder',
     );
-    const anchor = stack[0];
-    if (!anchor) {
-      get().addNotification('No land army on this hex to attach the commander to.', 'warning');
-      return;
+    const navalCandidates = base.filter(u => isNavalUnitType(u.type)).sort((a, b) => a.id.localeCompare(b.id));
+    const landCandidates = base.filter(u => !isNavalUnitType(u.type)).sort((a, b) => a.id.localeCompare(b.id));
+
+    let anchor: (typeof s.units)[number] | undefined;
+    if (kind === 'naval') {
+      anchor = navalCandidates[0];
+      if (!anchor) {
+        get().addNotification('No ships on this hex for a naval commander.', 'warning');
+        return;
+      }
+    } else {
+      anchor = landCandidates[0];
+      if (!anchor) {
+        get().addNotification('No land army on this hex for this commander.', 'warning');
+        return;
+      }
     }
     set({
       commanders: s.commanders.map(c =>
@@ -3427,7 +3773,19 @@ export const useGameStore = create<GameState>((set, get) => ({
           : c,
       ),
     });
-    get().addNotification(`${cmd.name} leads the stack (anchor unit).`, 'success');
+    get().addNotification(
+      `${cmd.name} leads the ${kind === 'naval' ? 'fleet' : 'stack'} (anchor unit).`,
+      'success',
+    );
+  },
+
+  assignCommanderToFieldAtSelectedHex: (commanderId) => {
+    const sel = get().selectedHex;
+    if (!sel) {
+      get().addNotification('Select a hex with your troops first.', 'warning');
+      return;
+    }
+    get().assignCommanderToFieldStack(commanderId, sel.q, sel.r);
   },
 
   unassignCommander: (commanderId) => {
@@ -3441,14 +3799,24 @@ export const useGameStore = create<GameState>((set, get) => ({
   setFoodPriority: (p) => set({ players: get().players.map(pl => pl.id === HUMAN_ID ? { ...pl, foodPriority: p } : pl) }),
   setTaxRate: (r) => set({ players: get().players.map(p => p.id === HUMAN_ID ? { ...p, taxRate: r } : p) }),
 
+  startDefensePlacement: (towerType, level, cityId) => {
+    set({ uiMode: 'build_defense', pendingDefenseBuild: { towerType, level, cityId } });
+    get().addNotification(`Click a territory hex to place ${towerType.replace('_', ' ')} L${level}.`, 'info');
+  },
+
+  cancelDefensePlacement: () => {
+    set({ uiMode: 'normal', pendingDefenseBuild: null });
+  },
+
   startBuilderBuild: (mode) => {
     const s = get();
     if (!s.selectedHex) return;
-    const buildersHere = s.units.filter(
-      u => u.q === s.selectedHex!.q && u.r === s.selectedHex!.r && u.ownerId === HUMAN_ID && u.type === 'builder' && u.hp > 0
+    const hasUniversity = s.cities.some(
+      c => c.ownerId === HUMAN_ID && c.buildings.some(b => b.type === 'academy'),
     );
-    if (buildersHere.length === 0) {
-      get().addNotification('Select a hex with a Builder first!', 'warning'); return;
+    if (!hasUniversity) {
+      get().addNotification('Build a University — its workforce handles field construction.', 'warning');
+      return;
     }
     const uiMode = mode === 'mine' ? 'build_mine' : mode === 'quarry' ? 'build_quarry' : mode === 'gold_mine' ? 'build_gold_mine' : mode === 'logging_hut' ? 'build_logging_hut' : 'build_road';
     set({ uiMode, roadPathSelection: [] });
@@ -3541,26 +3909,10 @@ export const useGameStore = create<GameState>((set, get) => ({
     if (ironCost > 0 && (city.storage.iron ?? 0) < ironCost) {
       get().addNotification(`Need ${ironCost} iron at nearest city for Gold mine!`, 'warning'); return;
     }
-    const builders = s.units.filter(
-      u => u.q === s.selectedHex!.q && u.r === s.selectedHex!.r && u.ownerId === HUMAN_ID && u.type === 'builder' && u.hp > 0
-    );
-    if (builders.length === 0) { get().addNotification('Need a Builder!', 'warning'); return; }
-    const builder = builders[0];
     const site: ConstructionSite = {
       id: generateId('con'), type: bType, q, r, cityId, ownerId: HUMAN_ID,
       bpRequired: BUILDING_BP_COST[bType], bpAccumulated: 0,
     };
-    const newUnits = s.units.map(u =>
-      u.id === builder.id
-        ? {
-            ...u,
-            targetQ: q,
-            targetR: r,
-            status: 'moving' as const,
-            marchInitialHexDistance: marchHexDistanceAtOrder(u, q, r),
-          }
-        : u
-    );
     const updatedCities = s.cities.map(c =>
       c.id === cityId && ironCost > 0
         ? { ...c, storage: { ...c.storage, iron: Math.max(0, (c.storage.iron ?? 0) - ironCost) } }
@@ -3570,10 +3922,9 @@ export const useGameStore = create<GameState>((set, get) => ({
       constructions: [...s.constructions, site],
       cities: updatedCities,
       players: s.players.map(p => p.id === HUMAN_ID ? { ...p, gold: p.gold - BUILDING_COSTS[bType] } : p),
-      units: newUnits,
       uiMode: 'normal',
     });
-    get().addNotification(`${typeLabel} construction started! Builder en route.`, 'success');
+    get().addNotification(`${typeLabel} construction started! University workforce applies BP when the task matches.`, 'success');
   },
 
   addRoadPathHex: (q, r) => {
@@ -3605,49 +3956,27 @@ export const useGameStore = create<GameState>((set, get) => ({
       if (!tile || tile.biome === 'water') continue;  // allow roads on mountains for mine connectivity
       if (tile.hasRoad) continue;
       if (s.roadConstructions.some(rc => rc.q === q && rc.r === r)) continue;
+      const terr = s.territory.get(tileKey(q, r));
+      if (!terr || terr.playerId !== HUMAN_ID) continue;
+      const rcity = s.cities.find(c => c.id === terr.cityId);
+      if (!rcity?.buildings.some(b => b.type === 'academy')) continue;
       newSites.push({ id: generateId('road'), q, r, ownerId: HUMAN_ID, bpRequired: ROAD_BP_COST, bpAccumulated: 0 });
     }
     if (newSites.length === 0) {
+      get().addNotification('Road path must stay inside territory with a University.', 'warning');
       set({ uiMode: 'normal', roadPathSelection: [] }); return;
     }
-    // Use builders at selected hex, or any human builders on the map (so path mode works without strict selection)
-    const buildersAtSelected = s.selectedHex
-      ? s.units.filter(
-          u => u.q === s.selectedHex!.q && u.r === s.selectedHex!.r && u.ownerId === HUMAN_ID && u.type === 'builder' && u.hp > 0
-        )
-      : [];
-    const builders = buildersAtSelected.length > 0
-      ? buildersAtSelected
-      : s.units.filter(u => u.ownerId === HUMAN_ID && u.type === 'builder' && u.hp > 0);
-    // Order sites by distance from first builder / center of selection so builders reach them in sensible order
-    const fromQ = builders[0]?.q ?? s.roadPathSelection[0]?.q ?? 0;
-    const fromR = builders[0]?.r ?? s.roadPathSelection[0]?.r ?? 0;
+    const fromQ = s.roadPathSelection[0]?.q ?? 0;
+    const fromR = s.roadPathSelection[0]?.r ?? 0;
     newSites.sort((a, b) =>
       hexDistance(fromQ, fromR, a.q, a.r) - hexDistance(fromQ, fromR, b.q, b.r)
     );
-    let newUnits = s.units;
-    if (builders.length > 0 && newSites.length > 0) {
-      // Send builders to road sites — distribute (builder i -> site i % n); when one completes they auto-reassign to next
-      newUnits = s.units.map(u => {
-        const idx = builders.findIndex(b => b.id === u.id);
-        if (idx < 0) return u;
-        const site = newSites[idx % newSites.length];
-        return {
-          ...u,
-          targetQ: site.q,
-          targetR: site.r,
-          status: 'moving' as const,
-          marchInitialHexDistance: marchHexDistanceAtOrder(u, site.q, site.r),
-        };
-      });
-    }
     set({
       roadConstructions: [...s.roadConstructions, ...newSites],
-      units: newUnits,
       uiMode: 'normal',
       roadPathSelection: [],
     });
-    get().addNotification(`Road construction started for ${newSites.length} hex(es). Builder en route.`, 'success');
+    get().addNotification(`Road construction queued for ${newSites.length} hex(es). University workforce builds in territory.`, 'success');
   },
   setSupplyViewTab: (tab) => set({ supplyViewTab: tab, selectedClusterKey: tab === 'normal' ? null : get().selectedClusterKey }),
   setSelectedClusterKey: (key) => set({ selectedClusterKey: key }),
@@ -4775,7 +5104,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   // ─── Vision ──────────────────────────────────────────────
   recomputeVision: () => {
     const s = get();
-    if (s.gameMode === 'bot_vs_bot') {
+    if (s.gameMode === 'bot_vs_bot' || s.gameMode === 'bot_vs_bot_4' || s.gameMode === 'spectate') {
       const allKeys = new Set<string>();
       s.tiles.forEach((_, key) => allKeys.add(key));
       set({ visibleHexes: allKeys });

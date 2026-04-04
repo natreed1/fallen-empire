@@ -61,6 +61,14 @@ export const EVOLVABLE_PARAM_KEYS = [
   'supplyAnchorDistanceWeight',
   'supplyStarvationRiskWeight',
   'supplyCityAcquisitionBias',
+  'contestedZoneCommitShare',
+  'contestedZoneMinSurplusMilitary',
+  'commanderFieldAssignRate',
+  'commanderMinArmySize',
+  'scrollTerrainPriority',
+  'scrollTerrainMaxDivert',
+  'universityIronMinePref',
+  'universityCityDefenseThreshold',
 ] as const;
 
 export type EvolvableParamKey = (typeof EVOLVABLE_PARAM_KEYS)[number];
@@ -133,6 +141,14 @@ export const MUTATION_RANGES: Record<Exclude<EvolvableParamKey, 'militaryLevelMi
   supplyAnchorDistanceWeight: { min: 0, max: 2, exploration: 'medium' },
   supplyStarvationRiskWeight: { min: 0, max: 2, exploration: 'medium' },
   supplyCityAcquisitionBias: { min: 0, max: 1, exploration: 'medium' },
+  contestedZoneCommitShare: { min: 0, max: 0.5, exploration: 'medium' },
+  contestedZoneMinSurplusMilitary: { min: 0, max: 15, round: true, exploration: 'medium' },
+  commanderFieldAssignRate: { min: 0, max: 1, exploration: 'medium' },
+  commanderMinArmySize: { min: 1, max: 8, round: true, exploration: 'low' },
+  scrollTerrainPriority: { min: 0, max: 1, exploration: 'medium' },
+  scrollTerrainMaxDivert: { min: 0, max: 5, round: true, exploration: 'medium' },
+  universityIronMinePref: { min: 0, max: 1, exploration: 'medium' },
+  universityCityDefenseThreshold: { min: 0, max: 1, exploration: 'medium' },
 };
 
 /** Params intentionally excluded from mutation (fixed). Empty unless we add allowlisted fixed params. */

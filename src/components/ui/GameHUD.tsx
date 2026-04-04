@@ -2,11 +2,11 @@
 
 import { useState, useEffect, useMemo } from 'react';
 import { useGameStore } from '@/store/useGameStore';
-import { setAiParams } from '@/lib/aiParams';
 import { computeTradeClusters, getCapitalCluster, getSupplyingClusterKey } from '@/lib/logistics';
 import { computeCityProductionRate, computeSawmillBuildingPreview } from '@/lib/gameLoop';
 import { getWeatherHarvestMultiplier } from '@/lib/weather';
-import { BUILDING_COSTS, BUILDING_PRODUCTION, BUILDING_BP_COST, BUILDING_JOBS, CITY_BUILDING_POWER, BUILDER_POWER, BP_RATE_BASE, TERRAIN_FOOD_YIELD, UNIT_COSTS, UNIT_L2_COSTS, UNIT_L3_COSTS, UNIT_BASE_STATS, UNIT_DISPLAY_NAMES, HERO_BUFFS, COMMANDER_TRAIT_INFO, COMMANDER_RECRUIT_GOLD, COMMANDER_STARTING_PICK, COMMANDER_DRAFT_POOL_SIZE, VILLAGE_INCORPORATE_COST, MARKET_GOLD_PER_CYCLE, SCOUT_MISSION_COST, WEATHER_DISPLAY, BARACKS_UPGRADE_COST, BARACKS_L3_UPGRADE_COST, FACTORY_UPGRADE_COST, FARM_UPGRADE_COST, FARM_L2_FOOD_PER_CYCLE, WALL_SECTION_STONE_COST, WORKERS_PER_LEVEL, MIN_STAFFING_RATIO, ROAD_BP_COST, TREBUCHET_FIELD_BP_COST, TREBUCHET_FIELD_GOLD_COST, TREBUCHET_REFINED_WOOD_COST, SCOUT_TOWER_BP_COST, SCOUT_TOWER_GOLD_COST, SAWMILL_WOOD_PER_REFINED, getBuildingJobs, getUnitStats, BuildingType, UnitType, ArmyStance, Biome, hexDistance, tileKey, POP_BIRTH_RATE, POP_NATURAL_DEATHS, POP_CARRYING_CAPACITY_PER_FOOD, POP_EXPECTED_K_ALPHA, STARVATION_DEATHS, SHIP_RECRUIT_COSTS, isNavalUnitType, getShipMaxCargo, hexTouchesBiome, AttackCityStyle, DefenseTowerType, DefenseTowerLevel, DEFENSE_TOWER_LEVEL_COSTS, DEFENSE_TOWER_MAX_PER_CITY, DEFENSE_TOWER_DISPLAY_NAME, getDefenseTowerBpCost, City, CONTESTED_ZONE_GOLD_REWARD, CONTESTED_ZONE_IRON_REWARD, KingdomId, KINGDOM_IDS, KINGDOM_DISPLAY_NAMES, KINGDOM_SETUP_ICONS, SCROLL_SEARCH_CYCLES_REQUIRED, SCROLL_DISPLAY_NAME, SCROLL_COMBAT_BONUS, SCROLL_DEFENSE_BONUS, SCROLL_MOVEMENT_BONUS, SCROLL_ARMY_SLOT_ORDER, SCROLL_SLOT_LABEL, type ScrollKind, type Commander, type ScrollAttachment } from '@/types/game';
+import { BUILDING_COSTS, BUILDING_PRODUCTION, BUILDING_BP_COST, BUILDING_JOBS, CITY_BUILDING_POWER, BUILDER_POWER, BP_RATE_BASE, TERRAIN_FOOD_YIELD, UNIT_COSTS, UNIT_L2_COSTS, UNIT_L3_COSTS, UNIT_BASE_STATS, UNIT_DISPLAY_NAMES, HERO_BUFFS, COMMANDER_TRAIT_INFO, COMMANDER_RECRUIT_GOLD, HERO_POPULATION_UNLOCK, VILLAGE_INCORPORATE_COST, MARKET_GOLD_PER_CYCLE, SCOUT_MISSION_COST, WEATHER_DISPLAY, BARACKS_UPGRADE_COST, BARACKS_L3_UPGRADE_COST, FACTORY_UPGRADE_COST, FARM_UPGRADE_COST, FARM_L2_FOOD_PER_CYCLE, WALL_SECTION_STONE_COST, WORKERS_PER_LEVEL, MIN_STAFFING_RATIO, ROAD_BP_COST, TREBUCHET_FIELD_BP_COST, TREBUCHET_FIELD_GOLD_COST, TREBUCHET_REFINED_WOOD_COST, SCOUT_TOWER_BP_COST, SCOUT_TOWER_GOLD_COST, SAWMILL_WOOD_PER_REFINED, getBuildingJobs, getUnitStats, BuildingType, UnitType, ArmyStance, Biome, hexDistance, tileKey, POP_BIRTH_RATE, POP_NATURAL_DEATHS, POP_CARRYING_CAPACITY_PER_FOOD, POP_EXPECTED_K_ALPHA, STARVATION_DEATHS, SHIP_RECRUIT_COSTS, isNavalUnitType, getShipMaxCargo, hexTouchesBiome, AttackCityStyle, DefenseTowerType, DefenseTowerLevel, DEFENSE_TOWER_LEVEL_COSTS, DEFENSE_TOWER_MAX_PER_CITY, DEFENSE_TOWER_DISPLAY_NAME, getDefenseTowerBpCost, City, CONTESTED_ZONE_GOLD_REWARD, CONTESTED_ZONE_IRON_REWARD, KingdomId, KINGDOM_IDS, KINGDOM_DISPLAY_NAMES, KINGDOM_SETUP_ICONS, SCROLL_SEARCH_CYCLES_REQUIRED, SCROLL_DISPLAY_NAME, SPECIAL_REGION_DISPLAY_NAME, scrollKindForTerrain, SCROLL_COMBAT_BONUS, SCROLL_DEFENSE_BONUS, SCROLL_MOVEMENT_BONUS, SCROLL_ARMY_SLOT_ORDER, SCROLL_SLOT_LABEL, MAP_SIZE_PRESETS, type MapSizePreset, type MapTerrainPreset, type ScrollKind, type Commander, UNIVERSITY_UPGRADE_COSTS, BUILDER_TASK_LABELS, type BuilderTask, DEFAULT_BUILDER_TASK } from '@/types/game';
+import { computeConstructionAvailableBp, computeRoadAvailableBp, getUniversityBuilderSlots } from '@/lib/builders';
 import { countLandMilitaryByType } from '@/lib/siege';
 import { findCityForRefinedWoodSpend } from '@/lib/territory';
 import Image from 'next/image';
@@ -31,12 +31,11 @@ function formatDefenseLevelCost(level: DefenseTowerLevel): string {
   return parts.join(' · ');
 }
 
-/** Mortar / archer tower / ballista: builder + your territory; also used from main Build menu. */
+/** Mortar / archer tower / ballista: your territory + University workforce (City defenses task) for extra BP. */
 function BuilderCityDefensesSection({
   q,
   r,
   inTerritory,
-  buildersHere,
   hasDefenseAtHex,
   hasCityAtHex,
   tileBiome,
@@ -45,11 +44,9 @@ function BuilderCityDefensesSection({
   q: number;
   r: number;
   inTerritory: boolean;
-  buildersHere: number;
   hasDefenseAtHex: boolean;
   hasCityAtHex: boolean;
   tileBiome?: string;
-  /** True when map shows a pending move — defenses place on that hex, BP from builders on the selected stack. */
   usingMoveDestination?: boolean;
 }) {
   const human = useGameStore(s => s.getHumanPlayer)();
@@ -58,7 +55,7 @@ function BuilderCityDefensesSection({
   const defenseInstallations = useGameStore(s => s.defenseInstallations);
   const startCityDefenseTowerBuild = useGameStore(s => s.startCityDefenseTowerBuild);
 
-  if (buildersHere <= 0 || hasCityAtHex) return null;
+  if (hasCityAtHex) return null;
   if (tileBiome === 'water' || tileBiome === 'mountain') return null;
 
   const payCityForDefense =
@@ -77,11 +74,11 @@ function BuilderCityDefensesSection({
         <p className="text-[10px] text-empire-parchment/60 leading-snug">
           {usingMoveDestination ? (
             <>
-              The <span className="text-empire-parchment/85">move destination</span> must be inside your territory. Pick another land hex in your border, or cancel the move (Esc) and walk the builder there first.
+              The <span className="text-empire-parchment/85">move destination</span> must be inside your territory. Pick another land hex in your border, or cancel the move (Esc).
             </>
           ) : (
             <>
-              Move your builder onto <span className="text-empire-parchment/85">your territory</span> (inside your border). Then L1–L5 buttons appear here and in the full Build menu. Costs: player gold + that city&apos;s wood/stone/iron.
+              Select a hex inside <span className="text-empire-parchment/85">your territory</span> to place defenses. Costs: player gold + that city&apos;s wood/stone/iron. University workforce builds when the City defenses task is active.
             </>
           )}
         </p>
@@ -92,7 +89,7 @@ function BuilderCityDefensesSection({
   if (hasDefenseAtHex) {
     return (
       <p className="text-[10px] text-empire-parchment/50 border border-empire-stone/20 rounded px-2 py-1.5">
-        This hex already has a defense — click it to upgrade (needs builder on hex).
+        This hex already has a defense — click it to upgrade.
       </p>
     );
   }
@@ -101,10 +98,10 @@ function BuilderCityDefensesSection({
 
   return (
     <div className="space-y-2 border border-rose-500/35 rounded-md px-2 py-2 bg-rose-950/20">
-      <h4 className="text-rose-300 text-[11px] font-semibold">City defenses — place here (builder BP)</h4>
+      <h4 className="text-rose-300 text-[11px] font-semibold">City defenses — place here</h4>
       {usingMoveDestination && (
         <p className="text-[10px] text-amber-200/80 leading-snug">
-          Placement uses your <span className="text-amber-100/90">move destination</span> (pending-move ring). Builders on the selected stack supply BP until they reach the site or you cancel the move first.
+          Placement uses your <span className="text-amber-100/90">move destination</span> (pending-move ring) when confirming from a move order.
         </p>
       )}
       <p className="text-[10px] text-empire-parchment/50 leading-snug">
@@ -152,7 +149,6 @@ export default function GameHUD() {
     <div className="absolute inset-0 pointer-events-none z-10">
       {phase === 'setup' && <SetupScreen />}
       {phase === 'place_city' && <PlaceCityOverlay />}
-      {phase === 'commander_setup' && <CommanderSetupOverlay />}
       {phase === 'playing' && <PlayingHUD />}
       {phase === 'victory' && <VictoryScreen />}
     </div>
@@ -162,195 +158,212 @@ export default function GameHUD() {
 // ─── Setup ─────────────────────────────────────────────────────────
 
 function SetupScreen() {
+  const generateWorld = useGameStore(s => s.generateWorld);
   const startPlacement = useGameStore(s => s.startPlacement);
+  const startSpectateMatch = useGameStore(s => s.startSpectateMatch);
   const selectedKingdom = useGameStore(s => s.selectedKingdom);
   const setSelectedKingdom = useGameStore(s => s.setSelectedKingdom);
-  return (
-    <div className="absolute inset-0 flex items-center justify-center bg-black/60 pointer-events-auto">
-      <div className="bg-empire-dark border border-empire-gold/40 rounded-xl p-8 text-center max-w-lg">
-        <h1 className="text-3xl font-bold text-empire-gold tracking-widest mb-4">FALLEN EMPIRE</h1>
-        <p className="text-empire-parchment/70 mb-2 leading-relaxed">
-          The old empire has crumbled. Rebuild — or be conquered.
-        </p>
-        <p className="text-empire-parchment/50 text-sm mb-4">
-          Real-time strategy. 35-minute match. Economy cycles every 30s.
-          <br />Draft soldiers from your population. Armies stack on hexes.
-        </p>
-        <p className="text-empire-parchment/60 text-xs uppercase tracking-wide mb-2">Choose your kingdom</p>
-        <div className="grid grid-cols-2 gap-2 mb-6">
-          {KINGDOM_IDS.map((id: KingdomId) => (
-            <button
-              key={id}
-              type="button"
-              onClick={() => setSelectedKingdom(id)}
-              className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium border transition-colors ${
-                selectedKingdom === id
-                  ? 'border-empire-gold bg-empire-gold/20 text-empire-gold'
-                  : 'border-empire-stone/40 bg-empire-dark/60 text-empire-parchment/80 hover:border-empire-gold/50'
-              }`}
-            >
-              <span className="relative w-9 h-9 shrink-0 rounded border border-empire-stone/35 bg-black/35 overflow-hidden flex items-center justify-center">
-                <Image
-                  src={KINGDOM_SETUP_ICONS[id]}
-                  alt=""
-                  width={36}
-                  height={36}
-                  className="object-contain"
-                  style={{ imageRendering: 'pixelated' }}
-                />
-              </span>
-              <span className="text-left leading-tight">{KINGDOM_DISPLAY_NAMES[id]}</span>
-            </button>
-          ))}
-        </div>
-        <div className="flex flex-col gap-3">
-          <button onClick={startPlacement}
-            className="px-8 py-3 bg-empire-gold/20 border border-empire-gold/60 rounded-lg text-empire-gold font-bold tracking-wide hover:bg-empire-gold/30 transition-colors">
-            PLAY (You vs AI)
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              useGameStore.getState().generateWorld({ width: 38, height: 38 });
-              useGameStore.getState().startSoloPlacement();
-            }}
-            className="px-8 py-3 bg-emerald-950/50 border border-emerald-600/50 rounded-lg text-emerald-100/95 font-medium tracking-wide hover:bg-emerald-900/40 transition-colors"
-          >
-            Mechanics test (38×38, no AI)
-          </button>
-          <button
-            type="button"
-            onClick={async () => {
-              const data = await fetch('/ai-params.json').then(r => r.ok ? r.json() : null).catch(() => null);
-              if (data) setAiParams(data);
-              useGameStore.getState().startSmallMapBotVsBot();
-            }}
-            className="px-8 py-3 bg-empire-gold/15 border border-empire-gold/50 rounded-lg text-empire-gold/90 font-medium tracking-wide hover:bg-empire-gold/25 transition-colors"
-          >
-            Small map battle (38×38, champion AI)
-          </button>
-          <button
-            type="button"
-            onClick={() => useGameStore.getState().startBotVsBot()}
-            className="px-8 py-3 bg-empire-dark border border-empire-gold/40 rounded-lg text-empire-parchment font-medium tracking-wide hover:bg-empire-gold/10 transition-colors"
-          >
-            Watch 2 Bot (large map)
-          </button>
-          <button
-            type="button"
-            onClick={() => useGameStore.getState().startFourBotVsBot()}
-            className="px-8 py-3 bg-empire-dark border border-empire-gold/40 rounded-lg text-empire-parchment font-medium tracking-wide hover:bg-empire-gold/10 transition-colors"
-          >
-            Watch 4 Bot
-          </button>
-          <p className="text-empire-parchment/40 text-xs">
-            Small map: 38×38, trained champion from ai-params.json. 2 Bot: default map. 4 Bot: four kingdoms (52×52).
-          </p>
+
+  const [menuStep, setMenuStep] = useState<'root' | 'play_setup' | 'spectate_setup'>('root');
+  const [mapSize, setMapSize] = useState<MapSizePreset>('normal');
+  const [mapTerrain, setMapTerrain] = useState<MapTerrainPreset>('continents');
+  const [opponents, setOpponents] = useState(1);
+
+  const dim = MAP_SIZE_PRESETS[mapSize];
+
+  const beginMatch = (mode: 'play' | 'spectate') => {
+    const seed = Math.floor(Math.random() * 0x7fffffff);
+    generateWorld({
+      width: dim.width,
+      height: dim.height,
+      seed,
+      ensureCornerLand: opponents >= 2,
+      mapTerrain,
+    });
+    if (mode === 'play') {
+      startPlacement({ opponentCount: opponents });
+    } else {
+      startSpectateMatch({ opponentCount: opponents });
+    }
+  };
+
+  if (menuStep === 'root') {
+    return (
+      <div className="absolute inset-0 flex items-center justify-center bg-black/70 pointer-events-auto">
+        <div className="medieval-frame">
+          <div className="absolute -top-3 -left-3 text-xl text-amber-400/80 z-10 medieval-shimmer">⚜</div>
+          <div className="absolute -top-3 -right-3 text-xl text-amber-400/80 z-10 medieval-shimmer">⚜</div>
+          <div className="absolute -bottom-3 -left-3 text-xl text-amber-400/80 z-10 medieval-shimmer">⚜</div>
+          <div className="absolute -bottom-3 -right-3 text-xl text-amber-400/80 z-10 medieval-shimmer">⚜</div>
+          <div className="medieval-frame-inner font-medieval px-10 py-10 text-center max-w-lg">
+            <h1 className="font-cinzel medieval-title text-4xl font-bold tracking-[0.2em] mb-2 drop-shadow-[0_0_12px_rgba(201,168,76,0.35)]">
+              FALLEN EMPIRE
+            </h1>
+            <div className="medieval-divider my-4">
+              <span className="text-empire-gold/60 text-sm">⚜</span>
+            </div>
+            <p className="text-empire-parchment/70 mb-8 text-lg leading-relaxed italic">
+              The old empire has crumbled. Rebuild — or be conquered.
+            </p>
+            <div className="flex flex-col gap-3">
+              <button
+                type="button"
+                onClick={() => setMenuStep('play_setup')}
+                className="px-8 py-3 bg-empire-gold/15 border-2 border-empire-gold/60 rounded text-empire-gold font-bold text-lg tracking-wide hover:bg-empire-gold/25 hover:border-empire-gold/80 hover:shadow-[0_0_20px_rgba(201,168,76,0.2)] transition-all duration-300"
+              >
+                Play
+              </button>
+              <button
+                type="button"
+                onClick={() => setMenuStep('spectate_setup')}
+                className="px-8 py-3 bg-transparent border border-empire-gold/30 rounded text-empire-parchment/80 text-lg tracking-wide hover:bg-empire-gold/10 hover:border-empire-gold/50 transition-all duration-300"
+              >
+                Spectate
+              </button>
+            </div>
+          </div>
         </div>
       </div>
-    </div>
-  );
-}
+    );
+  }
 
-function CommanderSetupOverlay() {
-  const cities = useGameStore(s => s.cities);
-  const commanderDraftOptions = useGameStore(s => s.commanderDraftOptions);
-  const commanderDraftSelectedIds = useGameStore(s => s.commanderDraftSelectedIds);
-  const commanderDraftAssignment = useGameStore(s => s.commanderDraftAssignment);
-  const toggleCommanderDraftSelection = useGameStore(s => s.toggleCommanderDraftSelection);
-  const setCommanderDraftRole = useGameStore(s => s.setCommanderDraftRole);
-  const confirmCommanderDraft = useGameStore(s => s.confirmCommanderDraft);
-
-  const humanCity = cities.find(c => c.ownerId === 'player_human');
-  const capitalName = humanCity?.name ?? 'your capital';
-
-  const selectedSet = new Set(commanderDraftSelectedIds);
-  const n = commanderDraftSelectedIds.length;
+  const isPlay = menuStep === 'play_setup';
 
   return (
-    <div className="absolute inset-0 flex items-center justify-center bg-black/80 pointer-events-auto z-30 overflow-y-auto py-6 px-3">
-      <div className="bg-empire-dark border border-empire-gold/40 rounded-xl p-5 sm:p-7 max-w-5xl w-full shadow-xl my-auto">
-        <h2 className="text-empire-gold text-lg sm:text-xl font-bold tracking-wide text-center mb-1">Choose your commanders</h2>
-        <p className="text-empire-parchment/60 text-xs sm:text-sm text-center mb-5 leading-relaxed">
-          Pick {COMMANDER_STARTING_PICK} of {COMMANDER_DRAFT_POOL_SIZE}. Commanders are separate from heroes and do not use barracks slots. Then set each to defend {capitalName} or stay unassigned (attach to a stack from the hex panel later).
-        </p>
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3 mb-5">
-          {commanderDraftOptions.map(opt => {
-            const on = selectedSet.has(opt.draftId);
-            return (
-              <button
-                key={opt.draftId}
-                type="button"
-                onClick={() => toggleCommanderDraftSelection(opt.draftId)}
-                className={`text-left rounded-lg border p-2 transition-colors ${
-                  on ? 'border-empire-gold bg-empire-gold/15 ring-1 ring-empire-gold/50' : 'border-empire-stone/35 bg-black/25 hover:border-empire-gold/40'
-                }`}
-              >
-                {opt.portraitDataUrl ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img src={opt.portraitDataUrl} alt="" className="w-full aspect-square object-cover rounded border border-empire-stone/30 mb-1.5" />
-                ) : (
-                  <div className="w-full aspect-square rounded bg-empire-stone/15 border border-empire-stone/25 mb-1.5" />
-                )}
-                <div className="text-empire-parchment font-semibold text-[11px] leading-tight">{opt.name}</div>
-                <div className="text-[9px] text-empire-parchment/50 mt-0.5 line-clamp-2">
-                  {opt.traitIds.map(t => COMMANDER_TRAIT_INFO[t].label).join(' · ')}
-                </div>
-              </button>
-            );
-          })}
-        </div>
-        {n === COMMANDER_STARTING_PICK && (
-          <div className="space-y-2 mb-5 border-t border-empire-stone/25 pt-4">
-            <p className="text-[11px] text-violet-200/90 uppercase tracking-wide font-semibold">Starting assignments</p>
-            {commanderDraftOptions
-              .filter(o => selectedSet.has(o.draftId))
-              .map(opt => {
-                const role = commanderDraftAssignment[opt.draftId] ?? 'none';
-                return (
-                  <div key={opt.draftId} className="flex flex-wrap items-center gap-2 text-[11px] sm:text-xs">
-                    <span className="text-empire-parchment/90 min-w-[100px] shrink-0">{opt.name}</span>
-                    <div className="flex gap-1.5 flex-wrap">
-                      <button
-                        type="button"
-                        onClick={() => setCommanderDraftRole(opt.draftId, 'capital')}
-                        className={`px-2 py-1 rounded border text-[10px] ${
-                          role === 'capital'
-                            ? 'border-amber-500/70 bg-amber-950/50 text-amber-100'
-                            : 'border-empire-stone/30 text-empire-parchment/60 hover:border-amber-500/40'
-                        }`}
-                      >
-                        Defend {capitalName}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setCommanderDraftRole(opt.draftId, 'none')}
-                        className={`px-2 py-1 rounded border text-[10px] ${
-                          role === 'none'
-                            ? 'border-violet-500/60 bg-violet-950/40 text-violet-100'
-                            : 'border-empire-stone/30 text-empire-parchment/60 hover:border-violet-500/40'
-                        }`}
-                      >
-                        Unassigned
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
+    <div className="absolute inset-0 flex items-center justify-center bg-black/70 pointer-events-auto">
+      <div className="medieval-frame max-w-lg w-full">
+        <div className="absolute -top-3 -left-3 text-xl text-amber-400/80 z-10 medieval-shimmer">⚜</div>
+        <div className="absolute -top-3 -right-3 text-xl text-amber-400/80 z-10 medieval-shimmer">⚜</div>
+        <div className="absolute -bottom-3 -left-3 text-xl text-amber-400/80 z-10 medieval-shimmer">⚜</div>
+        <div className="absolute -bottom-3 -right-3 text-xl text-amber-400/80 z-10 medieval-shimmer">⚜</div>
+        <div className="medieval-frame-inner font-medieval p-8 text-center max-h-[min(90vh,640px)] overflow-y-auto medieval-scroll">
+          <h2 className="font-cinzel text-xl font-bold text-empire-gold tracking-wide mb-1">
+            {isPlay ? 'New Game' : 'Spectate'}
+          </h2>
+          <div className="medieval-divider my-3">
+            <span className="text-empire-gold/50 text-xs">⚜</span>
           </div>
+          <p className="text-empire-parchment/60 text-sm mb-4 italic">
+            {isPlay
+              ? 'Choose map size and how many AI rivals to face (you + rivals).'
+              : `Watch ${opponents + 1} AI empires (${opponents} rival slots — same total as Play).`}
+          </p>
+
+        <div className="text-left space-y-4 mb-4">
+          <div>
+            <p className="text-empire-parchment/60 text-xs uppercase tracking-wide mb-2">Map size</p>
+            <div className="flex flex-wrap gap-2">
+              {(['small', 'normal', 'large'] as const).map(preset => (
+                <button
+                  key={preset}
+                  type="button"
+                  onClick={() => setMapSize(preset)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium border capitalize ${
+                    mapSize === preset
+                      ? 'border-empire-gold bg-empire-gold/15 text-empire-gold'
+                      : 'border-empire-stone/40 text-empire-parchment/75 hover:border-empire-gold/40'
+                  }`}
+                >
+                  {preset}{' '}
+                  <span className="text-empire-parchment/45">
+                    ({MAP_SIZE_PRESETS[preset].width}×{MAP_SIZE_PRESETS[preset].height})
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+          <div>
+            <p className="text-empire-parchment/60 text-xs uppercase tracking-wide mb-2">Map type</p>
+            <div className="grid grid-cols-2 gap-2">
+              {(
+                [
+                  { id: 'continents' as const, label: 'Continents', hint: 'Default coastlines' },
+                  { id: 'islands' as const, label: 'Islands', hint: 'Archipelago — mostly ocean' },
+                  { id: 'lake' as const, label: 'Lake', hint: 'Big central sea' },
+                  { id: 'no_water' as const, label: 'No water', hint: 'Dry land only' },
+                ] as const
+              ).map(({ id, label, hint }) => (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={() => setMapTerrain(id)}
+                  className={`px-3 py-2 rounded-lg text-left text-xs border transition-colors ${
+                    mapTerrain === id
+                      ? 'border-empire-gold bg-empire-gold/15 text-empire-gold'
+                      : 'border-empire-stone/40 text-empire-parchment/80 hover:border-empire-gold/40'
+                  }`}
+                >
+                  <span className="font-semibold block">{label}</span>
+                  <span className="text-empire-parchment/45 text-[10px]">{hint}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+          <div>
+            <p className="text-empire-parchment/60 text-xs uppercase tracking-wide mb-2">Opponents (1–5)</p>
+            <input
+              type="range"
+              min={1}
+              max={5}
+              step={1}
+              value={opponents}
+              onChange={e => setOpponents(Number(e.target.value))}
+              className="w-full accent-empire-gold"
+            />
+            <p className="text-empire-parchment/70 text-sm mt-1">
+              {isPlay ? `You vs ${opponents} AI` : `${opponents + 1} AI empires`}
+            </p>
+          </div>
+        </div>
+
+        {isPlay && (
+          <>
+            <p className="text-empire-parchment/60 text-xs uppercase tracking-wide mb-2">Choose your kingdom</p>
+            <div className="grid grid-cols-2 gap-2 mb-4">
+              {KINGDOM_IDS.map((id: KingdomId) => (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={() => setSelectedKingdom(id)}
+                  className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium border transition-colors ${
+                    selectedKingdom === id
+                      ? 'border-empire-gold bg-empire-gold/20 text-empire-gold'
+                      : 'border-empire-stone/40 bg-empire-dark/60 text-empire-parchment/80 hover:border-empire-gold/50'
+                  }`}
+                >
+                  <span className="relative w-9 h-9 shrink-0 rounded border border-empire-stone/35 bg-black/35 overflow-hidden flex items-center justify-center">
+                    <Image
+                      src={KINGDOM_SETUP_ICONS[id]}
+                      alt=""
+                      width={36}
+                      height={36}
+                      className="object-contain"
+                      style={{ imageRendering: 'pixelated' }}
+                    />
+                  </span>
+                  <span className="text-left leading-tight">{KINGDOM_DISPLAY_NAMES[id]}</span>
+                </button>
+              ))}
+            </div>
+          </>
         )}
-        <div className="flex flex-col items-center gap-2">
+
+        <div className="flex flex-col gap-2 mt-2">
           <button
             type="button"
-            disabled={n !== COMMANDER_STARTING_PICK}
-            onClick={() => confirmCommanderDraft()}
-            className="px-8 py-2.5 bg-empire-gold/25 border border-empire-gold/60 rounded-lg text-empire-gold font-bold text-sm disabled:opacity-40 disabled:cursor-not-allowed hover:bg-empire-gold/35 transition-colors"
+            onClick={() => beginMatch(isPlay ? 'play' : 'spectate')}
+            className="px-8 py-3 bg-empire-gold/15 border-2 border-empire-gold/60 rounded text-empire-gold font-bold text-base tracking-wide hover:bg-empire-gold/25 hover:border-empire-gold/80 hover:shadow-[0_0_20px_rgba(201,168,76,0.2)] transition-all duration-300"
           >
-            Begin — {n}/{COMMANDER_STARTING_PICK} selected
+            {isPlay ? 'Start — place your capital' : 'Start spectating'}
           </button>
-          {n !== COMMANDER_STARTING_PICK && (
-            <p className="text-[10px] text-empire-parchment/45">Select exactly {COMMANDER_STARTING_PICK} portraits above.</p>
-          )}
+          <button
+            type="button"
+            onClick={() => setMenuStep('root')}
+            className="px-8 py-2 text-empire-parchment/60 text-sm hover:text-empire-parchment/90 transition-colors"
+          >
+            ← Back
+          </button>
+        </div>
         </div>
       </div>
     </div>
@@ -448,6 +461,8 @@ function PlayingHUD() {
       <SidePanel />
       {pendingTacticalOrders !== null && <TacticalBottomBar />}
       {tacticalAttackCityDraft !== null && <AttackCitySetupModal />}
+      <BuilderActivityPanel />
+      <DefensePlacementOverlay />
       <SiegeProgressPanel />
       <SupplyClusterSidePanel />
       <SupplyViewPanel />
@@ -464,7 +479,6 @@ function SpecialRegionExploreModal() {
   const selectedHex = useGameStore(s => s.selectedHex);
   const pendingTacticalOrders = useGameStore(s => s.pendingTacticalOrders);
   const tiles = useGameStore(s => s.tiles);
-  const specialRegions = useGameStore(s => s.specialRegions);
   const scrollSearchProgress = useGameStore(s => s.scrollSearchProgress);
   const scrollSearchClaimed = useGameStore(s => s.scrollSearchClaimed);
   const players = useGameStore(s => s.players);
@@ -478,15 +492,15 @@ function SpecialRegionExploreModal() {
   if (pendingTacticalOrders !== null) return null;
   if (!selectedHex || dismissed) return null;
   const tile = tiles.get(tileKey(selectedHex.q, selectedHex.r));
-  const regId = tile?.specialRegionId;
-  if (!regId) return null;
-  const reg = specialRegions.find(r => r.id === regId);
-  if (!reg) return null;
+  const terrainKind = tile?.specialTerrainKind;
+  if (!terrainKind) return null;
+  const scrollKind = scrollKindForTerrain(terrainKind);
+  const terrainName = SPECIAL_REGION_DISPLAY_NAME[terrainKind];
 
   const human = players.find(p => p.isHuman);
   const hid = human?.id ?? '';
-  const claimed = hid ? (scrollSearchClaimed[reg.id] ?? []).includes(hid) : false;
-  const prog = hid ? (scrollSearchProgress[reg.id]?.[hid] ?? 0) : 0;
+  const claimed = hid ? (scrollSearchClaimed[scrollKind] ?? []).includes(hid) : false;
+  const prog = hid ? (scrollSearchProgress[scrollKind]?.[hid] ?? 0) : 0;
   const pct = Math.min(1, prog / SCROLL_SEARCH_CYCLES_REQUIRED);
 
   return (
@@ -498,7 +512,7 @@ function SpecialRegionExploreModal() {
         className="bg-empire-dark/95 border border-teal-600/50 rounded-xl p-5 max-w-sm w-full mx-4 shadow-2xl"
         onClick={e => e.stopPropagation()}
       >
-        <h3 className="text-teal-200 font-bold text-sm mb-1">Explore — {reg.name}</h3>
+        <h3 className="text-teal-200 font-bold text-sm mb-1">Explore — {terrainName}</h3>
         <p className="text-empire-parchment/70 text-xs mb-3">
           {claimed
             ? 'You claimed this region\'s scroll.'
@@ -550,7 +564,7 @@ function CityModal() {
   const city = getSelectedCityForDisplay();
   if (!city || !cityLogisticsOpen) return null;
 
-  const isObserver = gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4';
+  const isObserver = gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4' || gameMode === 'spectate';
 
   const handleBackdropClick = (e: React.MouseEvent<HTMLDivElement>) => {
     if (e.target === e.currentTarget) closeCityModal();
@@ -569,6 +583,89 @@ function CityModal() {
         onClick={e => e.stopPropagation()}
       >
         <CityModalContent city={city} onClose={closeCityModal} isObserver={isObserver} />
+      </div>
+    </div>
+  );
+}
+
+function CityDefenseCommanderPicker({ city }: { city: import('@/types/game').City }) {
+  const commanders = useGameStore(s => s.commanders);
+  const assignCommanderToCityDefense = useGameStore(s => s.assignCommanderToCityDefense);
+  const unassignCommander = useGameStore(s => s.unassignCommander);
+  const roster = commanders.filter(
+    c => c.ownerId === 'player_human' && (c.commanderKind ?? 'land') !== 'naval',
+  );
+  const defender = roster.find(
+    c => c.assignment?.kind === 'city_defense' && c.assignment.cityId === city.id,
+  );
+
+  if (roster.length === 0) {
+    return (
+      <p className="text-[10px] text-empire-parchment/45 italic">
+        {commanders.some(c => c.ownerId === 'player_human')
+          ? 'No land commanders — naval officers lead fleets only. Recruit more from barracks.'
+          : 'No commanders yet — recruit from the Barracks tab when viewing this city on the map, or from the Army panel.'}
+      </p>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      {defender ? (
+        <div className="flex gap-2 items-start rounded-lg border border-violet-500/35 bg-violet-950/20 p-2">
+          {defender.portraitDataUrl ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={defender.portraitDataUrl}
+              width={44}
+              height={44}
+              alt=""
+              className="rounded border border-violet-500/40 shrink-0"
+              style={{ imageRendering: 'pixelated' }}
+            />
+          ) : (
+            <div className="w-11 h-11 rounded bg-empire-stone/25 border border-violet-500/30 shrink-0" />
+          )}
+          <div className="min-w-0 flex-1">
+            <div className="text-[11px] font-semibold text-violet-200">{defender.name}</div>
+            <div className="text-[9px] text-empire-parchment/50 mt-0.5">
+              {defender.traitIds.map(t => COMMANDER_TRAIT_INFO[t].label).join(' · ')}
+            </div>
+            <button
+              type="button"
+              onClick={() => unassignCommander(defender.id)}
+              className="mt-1.5 text-[10px] px-2 py-0.5 rounded border border-empire-stone/40 text-empire-parchment/70 hover:bg-empire-stone/20"
+            >
+              Remove from city defense
+            </button>
+          </div>
+        </div>
+      ) : (
+        <p className="text-[10px] text-empire-parchment/45">No commander assigned to this city.</p>
+      )}
+      <div className="flex flex-col gap-1">
+        <span className="text-[10px] uppercase tracking-wide text-empire-parchment/40">Assign</span>
+        {roster.map(c => {
+          const isCurrent = defender?.id === c.id;
+          const busyElsewhere =
+            c.assignment?.kind === 'city_defense' && c.assignment.cityId !== city.id;
+          return (
+            <button
+              key={c.id}
+              type="button"
+              disabled={isCurrent}
+              onClick={() => assignCommanderToCityDefense(c.id, city.id)}
+              className={`text-left px-2 py-1.5 rounded border text-[11px] transition-colors ${
+                isCurrent
+                  ? 'border-violet-500/50 bg-violet-900/30 text-violet-100 cursor-default'
+                  : 'border-violet-600/35 bg-violet-950/25 text-violet-100 hover:bg-violet-900/35 disabled:opacity-50'
+              }`}
+            >
+              {c.name}
+              {isCurrent ? ' — current' : busyElsewhere ? ' (moves from another city)' : ''}
+            </button>
+          );
+        })}
       </div>
     </div>
   );
@@ -733,6 +830,15 @@ function CityModalContent({ city, onClose, isObserver = false }: { city: import(
           })}
         </div>
       </div>
+      {!isObserver && human && city.ownerId === human.id && (
+        <div className="border-t border-empire-stone/30 pt-3">
+          <p className="text-empire-gold/80 text-xs font-semibold uppercase tracking-wide mb-1">Defense commander</p>
+          <p className="text-[10px] text-empire-parchment/55 mb-2 leading-snug">
+            Recruit commanders ({COMMANDER_RECRUIT_GOLD}g) from a Barracks or the Army panel. Assign one to boost troops fighting on this city&apos;s tile.
+          </p>
+          <CityDefenseCommanderPicker city={city} />
+        </div>
+      )}
       {!isObserver && (
         <>
           <div>
@@ -929,7 +1035,7 @@ function CombatBanner() {
     u => u.ownerId.includes('human') && u.hp > 0 && u.status === 'fighting'
   );
 
-  if (keys.length === 0 || gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4') return null;
+  if (keys.length === 0 || gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4' || gameMode === 'spectate') return null;
 
   return (
     <div className="absolute top-24 left-1/2 -translate-x-1/2 pointer-events-auto z-20">
@@ -969,7 +1075,7 @@ function BattleReportModal() {
     if (!battleKeys.includes(battleModalHexKey)) closeBattleModal();
   }, [battleModalHexKey, battleKeys, closeBattleModal]);
 
-  if (!battleModalHexKey || gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4') return null;
+  if (!battleModalHexKey || gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4' || gameMode === 'spectate') return null;
 
   const [q, r] = battleModalHexKey.split(',').map(Number);
   const atHex = units.filter(
@@ -1250,7 +1356,7 @@ function TopBar() {
   const contestedZoneHexKeys = useGameStore(s => s.contestedZoneHexKeys);
 
   const human = players.find(p => p.isHuman);
-  const isObserverMode = gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4';
+  const isObserverMode = gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4' || gameMode === 'spectate';
   const observedCity = isObserverMode ? getSelectedCityForDisplay() : null;
   const displayPlayer = isObserverMode
     ? (observedCity ? players.find(p => p.id === observedCity.ownerId) : players[0]) ?? null
@@ -1356,10 +1462,10 @@ function TopBar() {
         <span className={`font-mono font-bold text-base ${urgent ? 'text-red-400 animate-pulse' : 'text-empire-parchment'}`}>
           {formatTime(gameTimeRemaining)}
         </span>
-        {(gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4') && displayPlayer && (
+        {(gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4' || gameMode === 'spectate') && displayPlayer && (
           <span className="text-empire-gold/80 text-xs font-medium">Observing: {displayPlayer.name}</span>
         )}
-        {(gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4') && (
+        {(gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4' || gameMode === 'spectate') && (
           <div className="flex items-center gap-0.5">
             {([1, 2, 4] as const).map((speed) => (
               <button
@@ -1742,6 +1848,78 @@ function AttackCitySetupModal() {
   );
 }
 
+// ─── Builder Activity Panel (bottom-left: all active constructions) ─────
+
+function BuilderActivityPanel() {
+  const constructions = useGameStore(s => s.constructions);
+  const roadConstructions = useGameStore(s => s.roadConstructions);
+  const territory = useGameStore(s => s.territory);
+  const cities = useGameStore(s => s.cities);
+  const gameMode = useGameStore(s => s.gameMode);
+  const selectHex = useGameStore(s => s.selectHex);
+
+  if (gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4' || gameMode === 'spectate') return null;
+
+  const humanConstructions = constructions.filter(c => c.ownerId === 'player_human');
+  const humanRoads = roadConstructions.filter(r => r.ownerId === 'player_human');
+  if (humanConstructions.length === 0 && humanRoads.length === 0) return null;
+
+  const items: { key: string; label: string; pct: number; bpPerSec: number; etaSec: number; q: number; r: number }[] = [];
+
+  for (const site of humanConstructions) {
+    const availBP = computeConstructionAvailableBp(site, territory, cities);
+    const bpPerSec = availBP / BP_RATE_BASE;
+    const remaining = site.bpRequired - site.bpAccumulated;
+    const eta = bpPerSec > 0 ? Math.ceil(remaining / bpPerSec) : Infinity;
+    const pct = Math.min(100, Math.round((site.bpAccumulated / site.bpRequired) * 100));
+    const typeName =
+      site.type === 'city_defense' && site.defenseTowerType && site.defenseTowerTargetLevel
+        ? `${DEFENSE_TOWER_DISPLAY_NAME[site.defenseTowerType]} L${site.defenseTowerTargetLevel}`
+        : site.type.replace(/_/g, ' ');
+    items.push({ key: site.id, label: typeName, pct, bpPerSec, etaSec: eta, q: site.q, r: site.r });
+  }
+
+  for (const road of humanRoads) {
+    const avail = computeRoadAvailableBp(road, territory, cities);
+    const bps = avail / BP_RATE_BASE;
+    const rem = road.bpRequired - road.bpAccumulated;
+    const eta = bps > 0 ? Math.ceil(rem / bps) : Infinity;
+    const pct = Math.min(100, Math.round((road.bpAccumulated / road.bpRequired) * 100));
+    items.push({ key: road.id, label: 'Road', pct, bpPerSec: bps, etaSec: eta, q: road.q, r: road.r });
+  }
+
+  return (
+    <div className="fixed bottom-4 left-2 z-20 pointer-events-auto w-56">
+      <div className="bg-empire-dark/90 backdrop-blur-sm border border-amber-500/30 rounded-lg px-2.5 py-2 shadow-lg space-y-1.5">
+        <div className="text-amber-400/80 text-[10px] font-bold uppercase tracking-wide">
+          Builder Activity ({items.length})
+        </div>
+        {items.map(it => (
+          <button
+            key={it.key}
+            type="button"
+            onClick={() => selectHex(it.q, it.r)}
+            className="w-full text-left group"
+          >
+            <div className="flex justify-between items-center text-[10px]">
+              <span className="text-empire-parchment/80 capitalize group-hover:text-amber-300 transition-colors truncate">{it.label}</span>
+              <span className="text-amber-300/60 shrink-0 ml-1">
+                {it.pct}% {it.etaSec < Infinity ? `~${it.etaSec}s` : 'stalled'}
+              </span>
+            </div>
+            <div className="w-full h-1 bg-empire-stone/30 rounded-full overflow-hidden mt-0.5">
+              <div
+                className={`h-full rounded-full transition-all ${it.bpPerSec > 0 ? 'bg-amber-500/70' : 'bg-red-500/50'}`}
+                style={{ width: `${it.pct}%` }}
+              />
+            </div>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function SiegeProgressPanel() {
   const cities = useGameStore(s => s.cities);
   const units = useGameStore(s => s.units);
@@ -1749,7 +1927,7 @@ function SiegeProgressPanel() {
   const beginSiegeAssaultOnCity = useGameStore(s => s.beginSiegeAssaultOnCity);
 
   const rows = useMemo(() => {
-    if (gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4') return [];
+    if (gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4' || gameMode === 'spectate') return [];
     const byCity = new Map<string, number>();
     for (const u of units) {
       if (u.ownerId !== 'player_human' || u.hp <= 0 || !u.siegingCityId) continue;
@@ -1818,60 +1996,31 @@ function commanderForArmyStack(
   return undefined;
 }
 
-function scrollLabelsForStack(
-  stackIds: Set<string>,
-  attachments: ScrollAttachment[],
-): string[] {
-  const kinds = new Set<ScrollKind>();
-  for (const a of attachments) {
-    if (a.ownerId !== 'player_human') continue;
-    if (!stackIds.has(a.carrierUnitId)) continue;
-    kinds.add(a.kind);
-  }
-  return SCROLL_ARMY_SLOT_ORDER.filter(k => kinds.has(k)).map(k => SCROLL_DISPLAY_NAME[k]);
-}
-
-function CommanderRecruitInArmyPanel() {
-  const cities = useGameStore(s => s.cities);
+/** Recruit new commanders instantly for gold (no city selection, no training time). */
+function CommanderRecruitOptionsInPicker({
+  onRecruited,
+}: {
+  onRecruited?: () => void;
+}) {
   const players = useGameStore(s => s.players);
-  const heroes = useGameStore(s => s.heroes);
-  const pendingRecruits = useGameStore(s => s.pendingRecruits);
-  const recruitCommander = useGameStore(s => s.recruitCommander);
+  const recruitCommanderInstant = useGameStore(s => s.recruitCommanderInstant);
   const human = players.find(p => p.isHuman);
-  const humanCities = cities.filter(c => c.ownerId === 'player_human');
-  const playerBarracks = humanCities.reduce((sum, c) => sum + c.buildings.filter(b => b.type === 'barracks').length, 0);
-  const playerHeroes = heroes.filter(h => h.ownerId === human?.id).length;
-  const pendingHeroSlots = pendingRecruits.filter(pr => 'heroKind' in pr && pr.playerId === human?.id).length;
-  const leaderSlotsUsed = playerHeroes + pendingHeroSlots;
   const gold = human?.gold ?? 0;
-  const canRecruitLeader = leaderSlotsUsed < playerBarracks;
-  const canRecruitCommander = gold >= COMMANDER_RECRUIT_GOLD;
-  const barracksCities = humanCities.filter(c => c.buildings.some(b => b.type === 'barracks'));
-  if (barracksCities.length === 0) return null;
+  const canAfford = gold >= COMMANDER_RECRUIT_GOLD;
   return (
-    <div className="rounded border border-violet-600/35 bg-violet-950/25 px-2 py-2 space-y-1.5">
-      <div className="text-[11px] font-semibold text-violet-200">Recruit commanders</div>
-      <p className="text-[10px] text-empire-parchment/55 leading-snug">
-        {COMMANDER_RECRUIT_GOLD}g each — not limited by barracks. Spawns at that city next cycle; attach from the hex panel.
-      </p>
-      <div className="space-y-1">
-        {barracksCities.map(c => (
-          <button
-            key={c.id}
-            type="button"
-            disabled={!canRecruitCommander}
-            onClick={() => recruitCommander(c.id)}
-            className="w-full text-left px-2 py-1.5 rounded border border-violet-500/40 text-[11px] text-violet-100 hover:bg-violet-900/35 disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            {c.name} — Recruit ({COMMANDER_RECRUIT_GOLD}g)
-          </button>
-        ))}
-      </div>
-      {!canRecruitLeader && (
-        <p className="text-[10px] text-amber-400/90">
-          Hero slots full ({leaderSlotsUsed}/{playerBarracks}). Build more barracks for heroes.
-        </p>
-      )}
+    <div className="border-t border-violet-500/30 pt-1 mt-0.5">
+      <button
+        type="button"
+        disabled={!canAfford}
+        onClick={e => {
+          e.stopPropagation();
+          recruitCommanderInstant();
+          onRecruited?.();
+        }}
+        className="w-full text-left text-[10px] px-1.5 py-1 rounded border border-violet-500/35 text-violet-100 hover:bg-violet-900/45 disabled:opacity-40 disabled:cursor-not-allowed"
+      >
+        Recruit new commander ({COMMANDER_RECRUIT_GOLD}g)
+      </button>
     </div>
   );
 }
@@ -1886,6 +2035,9 @@ function TacticalPanel() {
   const toggleTacticalStack = useGameStore(s => s.toggleTacticalStack);
   const confirmTacticalOrders = useGameStore(s => s.confirmTacticalOrders);
   const cancelTacticalMode = useGameStore(s => s.cancelTacticalMode);
+  const assignCommanderToFieldStack = useGameStore(s => s.assignCommanderToFieldStack);
+  const unassignCommander = useGameStore(s => s.unassignCommander);
+  const [commanderPickStack, setCommanderPickStack] = useState<string | null>(null);
 
   const humanStacks = (() => {
     const byKey: Record<string, { q: number; r: number; units: import('@/types/game').Unit[] }> = {};
@@ -1899,6 +2051,7 @@ function TacticalPanel() {
   })();
 
   const friendlyCities = cities.filter(c => c.ownerId === 'player_human');
+  const humanCommanderRoster = commanders.filter(c => c.ownerId === 'player_human');
 
   return (
     <div className="absolute top-14 right-2 w-[min(100%,26rem)] pointer-events-auto max-h-[85vh] overflow-y-auto">
@@ -1915,18 +2068,22 @@ function TacticalPanel() {
           </button>
         </div>
         <p className="text-empire-parchment/70 text-xs">
-          <strong>1.</strong> Click stacks to select armies (none selected = all). <strong>2.</strong> Use the bottom bar (Move, Attack hex, Incorporate, Attack city, Defend). <strong>3.</strong> Recruit commanders below if needed. Each stack shows composition, commander, and scrolls. Then <strong>Confirm orders</strong>.
+          <strong>1.</strong> Click stacks to select armies (none = all). <strong>2.</strong> Bottom bar: Move, Attack hex, Incorporate, Attack city, Defend. <strong>3.</strong> Click the <strong>commander</strong> frame to assign or recruit; scroll slots below (assign scrolls on the hex panel). Then <strong>Confirm orders</strong>.
         </p>
         <p className="text-empire-parchment/50 text-[10px]">
           Selected: {tacticalSelectedStackKeys.length === 0 ? 'all armies' : `${tacticalSelectedStackKeys.length} stack(s)`}
         </p>
-        <CommanderRecruitInArmyPanel />
         <div className="space-y-2 max-h-60 overflow-y-auto">
           {humanStacks.map(({ q, r, units: stackUnits }) => {
             const stackKey = tileKey(q, r);
             const order = pendingTacticalOrders?.[stackKey];
             const isSelected = tacticalSelectedStackKeys.includes(stackKey);
             const stackIds = new Set(stackUnits.map(u => u.id));
+            const isNavalStack =
+              stackUnits.length > 0 && stackUnits.every(u => isNavalUnitType(u.type));
+            const assignableCommanders = humanCommanderRoster.filter(
+              c => (c.commanderKind ?? 'land') === (isNavalStack ? 'naval' : 'land'),
+            );
             const counts: Record<string, number> = {};
             let status = 'idle';
             for (const u of stackUnits) {
@@ -1938,7 +2095,10 @@ function TacticalPanel() {
               .map(([t, n]) => `${n}× ${UNIT_DISPLAY_NAMES[t as UnitType]}`)
               .join(' · ');
             const cmd = commanderForArmyStack(q, r, stackIds, commanders, cities);
-            const scrollLbl = scrollLabelsForStack(stackIds, scrollAttachments);
+            const attachmentOnStack = (kind: ScrollKind) =>
+              scrollAttachments.find(
+                a => a.kind === kind && a.ownerId === 'player_human' && stackIds.has(a.carrierUnitId),
+              );
             return (
               <div
                 key={stackKey}
@@ -1952,45 +2112,111 @@ function TacticalPanel() {
               >
                 <div className="flex justify-between items-start gap-2">
                   <div className="text-xs min-w-0 flex-1">
-                    <span className="text-empire-parchment font-medium">Army — ({q}, {r})</span>
+                    <span className="text-empire-parchment font-medium">
+                      {isNavalStack ? 'Fleet' : 'Army'} — ({q}, {r})
+                    </span>
                     <span className="text-empire-parchment/50 ml-1">— {stackUnits.length} unit{stackUnits.length !== 1 ? 's' : ''}</span>
                     <div className="text-[10px] text-empire-parchment/75 mt-1 leading-snug break-words" title={compLines}>
                       <span className="text-empire-gold/80 font-semibold">Composition: </span>
                       {compLines}
                     </div>
-                    {cmd && (
-                      <div className="mt-1.5 flex gap-2 items-start">
-                        {cmd.portraitDataUrl ? (
-                          // eslint-disable-next-line @next/next/no-img-element
-                          <img
-                            src={cmd.portraitDataUrl}
-                            width={36}
-                            height={36}
-                            alt=""
-                            className="rounded border border-violet-500/40 shrink-0"
-                            style={{ imageRendering: 'pixelated' }}
-                          />
-                        ) : (
-                          <div className="w-9 h-9 rounded bg-empire-stone/25 border border-violet-500/30 shrink-0" />
+                    <div
+                      className="mt-2 flex flex-wrap gap-1.5 items-end"
+                      onClick={e => e.stopPropagation()}
+                      onKeyDown={e => e.stopPropagation()}
+                    >
+                      <div className="flex flex-col items-center gap-0.5 max-w-[4.5rem] relative">
+                        <button
+                          type="button"
+                          className={`w-11 h-11 rounded-md border-2 flex items-center justify-center overflow-hidden shrink-0 cursor-pointer transition-colors ${
+                            cmd ? 'border-violet-400/60 bg-violet-950/35 hover:bg-violet-900/40' : 'border-dashed border-violet-600/45 bg-black/25 hover:border-violet-500/55 hover:bg-violet-950/20'
+                          }`}
+                          title={cmd ? `${cmd.name} — click to change` : 'Commander — click to assign or recruit'}
+                          onClick={e => {
+                            e.stopPropagation();
+                            setCommanderPickStack(commanderPickStack === stackKey ? null : stackKey);
+                          }}
+                        >
+                          {cmd?.portraitDataUrl ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img src={cmd.portraitDataUrl} alt="" className="w-full h-full object-cover" style={{ imageRendering: 'pixelated' }} />
+                          ) : (
+                            <span className="text-[9px] text-violet-500/45 text-center px-0.5">Empty</span>
+                          )}
+                        </button>
+                        <span className="text-[8px] uppercase tracking-wide text-violet-300/50">Commander</span>
+                        {cmd && (
+                          <span className="text-[9px] text-violet-200/90 text-center leading-tight line-clamp-2 w-full">{cmd.name}</span>
                         )}
-                        <div className="min-w-0">
-                          <div className="text-[10px] text-violet-200 font-semibold">{cmd.name}</div>
-                          <div className="text-[9px] text-empire-parchment/55 leading-snug">{cmd.backstory}</div>
-                          <div className="text-[9px] text-violet-300/90 mt-0.5">
-                            {cmd.traitIds.map(tid => `${COMMANDER_TRAIT_INFO[tid].label} (${COMMANDER_TRAIT_INFO[tid].desc})`).join(' · ')}
+                        {commanderPickStack === stackKey && (
+                          <div className="absolute left-0 top-full z-20 w-[min(14rem,calc(100vw-2rem))] mt-0.5 rounded border border-violet-500/40 bg-black/90 p-1 space-y-0.5 shadow-lg">
+                            {assignableCommanders.length > 0 && (
+                              <div className="text-[9px] font-semibold text-violet-300/80 px-1">Assign</div>
+                            )}
+                            {assignableCommanders.map(c => (
+                              <button
+                                key={c.id}
+                                type="button"
+                                className="w-full text-left text-[10px] px-1.5 py-1 rounded hover:bg-violet-900/50 text-violet-100"
+                                onClick={e => {
+                                  e.stopPropagation();
+                                  assignCommanderToFieldStack(c.id, q, r);
+                                  setCommanderPickStack(null);
+                                }}
+                              >
+                                {c.name}
+                                {(c.commanderKind ?? 'land') === 'naval' ? (
+                                  <span className="text-sky-400/80 ml-1">(naval)</span>
+                                ) : null}
+                              </button>
+                            ))}
+                            {assignableCommanders.length === 0 && humanCommanderRoster.length > 0 && (
+                              <p className="text-[9px] text-amber-200/75 px-1">
+                                {isNavalStack
+                                  ? 'No naval commander — recruit one (25% chance) or assign when you have one.'
+                                  : 'No land commander available for this stack.'}
+                              </p>
+                            )}
+                            <CommanderRecruitOptionsInPicker onRecruited={() => setCommanderPickStack(null)} />
+                            {cmd && (
+                              <button
+                                type="button"
+                                className="w-full text-[9px] text-empire-parchment/50 px-1.5 py-1 hover:bg-empire-stone/20 rounded border-t border-violet-500/25 mt-0.5 pt-1"
+                                onClick={e => {
+                                  e.stopPropagation();
+                                  unassignCommander(cmd.id);
+                                  setCommanderPickStack(null);
+                                }}
+                              >
+                                Clear commander
+                              </button>
+                            )}
                           </div>
-                        </div>
+                        )}
                       </div>
-                    )}
-                    {!cmd && (
-                      <p className="text-[10px] text-empire-parchment/40 mt-1">No commander assigned — recruit above or at a Barracks; attach from the hex panel.</p>
-                    )}
-                    {scrollLbl.length > 0 && (
-                      <p className="text-[10px] text-amber-200/85 mt-1">
-                        <span className="text-amber-400/90 font-semibold">Scrolls: </span>
-                        {scrollLbl.join(' · ')}
-                      </p>
-                    )}
+                      {SCROLL_ARMY_SLOT_ORDER.map(kind => {
+                        const att = attachmentOnStack(kind);
+                        const short = SCROLL_DISPLAY_NAME[kind].replace(/^Scroll of /, '');
+                        return (
+                          <div key={kind} className="flex flex-col items-center gap-0.5 max-w-[4rem]">
+                            <div
+                              className={`w-11 h-11 rounded-md border-2 flex items-center justify-center px-0.5 ${
+                                att ? 'border-amber-500/55 bg-amber-950/35' : 'border-dashed border-amber-800/35 bg-amber-950/15'
+                              }`}
+                              title={att ? SCROLL_DISPLAY_NAME[kind] : `No ${SCROLL_SLOT_LABEL[kind].toLowerCase()} scroll`}
+                            >
+                              {att ? (
+                                <span className="text-[8px] text-amber-100 text-center leading-tight">{short}</span>
+                              ) : (
+                                <span className="text-[9px] text-amber-700/35">—</span>
+                              )}
+                            </div>
+                            <span className="text-[8px] uppercase tracking-wide text-amber-200/40">{SCROLL_SLOT_LABEL[kind]}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <p className="text-[9px] text-empire-parchment/35 mt-1.5">Scrolls: equip from hex panel when this army is selected on the map.</p>
                     <span className={`text-[10px] block mt-1 ${status === 'fighting' ? 'text-red-400' : status === 'moving' ? 'text-green-400' : 'text-empire-parchment/50'}`}>
                       Status: {status}
                     </span>
@@ -2214,7 +2440,6 @@ function SidePanel() {
   const sendScout = useGameStore(s => s.sendScout);
   const deselectAll = useGameStore(s => s.deselectAll);
   const pendingMove = useGameStore(s => s.pendingMove);
-  const specialRegions = useGameStore(s => s.specialRegions);
   const scrollSearchProgress = useGameStore(s => s.scrollSearchProgress);
   const scrollSearchClaimed = useGameStore(s => s.scrollSearchClaimed);
   const scrollInventory = useGameStore(s => s.scrollInventory);
@@ -2237,7 +2462,7 @@ function SidePanel() {
   if (pendingTacticalOrders !== null) return <TacticalPanel />;
   if (!selectedHex) return null;
 
-  // City defenses always use the selected hex (builder must stand on that tile to build).
+  // City defenses use the selected hex.
   const defenseHexQ = selectedHex.q;
   const defenseHexR = selectedHex.r;
   const inTerritoryForDefense = isInPlayerTerritory(defenseHexQ, defenseHexR);
@@ -2261,22 +2486,28 @@ function SidePanel() {
   const tile = getTile(selectedHex.q, selectedHex.r);
   const isVillage = tile?.hasVillage ?? false;
 
-  // Military units at hex (not builders) — for village incorporation
+  // Military units at hex (not legacy builder units) — for village incorporation
   const militaryHere = allUnits.filter(
     u => u.q === selectedHex.q && u.r === selectedHex.r && u.ownerId === 'player_human' && u.hp > 0 && u.type !== 'builder'
   );
 
-  // Can build here? In territory (city BP) OR has builder units at hex
-  const buildersHere = allUnits.filter(
-    u => u.q === selectedHex.q && u.r === selectedHex.r && u.ownerId === 'player_human' && u.type === 'builder' && u.hp > 0
-  ).length;
+  const hasUniversity = cities.some(
+    c => c.ownerId === 'player_human' && c.buildings.some(b => b.type === 'academy'),
+  );
+  const terrEntry = territory.get(tileKey(selectedHex.q, selectedHex.r));
+  const territoryCityForHex = terrEntry ? cities.find(c => c.id === terrEntry.cityId) : undefined;
+  const academyForHex = territoryCityForHex?.buildings.find(b => b.type === 'academy');
+  const universitySlotsAtHex = getUniversityBuilderSlots(academyForHex);
+  /** @deprecated name — now University workforce slots for this territory city */
+  const buildersHere = universitySlotsAtHex;
   const defenseUsesMoveDestination = false;
-  const canBuildHere = (inTerritory || buildersHere > 0) && !hasBuilding && !cityAtHex;
+  const canBuildHere = inTerritory && !hasBuilding && !cityAtHex;
 
-  // Compute available BP at this hex for display
   let availBP = 0;
-  if (inTerritory) availBP += CITY_BUILDING_POWER;
-  availBP += buildersHere * BUILDER_POWER;
+  if (inTerritory) {
+    availBP += CITY_BUILDING_POWER;
+    availBP += universitySlotsAtHex * BUILDER_POWER;
+  }
 
   // Detect active battle at this hex
   const allUnitsAtHex = allUnits.filter(u => u.q === selectedHex.q && u.r === selectedHex.r && u.hp > 0);
@@ -2297,7 +2528,7 @@ function SidePanel() {
   const human = players.find(p => p.isHuman);
   const hasDefenseHere = defenseInstallations.some(d => d.q === selectedHex.q && d.r === selectedHex.r);
   const canBuildTrebuchetHere =
-    buildersHere > 0 &&
+    hasUniversity &&
     !cityAtHex &&
     !construction &&
     !hasDefenseHere &&
@@ -2315,7 +2546,7 @@ function SidePanel() {
     );
   const hasScoutTowerHere = scoutTowers.some(t => t.q === selectedHex.q && t.r === selectedHex.r);
   const canBuildScoutTowerHere =
-    buildersHere > 0 &&
+    hasUniversity &&
     !cityAtHex &&
     !construction &&
     !hasScoutTowerHere &&
@@ -2361,7 +2592,8 @@ function SidePanel() {
         {cityAtHex &&
           (cityAtHex.ownerId === 'player_human' ||
             gameMode === 'bot_vs_bot' ||
-            gameMode === 'bot_vs_bot_4') && (
+            gameMode === 'bot_vs_bot_4' ||
+            gameMode === 'spectate') && (
           <div className="px-2 py-2 bg-empire-gold/10 border border-empire-gold/35 rounded space-y-1.5">
             <div className="text-xs text-empire-gold font-semibold">{cityAtHex.name}</div>
             <button
@@ -2395,16 +2627,16 @@ function SidePanel() {
           </div>
         )}
 
-        {tile?.specialRegionId && (() => {
-          const reg = specialRegions.find(r => r.id === tile.specialRegionId);
-          if (!reg) return null;
+        {tile?.specialTerrainKind && (() => {
+          const sk = scrollKindForTerrain(tile.specialTerrainKind);
+          const terrainName = SPECIAL_REGION_DISPLAY_NAME[tile.specialTerrainKind];
           const hid = human?.id ?? '';
-          const claimed = hid ? (scrollSearchClaimed[reg.id] ?? []).includes(hid) : false;
-          const prog = hid ? (scrollSearchProgress[reg.id]?.[hid] ?? 0) : 0;
+          const claimed = hid ? (scrollSearchClaimed[sk] ?? []).includes(hid) : false;
+          const prog = hid ? (scrollSearchProgress[sk]?.[hid] ?? 0) : 0;
           const progPct = Math.min(1, prog / SCROLL_SEARCH_CYCLES_REQUIRED);
           return (
             <div className="px-2 py-1.5 bg-teal-950/40 border border-teal-600/35 rounded text-xs space-y-1.5">
-              <div className="font-medium text-teal-200/95">{reg.name}</div>
+              <div className="font-medium text-teal-200/95">{terrainName}</div>
               <div className="text-teal-100/70 text-[10px] leading-snug">
                 {claimed
                   ? 'You have claimed this region\'s scroll.'
@@ -2589,7 +2821,14 @@ function SidePanel() {
                   <div className="w-10 h-10 rounded bg-empire-stone/30 border border-violet-500/30 shrink-0" />
                 )}
                 <div className="min-w-0 flex-1">
-                  <div className="font-semibold text-violet-200">{c.name}</div>
+                  <div className="font-semibold text-violet-200 flex flex-wrap items-center gap-1.5">
+                    {c.name}
+                    {(c.commanderKind ?? 'land') === 'naval' && (
+                      <span className="text-[9px] font-bold uppercase tracking-wide text-sky-300/90 border border-sky-500/40 rounded px-1 py-0">
+                        Naval
+                      </span>
+                    )}
+                  </div>
                   <p className="text-empire-parchment/55 mt-0.5 leading-snug">{c.backstory}</p>
                   <p className="text-violet-300/80 mt-1">
                     {c.traitIds.map(tid => COMMANDER_TRAIT_INFO[tid].label).join(' · ')}
@@ -2600,7 +2839,7 @@ function SidePanel() {
                 </div>
               </div>
               <div className="flex flex-wrap gap-1">
-                {cityAtHex?.ownerId === 'player_human' && (
+                {cityAtHex?.ownerId === 'player_human' && (c.commanderKind ?? 'land') !== 'naval' && (
                   <button
                     type="button"
                     onClick={() => assignCommanderToCityDefense(c.id, cityAtHex.id)}
@@ -2609,13 +2848,17 @@ function SidePanel() {
                     Defend {cityAtHex.name}
                   </button>
                 )}
-                {militaryHere.length > 0 && (
+                {militaryHere.length > 0 &&
+                  (((c.commanderKind ?? 'land') === 'naval' &&
+                    militaryHere.some(u => isNavalUnitType(u.type))) ||
+                    ((c.commanderKind ?? 'land') !== 'naval' &&
+                      militaryHere.some(u => !isNavalUnitType(u.type)))) && (
                   <button
                     type="button"
                     onClick={() => assignCommanderToFieldAtSelectedHex(c.id)}
                     className="px-2 py-0.5 rounded bg-slate-800/60 text-slate-100 text-[10px] hover:bg-slate-700/55"
                   >
-                    Lead stack here
+                    {(c.commanderKind ?? 'land') === 'naval' ? 'Lead fleet here' : 'Lead stack here'}
                   </button>
                 )}
                 <button
@@ -2668,7 +2911,12 @@ function SidePanel() {
         )}
 
         {/* Construction progress */}
-        {construction && <ConstructionProgress site={construction} availBP={availBP} />}
+        {construction && (
+          <ConstructionProgress
+            site={construction}
+            availBP={computeConstructionAvailableBp(construction, territory, cities)}
+          />
+        )}
 
         {(() => {
           const od = defenseInstallations.find(
@@ -2683,8 +2931,7 @@ function SidePanel() {
           const nextL = (od.level + 1) as DefenseTowerLevel;
           const canUp =
             od.level < 5 &&
-            buildersHere > 0 &&
-            payC &&
+            !!payC &&
             canAffordDefenseHud(human?.gold ?? 0, payC, nextL);
           return (
             <div className="bg-rose-900/15 border border-rose-500/30 rounded px-3 py-2 space-y-1.5 text-xs">
@@ -2708,8 +2955,10 @@ function SidePanel() {
                   }`}
                 >
                   Upgrade to L{nextL} — {formatDefenseLevelCost(nextL)}
-                  {!buildersHere && od.level < 5 && (
-                    <span className="block text-[10px] text-empire-parchment/45 mt-0.5">Need a builder on this hex</span>
+                  {!universitySlotsAtHex && od.level < 5 && (
+                    <span className="block text-[10px] text-empire-parchment/45 mt-0.5">
+                      Set University to City defenses or upgrade University for faster BP
+                    </span>
                   )}
                 </button>
               )}
@@ -2719,8 +2968,8 @@ function SidePanel() {
 
         {/* City details shown in CityModal when city hex clicked */}
 
-        {/* Builder Build Menu: Mine, Quarry, Road — show FIRST when builder selected (before ArmyPanel) */}
-        {buildersHere > 0 && !city && !cityAtHex && !barracksCity && !academyInfo && !factoryInfo && !quarryMineInfo && !construction && (
+        {/* Field engineering: Mine, Quarry, Road — when you have a University */}
+        {hasUniversity && !city && !cityAtHex && !barracksCity && !academyInfo && !factoryInfo && !quarryMineInfo && !construction && (
           <BuilderBuildMenu
             uiMode={uiMode}
             startBuilderBuild={startBuilderBuild}
@@ -2733,14 +2982,12 @@ function SidePanel() {
             buildScoutTowerHere={() => buildScoutTowerInField(selectedHex.q, selectedHex.r)}
             canBuildScoutTowerHere={canBuildScoutTowerHere}
             canAffordScoutTower={canAffordScoutTower}
-            defenseHexQ={defenseHexQ}
-            defenseHexR={defenseHexR}
-            inTerritory={inTerritoryForDefense}
-            buildersHere={buildersHere}
-            hasDefenseAtHex={hasDefenseAtDefenseHex}
+            hasBuildingOnHex={hasBuilding}
             hasCityAtHex={!!cityAtDefenseHex}
-            tileBiome={defenseTile?.biome}
-            defenseUsesMoveDestination={defenseUsesMoveDestination}
+            tileHasMineDeposit={tile?.hasMineDeposit}
+            tileHasQuarryDeposit={tile?.hasQuarryDeposit}
+            tileHasGoldMineDeposit={tile?.hasGoldMineDeposit}
+            tileIsForest={tile?.biome === 'forest'}
           />
         )}
 
@@ -2763,7 +3010,7 @@ function SidePanel() {
         {quarryMineInfo && !city && selectedHex && <QuarryMinePanel city={quarryMineInfo.city} building={quarryMineInfo.building} />}
 
         {/* Farm / Factory / Market worker panel — shown when clicking farm, factory, or market hex */}
-        {jobBuildingInfo && !city && !barracksCity && !academyInfo && !factoryInfo && !quarryMineInfo && !shipyardInfo && selectedHex && ['farm', 'market', 'fishery', 'sawmill', 'logging_hut', 'port'].includes(jobBuildingInfo.building.type) && (
+        {jobBuildingInfo && !city && !barracksCity && !academyInfo && !factoryInfo && !quarryMineInfo && !shipyardInfo && selectedHex && ['farm', 'banana_farm', 'market', 'fishery', 'sawmill', 'logging_hut', 'port'].includes(jobBuildingInfo.building.type) && (
           <JobBuildingPanel city={jobBuildingInfo.city} building={jobBuildingInfo.building} />
         )}
 
@@ -2802,14 +3049,13 @@ function SidePanel() {
         {/* Burn / Capture enemy city */}
         {enemyCity && units.length > 0 && <EnemyCityActions city={enemyCity} />}
 
-        {/* Build menu: available in territory OR with builders present (city buildings + single road) */}
+        {/* Build menu: in your territory (University workforce + city building power) */}
         {!city && !cityAtHex && !barracksCity && !academyInfo && !factoryInfo && canBuildHere && !construction && uiMode === 'normal' && (
           <BuildMenu
             q={selectedHex.q}
             r={selectedHex.r}
             inTerritory={inTerritory ?? false}
             buildersHere={buildersHere}
-            unitsHere={allUnitsAtHex.filter(u => u.ownerId === 'player_human').length}
             tile={tile}
             hasRoadConstructionAt={hasRoadConstructionAt}
             hasConstructionAt={(q, r) => !!getConstructionAt(q, r)}
@@ -2819,8 +3065,8 @@ function SidePanel() {
           />
         )}
 
-        {!city && !inTerritory && buildersHere === 0 && units.length === 0 && !enemyCity && !barracksCity && !academyInfo && !factoryInfo && !construction && (
-          <p className="text-empire-parchment/40 text-xs">Outside your territory — send Builders here to construct</p>
+        {!city && !inTerritory && !hasUniversity && units.length === 0 && !enemyCity && !barracksCity && !academyInfo && !factoryInfo && !construction && (
+          <p className="text-empire-parchment/40 text-xs">Outside your territory — expand borders or build a University for workforce projects</p>
         )}
       </div>
     </div>
@@ -3044,7 +3290,7 @@ function CityPanel({ city }: { city: import('@/types/game').City }) {
           className="w-full h-1 bg-empire-stone/30 rounded-lg appearance-none cursor-pointer accent-empire-gold" />
       </div>
 
-      <p className="text-empire-parchment/40 text-[10px]">Click Barracks for military units, Academy for builders</p>
+      <p className="text-empire-parchment/40 text-[10px]">Barracks: military. University: workforce tasks & upgrades.</p>
     </div>
   );
 }
@@ -3092,12 +3338,6 @@ const KINGDOM_MILITARY_ROWS: MilitaryRecruitRow[] = [
     fixedLevel: 3,
     l3BarracksOnly: true,
   },
-];
-
-// ─── Academy Panel (Click academy → recruit civilian units) ────────
-
-const CIVILIAN_RECRUIT_INFO: { type: UnitType; cost: number; maintain: string; desc: string }[] = [
-  { type: 'builder',  cost: 2,  maintain: '1 grain/cycle',              desc: 'Builds outside territory. +10 BP.' },
 ];
 
 function ShipyardPanel({ city, shipyardQ, shipyardR }: { city: import('@/types/game').City; shipyardQ: number; shipyardR: number }) {
@@ -3152,7 +3392,7 @@ function ShipyardPanel({ city, shipyardQ, shipyardR }: { city: import('@/types/g
 function BarracksPanel({ city, barracksQ, barracksR }: { city: import('@/types/game').City; barracksQ: number; barracksR: number }) {
   const recruitUnit = useGameStore(s => s.recruitUnit);
   const recruitHero = useGameStore(s => s.recruitHero);
-  const recruitCommander = useGameStore(s => s.recruitCommander);
+  const recruitCommanderInstant = useGameStore(s => s.recruitCommanderInstant);
   const upgradeBarracks = useGameStore(s => s.upgradeBarracks);
   const players = useGameStore(s => s.players);
   const heroes = useGameStore(s => s.heroes);
@@ -3174,6 +3414,7 @@ function BarracksPanel({ city, barracksQ, barracksR }: { city: import('@/types/g
   const playerBarracks = humanCities.reduce((sum, c) => sum + c.buildings.filter(b => b.type === 'barracks').length, 0);
   const canRecruitLeader = leaderSlotsUsed < playerBarracks;
   const canRecruitCommander = gold >= COMMANDER_RECRUIT_GOLD;
+  const heroUnlockedByPop = totalPop >= HERO_POPULATION_UNLOCK;
 
   const [quantities, setQuantities] = useState<Record<string, number>>({});
   const [levels, setLevels] = useState<Record<string, 1 | 2 | 3>>({});
@@ -3326,109 +3567,301 @@ function BarracksPanel({ city, barracksQ, barracksR }: { city: import('@/types/g
         })}
       </div>
 
-      <button onClick={() => recruitHero(city.id)}
-        disabled={!canRecruitLeader || gold < 80}
-        className="w-full px-2 py-1.5 text-xs bg-yellow-900/20 border border-yellow-500/30 rounded text-yellow-300 hover:bg-yellow-900/40 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
+      {!heroUnlockedByPop && (
+        <p className="text-[10px] text-amber-200/85 text-center">
+          Heroes unlock at {HERO_POPULATION_UNLOCK} empire population (currently {totalPop}).
+        </p>
+      )}
+      <button
+        onClick={() => recruitHero(city.id)}
+        disabled={!canRecruitLeader || gold < 80 || !heroUnlockedByPop}
+        className="w-full px-2 py-1.5 text-xs bg-yellow-900/20 border border-yellow-500/30 rounded text-yellow-300 hover:bg-yellow-900/40 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+      >
         &#9733; Recruit Hero (80g) — {leaderSlotsUsed}/{playerBarracks} hero slots
       </button>
       <button
         type="button"
-        onClick={() => recruitCommander(city.id)}
+        onClick={() => recruitCommanderInstant()}
         disabled={!canRecruitCommander}
         className="w-full px-2 py-1.5 text-xs bg-violet-950/40 border border-violet-500/35 rounded text-violet-200 hover:bg-violet-900/45 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
       >
-        Recruit Commander ({COMMANDER_RECRUIT_GOLD}g) — no barracks limit; ready next cycle, assign from hex panel
+        Recruit Commander ({COMMANDER_RECRUIT_GOLD}g) — ~25% naval; assign in City tab or Army panel
       </button>
     </div>
   );
 }
 
-// ─── Academy Panel (Click academy → recruit builders) ───────────────
+// ─── Academy Panel (University — workforce & tasks) ───────────────
 
 function AcademyPanel({ city, academyQ, academyR }: { city: import('@/types/game').City; academyQ: number; academyR: number }) {
-  const recruitUnit = useGameStore(s => s.recruitUnit);
+  const setUniversityBuilderTask = useGameStore(s => s.setUniversityBuilderTask);
+  const upgradeUniversity = useGameStore(s => s.upgradeUniversity);
+  const startDefensePlacement = useGameStore(s => s.startDefensePlacement);
+  const buildWallRing = useGameStore(s => s.buildWallRing);
+  const defenseInstallations = useGameStore(s => s.defenseInstallations);
+  const wallSections = useGameStore(s => s.wallSections);
   const players = useGameStore(s => s.players);
-  const units = useGameStore(s => s.units);
+  const constructions = useGameStore(s => s.constructions);
+  const roadConstructions = useGameStore(s => s.roadConstructions);
+  const territory = useGameStore(s => s.territory);
   const cities = useGameStore(s => s.cities);
   const human = players.find(p => p.isHuman);
   const gold = human?.gold ?? 0;
-  const totalPop = cities.filter(c => c.ownerId === human?.id).reduce((s, c) => s + c.population, 0);
-  const livingTroops = units.filter(u => u.ownerId === human?.id && u.hp > 0).length;
-  const troopSlotsLeft = Math.max(0, totalPop - livingTroops);
 
-  const [quantities, setQuantities] = useState<Record<string, number>>({});
-  const getQty = (type: string) => quantities[type] ?? 1;
-  const setQty = (type: string, val: number) => setQuantities(prev => ({ ...prev, [type]: val }));
+  const academy = city.buildings.find(b => b.type === 'academy' && b.q === academyQ && b.r === academyR);
+  const lvl = academy?.level ?? 1;
+  const slots = getUniversityBuilderSlots(academy);
+  const task = city.universityBuilderTask ?? DEFAULT_BUILDER_TASK;
+  const upgradeCost = lvl < 5 ? UNIVERSITY_UPGRADE_COSTS[lvl - 1] : undefined;
+  const canUpgrade = upgradeCost !== undefined && gold >= upgradeCost;
+  const workforceBP = slots * BUILDER_POWER;
+  const bpPerSec = (workforceBP / BP_RATE_BASE).toFixed(1);
 
-  const handleBatchRecruit = (type: import('@/types/game').UnitType, cost: number, qty: number) => {
-    for (let i = 0; i < qty; i++) {
-      recruitUnit(city.id, type, 1);
-    }
-  };
+  const cityConstructions = constructions.filter(c => c.cityId === city.id && c.ownerId === 'player_human');
+  const cityRoads = roadConstructions.filter(r => {
+    const terr = territory.get(tileKey(r.q, r.r));
+    return terr && terr.cityId === city.id && r.ownerId === 'player_human';
+  });
+
+  const TASKS: { id: BuilderTask; label: string; desc: string; color: string }[] = [
+    { id: 'expand_quarries', label: 'Quarries', desc: 'Quarry construction', color: 'stone' },
+    { id: 'expand_iron_mines', label: 'Mining', desc: 'Iron mine & gold mine construction', color: 'amber' },
+    { id: 'expand_forestry', label: 'Forestry', desc: 'Logging hut & sawmill construction', color: 'emerald' },
+    { id: 'city_defenses', label: 'Defenses', desc: 'Mortar, archer tower, ballista construction', color: 'rose' },
+  ];
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-3">
       <h3 className="text-sky-400 text-xs font-semibold uppercase tracking-wide">University — {city.name}</h3>
-      <p className="text-empire-parchment/50 text-[10px]">Troops: {livingTroops} / {totalPop} (1 per pop; pop lost when unit dies)</p>
 
-      <div className="space-y-2">
-        {CIVILIAN_RECRUIT_INFO.map(({ type, cost, maintain, desc }) => {
-          const stats = UNIT_BASE_STATS[type];
-          const qty = getQty(type);
-          const totalCost = cost * qty;
-          const maxByGold = Math.floor(gold / Math.max(1, cost));
-          const maxByPop = troopSlotsLeft;
-          const maxQty = Math.max(1, Math.min(maxByGold, maxByPop, 20));
-          const canAfford = gold >= totalCost && livingTroops + qty <= totalPop;
-          return (
-            <div key={type} className={`px-3 py-2.5 rounded border transition-colors ${
-              canAfford
-                ? 'border-sky-500/30 bg-sky-900/15 text-empire-parchment'
-                : 'border-empire-stone/20 bg-transparent text-empire-parchment/30'
-            }`}>
-              <div className="flex justify-between items-center mb-0.5">
-                <span className="font-bold text-xs">{UNIT_DISPLAY_NAMES[type]}</span>
-                <span className={`text-xs font-mono ${canAfford ? 'text-yellow-400' : 'text-red-400/50'}`}>{cost}g ea</span>
-              </div>
-              <div className="text-[10px] text-empire-parchment/50">{desc}</div>
-              <div className="flex justify-between text-[10px] mt-1 mb-2">
-                <span className="text-empire-parchment/40">HP {stats.maxHp} | ATK {stats.attack} | Rng {stats.range}</span>
-                <span className="text-sky-300/60">{maintain}</span>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <input
-                  type="range"
-                  min={1}
-                  max={maxQty}
-                  value={Math.min(qty, maxQty)}
-                  onChange={e => setQty(type, Number(e.target.value))}
-                  className="flex-1 h-1 bg-empire-stone/30 rounded-lg appearance-none cursor-pointer accent-sky-500"
-                />
-                <span className="text-xs font-mono text-sky-300 w-6 text-right">{qty}</span>
-              </div>
-
-              <div className="flex justify-between items-center mt-1.5">
-                <span className="text-[10px] text-empire-parchment/40">
-                  Total: <span className={canAfford ? 'text-yellow-400' : 'text-red-400'}>{totalCost}g</span>
-                  {' + '}{qty} pop
-                </span>
-                <button
-                  onClick={() => handleBatchRecruit(type, cost, qty)}
-                  disabled={!canAfford}
-                  className={`px-3 py-1 text-[10px] font-bold rounded transition-colors ${
-                    canAfford
-                      ? 'bg-sky-600/40 text-sky-200 hover:bg-sky-600/60'
-                      : 'bg-empire-stone/10 text-empire-parchment/20 cursor-not-allowed'
-                  }`}
-                >
-                  Recruit {qty}
-                </button>
-              </div>
+      {/* Builder count — prominent visual */}
+      <div className="bg-sky-950/40 border border-sky-500/30 rounded-lg px-3 py-2.5">
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-sky-300 text-xs font-bold">Workforce</span>
+          <span className="text-sky-100 text-xs">Level {lvl}</span>
+        </div>
+        <div className="flex items-center gap-1.5 mb-1.5">
+          {Array.from({ length: 5 }, (_, i) => (
+            <div
+              key={i}
+              className={`w-8 h-8 rounded border-2 flex items-center justify-center text-sm font-bold transition-colors ${
+                i < slots
+                  ? 'border-sky-400/70 bg-sky-900/50 text-sky-200'
+                  : 'border-empire-stone/20 bg-empire-stone/5 text-empire-stone/20'
+              }`}
+            >
+              {i < slots ? '\u2692' : ''}
             </div>
-          );
-        })}
+          ))}
+        </div>
+        <div className="flex justify-between text-[10px]">
+          <span className="text-empire-parchment/50">
+            {slots} builder{slots !== 1 ? 's' : ''} active
+          </span>
+          <span className="text-sky-300/70">
+            +{bpPerSec} BP/sec on assigned task
+          </span>
+        </div>
       </div>
+
+      {/* Upgrade */}
+      {lvl < 5 && upgradeCost !== undefined && (
+        <button
+          type="button"
+          onClick={() => upgradeUniversity(city.id, academyQ, academyR)}
+          disabled={!canUpgrade}
+          className="w-full px-2 py-1.5 text-xs bg-sky-900/30 border border-sky-500/40 rounded text-sky-200 hover:bg-sky-900/50 disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          Upgrade to L{lvl + 1} — {upgradeCost}g (+1 builder)
+        </button>
+      )}
+
+      {/* Task assignment */}
+      <div>
+        <p className="text-[10px] text-empire-parchment/55 mb-1.5 font-semibold uppercase tracking-wide">Assign builders to</p>
+        <div className="flex flex-col gap-1">
+          {TASKS.map(t => {
+            const isActive = task === t.id;
+            const matching = cityConstructions.filter(c => {
+              switch (t.id) {
+                case 'expand_quarries': return c.type === 'quarry';
+                case 'expand_iron_mines': return c.type === 'mine' || c.type === 'gold_mine';
+                case 'expand_forestry': return c.type === 'logging_hut' || c.type === 'sawmill';
+                case 'city_defenses': return c.type === 'city_defense';
+                default: return false;
+              }
+            });
+            return (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() => setUniversityBuilderTask(city.id, t.id)}
+                className={`text-left px-2.5 py-2 rounded border text-[11px] transition-colors ${
+                  isActive
+                    ? 'border-sky-400/60 bg-sky-950/50 text-sky-100'
+                    : 'border-empire-stone/25 text-empire-parchment/70 hover:bg-empire-stone/10'
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <span className="font-medium">
+                    {isActive && <span className="text-sky-400 mr-1">\u25B6</span>}
+                    {t.label}
+                  </span>
+                  {matching.length > 0 && (
+                    <span className={`text-[9px] px-1.5 py-0.5 rounded ${
+                      isActive ? 'bg-sky-500/20 text-sky-300' : 'bg-empire-stone/15 text-empire-parchment/40'
+                    }`}>
+                      {matching.length} active
+                    </span>
+                  )}
+                </div>
+                <div className="text-[9px] text-empire-parchment/40 mt-0.5">{t.desc}</div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Defense towers + walls — expanded when Defenses task is selected */}
+      {task === 'city_defenses' && (() => {
+        const cityDefenses = defenseInstallations.filter(d => d.cityId === city.id);
+        const totalStone = cities.filter(c => c.ownerId === human?.id).reduce((s, c) => s + (c.storage.stone ?? 0), 0);
+        const ring1Walls = wallSections.filter(w => w.ownerId === human?.id && hexDistance(w.q, w.r, city.q, city.r) === 1).length;
+        const ring2Walls = wallSections.filter(w => w.ownerId === human?.id && hexDistance(w.q, w.r, city.q, city.r) === 2).length;
+        return (
+          <div className="space-y-2 border border-rose-500/25 rounded-md px-2.5 py-2 bg-rose-950/15">
+            <p className="text-rose-300 text-[11px] font-semibold">Defense towers</p>
+            <p className="text-[9px] text-empire-parchment/45">Tap a level to start placement, then click a territory hex on the map.</p>
+            {(['mortar', 'archer_tower', 'ballista'] as const).map(tt => {
+              const n = cityDefenses.filter(d => d.type === tt).length;
+              const maxed = n >= DEFENSE_TOWER_MAX_PER_CITY[tt];
+              return (
+                <div key={tt} className="space-y-1">
+                  <div className="text-[10px] text-empire-parchment/70">
+                    {DEFENSE_TOWER_DISPLAY_NAME[tt]} — {n}/{DEFENSE_TOWER_MAX_PER_CITY[tt]}
+                  </div>
+                  <div className="flex flex-wrap gap-1">
+                    {([1, 2, 3, 4, 5] as const).map(lvl => {
+                      const ok = !maxed && canAffordDefenseHud(gold, city, lvl);
+                      return (
+                        <button
+                          key={lvl}
+                          type="button"
+                          disabled={!ok}
+                          title={`Place ${DEFENSE_TOWER_DISPLAY_NAME[tt]} L${lvl} — ${formatDefenseLevelCost(lvl)}`}
+                          onClick={() => startDefensePlacement(tt, lvl, city.id)}
+                          className={`min-w-[2rem] px-1.5 py-1 rounded border text-[10px] font-medium ${
+                            ok
+                              ? 'border-rose-500/50 bg-rose-950/40 text-rose-100 hover:bg-rose-900/35'
+                              : 'border-empire-stone/20 text-empire-parchment/25 cursor-not-allowed'
+                          }`}
+                        >
+                          L{lvl}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+
+            <p className="text-rose-300 text-[11px] font-semibold pt-1">Walls</p>
+            <div className="flex flex-col gap-1">
+              <button
+                onClick={() => buildWallRing(city.id, 1)}
+                disabled={totalStone < 6 * WALL_SECTION_STONE_COST || ring1Walls >= 6}
+                className={`w-full text-left px-2 py-1.5 rounded border text-[11px] transition-colors ${
+                  totalStone >= 6 * WALL_SECTION_STONE_COST && ring1Walls < 6
+                    ? 'border-rose-500/40 bg-rose-950/30 text-rose-200 hover:bg-rose-900/35'
+                    : 'border-empire-stone/20 text-empire-parchment/25 cursor-not-allowed'
+                }`}
+              >
+                <div className="flex justify-between">
+                  <span>Wall ring 1 ({ring1Walls}/6)</span>
+                  <span className={totalStone >= 30 ? 'text-rose-300/70' : 'text-red-400/50'}>{6 * WALL_SECTION_STONE_COST} stone</span>
+                </div>
+              </button>
+              <button
+                onClick={() => buildWallRing(city.id, 2)}
+                disabled={totalStone < 12 * WALL_SECTION_STONE_COST || ring2Walls >= 12}
+                className={`w-full text-left px-2 py-1.5 rounded border text-[11px] transition-colors ${
+                  totalStone >= 12 * WALL_SECTION_STONE_COST && ring2Walls < 12
+                    ? 'border-rose-500/40 bg-rose-950/30 text-rose-200 hover:bg-rose-900/35'
+                    : 'border-empire-stone/20 text-empire-parchment/25 cursor-not-allowed'
+                }`}
+              >
+                <div className="flex justify-between">
+                  <span>Wall ring 2 ({ring2Walls}/12)</span>
+                  <span className={totalStone >= 60 ? 'text-rose-300/70' : 'text-red-400/50'}>{12 * WALL_SECTION_STONE_COST} stone</span>
+                </div>
+              </button>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Active constructions for this city */}
+      {(cityConstructions.length > 0 || cityRoads.length > 0) && (
+        <div>
+          <p className="text-[10px] text-empire-parchment/55 mb-1 font-semibold uppercase tracking-wide">Active projects ({cityConstructions.length + cityRoads.length})</p>
+          <div className="flex flex-col gap-1 max-h-32 overflow-y-auto">
+            {cityConstructions.map(site => {
+              const availBP = computeConstructionAvailableBp(site, territory, cities);
+              const pct = Math.min(100, Math.round((site.bpAccumulated / site.bpRequired) * 100));
+              const gettingBoost = (() => {
+                switch (task) {
+                  case 'expand_quarries': return site.type === 'quarry';
+                  case 'expand_iron_mines': return site.type === 'mine' || site.type === 'gold_mine';
+                  case 'expand_forestry': return site.type === 'logging_hut' || site.type === 'sawmill';
+                  case 'city_defenses': return site.type === 'city_defense';
+                  default: return false;
+                }
+              })();
+              const typeName = site.type === 'city_defense' && site.defenseTowerType && site.defenseTowerTargetLevel
+                ? `${DEFENSE_TOWER_DISPLAY_NAME[site.defenseTowerType]} L${site.defenseTowerTargetLevel}`
+                : site.type.replace(/_/g, ' ');
+              return (
+                <div key={site.id} className="bg-empire-stone/8 border border-empire-stone/15 rounded px-2 py-1.5">
+                  <div className="flex justify-between items-center text-[10px]">
+                    <span className="capitalize text-empire-parchment/80">
+                      {gettingBoost && <span className="text-sky-400 mr-0.5" title="Boosted by workforce">\u2692</span>}
+                      {typeName}
+                    </span>
+                    <span className="text-empire-parchment/50">{pct}% · {availBP} BP</span>
+                  </div>
+                  <div className="w-full h-1 bg-empire-stone/20 rounded-full overflow-hidden mt-1">
+                    <div
+                      className={`h-full rounded-full transition-all ${gettingBoost ? 'bg-sky-500/70' : 'bg-amber-500/50'}`}
+                      style={{ width: `${pct}%` }}
+                    />
+                  </div>
+                </div>
+              );
+            })}
+            {cityRoads.map(road => {
+              const pct = Math.min(100, Math.round((road.bpAccumulated / road.bpRequired) * 100));
+              return (
+                <div key={road.id} className="bg-empire-stone/8 border border-empire-stone/15 rounded px-2 py-1.5">
+                  <div className="flex justify-between items-center text-[10px]">
+                    <span className="text-empire-parchment/80">
+                      <span className="text-sky-400 mr-0.5" title="Uses workforce">\u2692</span>
+                      Road ({road.q},{road.r})
+                    </span>
+                    <span className="text-empire-parchment/50">{pct}%</span>
+                  </div>
+                  <div className="w-full h-1 bg-empire-stone/20 rounded-full overflow-hidden mt-1">
+                    <div className="h-full bg-sky-500/50 rounded-full transition-all" style={{ width: `${pct}%` }} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      <p className="text-[10px] text-empire-parchment/40">
+        All territory buildings get {CITY_BUILDING_POWER} base BP. Builder workforce adds {workforceBP} BP to projects matching the assigned task. Roads and field builds (trebuchets, scout towers) always use workforce.
+      </p>
     </div>
   );
 }
@@ -4122,14 +4555,12 @@ function BuilderBuildMenu({
   buildScoutTowerHere,
   canBuildScoutTowerHere,
   canAffordScoutTower,
-  defenseHexQ,
-  defenseHexR,
-  inTerritory,
-  buildersHere,
-  hasDefenseAtHex,
+  hasBuildingOnHex,
   hasCityAtHex,
-  tileBiome,
-  defenseUsesMoveDestination,
+  tileHasMineDeposit,
+  tileHasQuarryDeposit,
+  tileHasGoldMineDeposit,
+  tileIsForest,
 }: {
   uiMode: string;
   startBuilderBuild: (mode: 'mine' | 'quarry' | 'gold_mine' | 'logging_hut' | 'road') => void;
@@ -4142,30 +4573,18 @@ function BuilderBuildMenu({
   buildScoutTowerHere: () => void;
   canBuildScoutTowerHere: boolean;
   canAffordScoutTower: boolean;
-  defenseHexQ: number;
-  defenseHexR: number;
-  inTerritory: boolean;
-  buildersHere: number;
-  hasDefenseAtHex: boolean;
+  hasBuildingOnHex: boolean;
   hasCityAtHex: boolean;
-  tileBiome?: Biome;
-  defenseUsesMoveDestination?: boolean;
+  tileHasMineDeposit?: boolean;
+  tileHasQuarryDeposit?: boolean;
+  tileHasGoldMineDeposit?: boolean;
+  tileIsForest?: boolean;
 }) {
   if (uiMode === 'normal' || uiMode === 'move') {
     return (
       <div className="space-y-2">
         <h3 className="text-amber-400/90 text-xs font-semibold uppercase tracking-wide">Builder</h3>
         <p className="text-empire-parchment/50 text-[10px]">Build here or select type — deposits will highlight on map</p>
-        <BuilderCityDefensesSection
-          q={defenseHexQ}
-          r={defenseHexR}
-          inTerritory={inTerritory}
-          buildersHere={buildersHere}
-          hasDefenseAtHex={hasDefenseAtHex}
-          hasCityAtHex={hasCityAtHex}
-          tileBiome={tileBiome}
-          usingMoveDestination={defenseUsesMoveDestination}
-        />
         <div className="flex flex-col gap-1.5">
           {(canBuildTrebuchetHere || canBuildScoutTowerHere) && (
             <p className="text-empire-parchment/45 text-[10px] font-semibold uppercase tracking-wide pt-0.5">Siege & vision</p>
@@ -4202,28 +4621,36 @@ function BuilderBuildMenu({
               </span>
             </button>
           )}
+          {!hasBuildingOnHex && !hasCityAtHex && (tileHasMineDeposit || tileHasQuarryDeposit || tileHasGoldMineDeposit || tileIsForest) && (<>
           <p className="text-empire-parchment/45 text-[10px] font-semibold uppercase tracking-wide pt-0.5">Resource sites</p>
+          {tileHasMineDeposit && (
           <button
             onClick={() => startBuilderBuild('mine')}
             className="w-full text-left px-3 py-2 rounded border border-amber-600/40 bg-amber-900/20 text-amber-300 hover:bg-amber-900/30 text-xs"
           >
             <span className="font-medium">Mine</span>
-            <span className="text-amber-400/70 ml-1">— +2 iron/cycle on deposit</span>
+            <span className="text-amber-400/70 ml-1">— +1 iron/cycle on deposit</span>
           </button>
+          )}
+          {tileHasQuarryDeposit && (
           <button
             onClick={() => startBuilderBuild('quarry')}
             className="w-full text-left px-3 py-2 rounded border border-stone-500/40 bg-stone-900/20 text-stone-300 hover:bg-stone-900/30 text-xs"
           >
             <span className="font-medium">Quarry</span>
-            <span className="text-stone-400/70 ml-1">— +5 stone/cycle on deposit</span>
+            <span className="text-stone-400/70 ml-1">— +3 stone/cycle on deposit</span>
           </button>
+          )}
+          {tileHasGoldMineDeposit && (
           <button
             onClick={() => startBuilderBuild('gold_mine')}
             className="w-full text-left px-3 py-2 rounded border border-yellow-600/40 bg-yellow-900/20 text-yellow-300 hover:bg-yellow-900/30 text-xs"
           >
             <span className="font-medium">Gold mine</span>
-            <span className="text-yellow-400/70 ml-1">— +10 gold/cycle on mountain deposit (20 iron)</span>
+            <span className="text-yellow-400/70 ml-1">— +7 gold/cycle on mountain deposit (20 iron)</span>
           </button>
+          )}
+          {tileIsForest && (
           <button
             onClick={() => startBuilderBuild('logging_hut')}
             className="w-full text-left px-3 py-2 rounded border border-emerald-600/40 bg-emerald-900/20 text-emerald-300 hover:bg-emerald-900/30 text-xs"
@@ -4231,6 +4658,8 @@ function BuilderBuildMenu({
             <span className="font-medium">Logging hut</span>
             <span className="text-emerald-400/70 ml-1">— +wood/cycle on forest</span>
           </button>
+          )}
+          </>)}
           <p className="text-empire-parchment/45 text-[10px] font-semibold uppercase tracking-wide pt-0.5">Roads</p>
           <button
             onClick={() => startBuilderBuild('road')}
@@ -4248,7 +4677,7 @@ function BuilderBuildMenu({
     return (
       <div className="space-y-2">
         <h3 className="text-amber-400/90 text-xs font-semibold">Mine — Select Deposit</h3>
-        <p className="text-empire-parchment/50 text-[10px]">Click a highlighted mine deposit. Builder will move there and start.</p>
+        <p className="text-empire-parchment/50 text-[10px]">Click a highlighted mine deposit.</p>
         <button onClick={cancelBuilderBuild} className="w-full px-2 py-1.5 text-xs border border-empire-stone/40 rounded text-empire-parchment/70 hover:bg-empire-stone/20">Cancel</button>
       </div>
     );
@@ -4258,7 +4687,7 @@ function BuilderBuildMenu({
     return (
       <div className="space-y-2">
         <h3 className="text-stone-400/90 text-xs font-semibold">Quarry — Select Deposit</h3>
-        <p className="text-empire-parchment/50 text-[10px]">Click a highlighted quarry deposit. Builder will move there and start.</p>
+        <p className="text-empire-parchment/50 text-[10px]">Click a highlighted quarry deposit.</p>
         <button onClick={cancelBuilderBuild} className="w-full px-2 py-1.5 text-xs border border-empire-stone/40 rounded text-empire-parchment/70 hover:bg-empire-stone/20">Cancel</button>
       </div>
     );
@@ -4268,7 +4697,7 @@ function BuilderBuildMenu({
     return (
       <div className="space-y-2">
         <h3 className="text-yellow-400/90 text-xs font-semibold">Gold mine — Select Deposit</h3>
-        <p className="text-empire-parchment/50 text-[10px]">Click a highlighted gold deposit (mountains). Costs 20g + 20 iron from nearest city. Builder will move there and start.</p>
+        <p className="text-empire-parchment/50 text-[10px]">Click a highlighted gold deposit (mountains). Costs 20g + 20 iron from nearest city.</p>
         <button onClick={cancelBuilderBuild} className="w-full px-2 py-1.5 text-xs border border-empire-stone/40 rounded text-empire-parchment/70 hover:bg-empire-stone/20">Cancel</button>
       </div>
     );
@@ -4278,7 +4707,7 @@ function BuilderBuildMenu({
     return (
       <div className="space-y-2">
         <h3 className="text-amber-400/90 text-xs font-semibold">Road — Mark Path</h3>
-        <p className="text-empire-parchment/50 text-[10px]">Click hexes to add/remove from path. Confirm when done. Builders will walk to each hex; roads complete as they arrive and they auto-continue to the next.</p>
+        <p className="text-empire-parchment/50 text-[10px]">Click hexes in your territory (with a University). Confirm when done — workforce builds roads in parallel.</p>
         <p className="text-amber-400/80 text-xs font-medium">{roadPathSelection.length} hex(es) selected</p>
         <div className="flex gap-2">
           <button onClick={confirmRoadPath} disabled={roadPathSelection.length === 0}
@@ -4294,10 +4723,35 @@ function BuilderBuildMenu({
   return null;
 }
 
+function DefensePlacementOverlay() {
+  const uiMode = useGameStore(s => s.uiMode);
+  const pendingDefenseBuild = useGameStore(s => s.pendingDefenseBuild);
+  const cancelDefensePlacement = useGameStore(s => s.cancelDefensePlacement);
+  if (uiMode !== 'build_defense' || !pendingDefenseBuild) return null;
+  const { towerType, level } = pendingDefenseBuild;
+  return (
+    <div className="fixed top-20 left-1/2 -translate-x-1/2 z-30 pointer-events-auto">
+      <div className="bg-empire-dark/95 border border-rose-500/50 rounded-lg px-4 py-3 shadow-xl flex items-center gap-3">
+        <div>
+          <div className="text-rose-300 text-xs font-bold">Placing {DEFENSE_TOWER_DISPLAY_NAME[towerType]} L{level}</div>
+          <div className="text-[10px] text-empire-parchment/60">Click a territory hex (not city center, water, or mountain)</div>
+        </div>
+        <button
+          type="button"
+          onClick={cancelDefensePlacement}
+          className="px-2 py-1.5 text-xs border border-empire-stone/40 rounded text-empire-parchment/70 hover:bg-empire-stone/20"
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ─── Build Menu ────────────────────────────────────────────────────
 
-function BuildMenu({ q, r, inTerritory, buildersHere, unitsHere, tile, hasRoadConstructionAt, hasConstructionAt, hasCityAt, buildRoad, cityForWall }: {
-  q: number; r: number; inTerritory: boolean; buildersHere: number; unitsHere: number;
+function BuildMenu({ q, r, inTerritory, buildersHere, tile, hasRoadConstructionAt, hasConstructionAt, hasCityAt, buildRoad, cityForWall }: {
+  q: number; r: number; inTerritory: boolean; buildersHere: number;
   tile?: { hasRoad?: boolean; hasQuarryDeposit?: boolean; hasMineDeposit?: boolean; hasWoodDeposit?: boolean; biome?: string } | undefined;
   hasRoadConstructionAt: (q: number, r: number) => boolean;
   hasConstructionAt: (q: number, r: number) => boolean;
@@ -4318,15 +4772,16 @@ function BuildMenu({ q, r, inTerritory, buildersHere, unitsHere, tile, hasRoadCo
   const territoryState = useGameStore(s => s.territory);
   const humanCities = allCitiesState.filter(c => c.ownerId === human?.id);
   const totalStone = humanCities.reduce((s, c) => s + (c.storage.stone ?? 0), 0);
+  const hasUniversity = humanCities.some(c => c.buildings.some(b => b.type === 'academy'));
 
   let availBP = 0;
   if (inTerritory) availBP += CITY_BUILDING_POWER;
   availBP += buildersHere * BUILDER_POWER;
 
-  const hasUnitsForDeposit = unitsHere > 0;
+  const isCityTile = hasCityAt(q, r);
   const hasDefenseAtHex = defenseInstallations.some(d => d.q === q && d.r === r);
   const canBuildTrebuchetHere =
-    buildersHere > 0 &&
+    hasUniversity &&
     !hasCityAt(q, r) &&
     !hasConstructionAt(q, r) &&
     !hasDefenseAtHex &&
@@ -4334,7 +4789,7 @@ function BuildMenu({ q, r, inTerritory, buildersHere, unitsHere, tile, hasRoadCo
     tile?.biome !== 'mountain';
   const hasScoutTowerAt = scoutTowers.some(t => t.q === q && t.r === r);
   const canBuildScoutTowerHere =
-    buildersHere > 0 &&
+    hasUniversity &&
     !hasCityAt(q, r) &&
     !hasConstructionAt(q, r) &&
     !hasScoutTowerAt &&
@@ -4365,23 +4820,23 @@ function BuildMenu({ q, r, inTerritory, buildersHere, unitsHere, tile, hasRoadCo
         category: 'Food & trade' as BuildMenuCategory,
         type: 'banana_farm' as BuildingType,
         label: 'Banana farm',
-        desc: `Same as farm. L1: +25 grain/cycle (2 jobs); L2: +60 (3 jobs)  (${BUILDING_BP_COST.banana_farm} BP)`,
+        desc: `Same as farm. L1: +${BUILDING_PRODUCTION.farm.food} grain/cycle (2 jobs); L2: +${FARM_L2_FOOD_PER_CYCLE} (3 jobs)  (${BUILDING_BP_COST.banana_farm} BP)`,
       }]
       : [{
         category: 'Food & trade' as BuildMenuCategory,
         type: 'farm' as BuildingType,
         label: 'Farm',
-        desc: `L1: +25 grain/cycle (2 jobs); L2: +60 (3 jobs)  (${BUILDING_BP_COST.farm} BP)`,
+        desc: `L1: +${BUILDING_PRODUCTION.farm.food} grain/cycle (2 jobs); L2: +${FARM_L2_FOOD_PER_CYCLE} (3 jobs)  (${BUILDING_BP_COST.farm} BP)`,
       }]),
     { category: 'Food & trade' as BuildMenuCategory, type: 'market' as BuildingType, label: 'Market', desc: `+${MARKET_GOLD_PER_CYCLE} gold/cycle (2 jobs)  (${BUILDING_BP_COST.market} BP)` },
     { category: 'Food & trade' as BuildMenuCategory, type: 'fishery' as BuildingType, label: 'Fishery', desc: `+${BUILDING_PRODUCTION.fishery.food} grain/cycle on coast (2 jobs) (${BUILDING_BP_COST.fishery} BP)`, show: coastal },
     { category: 'Industry' as BuildMenuCategory, type: 'factory' as BuildingType, label: 'Factory', desc: `+1 arms/cycle (2 jobs)  (${BUILDING_BP_COST.factory} BP)` },
     { category: 'Industry' as BuildMenuCategory, type: 'sawmill' as BuildingType, label: 'Sawmill', desc: `+${BUILDING_PRODUCTION.sawmill.refinedWood} refined wood/cycle; needs ${SAWMILL_WOOD_PER_REFINED} raw wood each (2 jobs) (${BUILDING_BP_COST.sawmill} BP)` },
     { category: 'Recruitment' as BuildMenuCategory, type: 'barracks' as BuildingType, label: 'Barracks', desc: `Recruit military units & heroes (2 jobs)  (${BUILDING_BP_COST.barracks} BP)` },
-    { category: 'Recruitment' as BuildMenuCategory, type: 'academy' as BuildingType, label: 'University', desc: `Civilian recruitment (builders) (2 jobs)  (${BUILDING_BP_COST.academy} BP)` },
-    { category: 'Resource sites' as BuildMenuCategory, type: 'quarry' as BuildingType, label: 'Quarry', desc: `+5 stone/cycle (2 jobs) (${BUILDING_BP_COST.quarry} BP)`, show: tile?.hasQuarryDeposit, needsUnits: true },
-    { category: 'Resource sites' as BuildMenuCategory, type: 'mine' as BuildingType, label: 'Mine', desc: `+2 iron/cycle (2 jobs) (${BUILDING_BP_COST.mine} BP)`, show: tile?.hasMineDeposit, needsUnits: true },
-    { category: 'Resource sites' as BuildMenuCategory, type: 'logging_hut' as BuildingType, label: 'Logging hut', desc: `+${BUILDING_PRODUCTION.logging_hut.wood} wood/cycle (2 jobs) (${BUILDING_BP_COST.logging_hut} BP)`, show: tile?.biome === 'forest', needsUnits: true },
+    { category: 'Recruitment' as BuildMenuCategory, type: 'academy' as BuildingType, label: 'University', desc: `Workforce & tasks; upgrade for more builder slots (2 jobs) (${BUILDING_BP_COST.academy} BP)` },
+    { category: 'Resource sites' as BuildMenuCategory, type: 'quarry' as BuildingType, label: 'Quarry', desc: `+${BUILDING_PRODUCTION.quarry.stone} stone/cycle (2 jobs) (${BUILDING_BP_COST.quarry} BP)`, show: tile?.hasQuarryDeposit && !isCityTile },
+    { category: 'Resource sites' as BuildMenuCategory, type: 'mine' as BuildingType, label: 'Mine', desc: `+${BUILDING_PRODUCTION.mine.iron} iron/cycle (2 jobs) (${BUILDING_BP_COST.mine} BP)`, show: tile?.hasMineDeposit && !isCityTile },
+    { category: 'Resource sites' as BuildMenuCategory, type: 'logging_hut' as BuildingType, label: 'Logging hut', desc: `+${BUILDING_PRODUCTION.logging_hut.wood} wood/cycle (2 jobs) (${BUILDING_BP_COST.logging_hut} BP)`, show: tile?.biome === 'forest' && !isCityTile },
     { category: 'Coast & ships' as BuildMenuCategory, type: 'port' as BuildingType, label: 'Port', desc: `Trade cluster link across water (1 job) (${BUILDING_BP_COST.port} BP)`, show: coastal },
     { category: 'Coast & ships' as BuildMenuCategory, type: 'shipyard' as BuildingType, label: 'Shipyard', desc: `Build ships (2 jobs) (${BUILDING_BP_COST.shipyard} BP)`, show: coastal },
   ].filter(b => b.show !== false);
@@ -4391,7 +4846,7 @@ function BuildMenu({ q, r, inTerritory, buildersHere, unitsHere, tile, hasRoadCo
     items: buildings.filter(b => b.category === title),
   })).filter(g => g.items.length > 0);
 
-  const canBuildRoad = buildersHere > 0 && !tile?.hasRoad && !hasRoadConstructionAt(q, r);
+  const canBuildRoad = inTerritory && buildersHere > 0 && !tile?.hasRoad && !hasRoadConstructionAt(q, r);
   const trebuchetCanAfford =
     (human?.gold ?? 0) >= TREBUCHET_FIELD_GOLD_COST &&
     !!findCityForRefinedWoodSpend(q, r, human?.id ?? '', TREBUCHET_REFINED_WOOD_COST, allCitiesState, territoryState);
@@ -4420,7 +4875,7 @@ function BuildMenu({ q, r, inTerritory, buildersHere, unitsHere, tile, hasRoadCo
               {TREBUCHET_FIELD_GOLD_COST}g · {TREBUCHET_REFINED_WOOD_COST} ref.
             </span>
           </div>
-          <div className="text-empire-parchment/40 text-[10px]">Siege. Builder builds on this hex ({TREBUCHET_FIELD_BP_COST} BP)</div>
+          <div className="text-empire-parchment/40 text-[10px]">Siege. Nearest University supplies BP ({TREBUCHET_FIELD_BP_COST} BP)</div>
         </button>
       )}
       {canBuildScoutTowerHere && (
@@ -4437,7 +4892,7 @@ function BuildMenu({ q, r, inTerritory, buildersHere, unitsHere, tile, hasRoadCo
             <span className="font-medium">Build Scout Tower (field)</span>
             <span className={scoutTowerCanAfford ? 'text-cyan-400' : 'text-red-400/50'}>{SCOUT_TOWER_GOLD_COST}g</span>
           </div>
-          <div className="text-empire-parchment/40 text-[10px]">Vision 4. Builder builds on this hex ({SCOUT_TOWER_BP_COST} BP)</div>
+          <div className="text-empire-parchment/40 text-[10px]">Vision 4. Nearest University supplies BP ({SCOUT_TOWER_BP_COST} BP)</div>
         </button>
       )}
       {canBuildRoad && (
@@ -4452,44 +4907,9 @@ function BuildMenu({ q, r, inTerritory, buildersHere, unitsHere, tile, hasRoadCo
           <div className="text-empire-parchment/40 text-[10px]">+50% speed; mountain pass ({ROAD_BP_COST} BP)</div>
         </button>
       )}
-      {cityForWall && (
-        <>
-          <p className="text-empire-parchment/45 text-[10px] font-semibold uppercase tracking-wide pt-0.5">Walls</p>
-          <button
-            onClick={() => buildWallRing(cityForWall.id, 1)}
-            disabled={totalStone < 6 * WALL_SECTION_STONE_COST}
-            className={`w-full text-left px-3 py-2 rounded border text-xs transition-colors ${
-              totalStone >= 6 * WALL_SECTION_STONE_COST
-                ? 'border-amber-600/40 bg-amber-900/20 text-amber-300 hover:bg-amber-900/30'
-                : 'border-empire-stone/20 bg-transparent text-empire-parchment/30 cursor-not-allowed'
-            }`}
-          >
-            <div className="flex justify-between">
-              <span className="font-medium">Build full wall ring 1</span>
-              <span className={totalStone >= 30 ? 'text-amber-400/80' : 'text-red-400/50'}>30 stone</span>
-            </div>
-            <div className="text-empire-parchment/40 text-[10px]">Builds entire ring (6 sections) around {cityForWall.name} at once</div>
-          </button>
-          <button
-            onClick={() => buildWallRing(cityForWall.id, 2)}
-            disabled={totalStone < 12 * WALL_SECTION_STONE_COST}
-            className={`w-full text-left px-3 py-2 rounded border text-xs transition-colors ${
-              totalStone >= 12 * WALL_SECTION_STONE_COST
-                ? 'border-amber-600/40 bg-amber-900/20 text-amber-300 hover:bg-amber-900/30'
-                : 'border-empire-stone/20 bg-transparent text-empire-parchment/30 cursor-not-allowed'
-            }`}
-          >
-            <div className="flex justify-between">
-              <span className="font-medium">Build full wall ring 2</span>
-              <span className={totalStone >= 60 ? 'text-amber-400/80' : 'text-red-400/50'}>60 stone</span>
-            </div>
-            <div className="text-empire-parchment/40 text-[10px]">Builds entire ring (12 sections) around {cityForWall.name} at once</div>
-          </button>
-        </>
-      )}
       <p className="text-empire-parchment/40 text-[10px]">
         {inTerritory ? `City territory (${CITY_BUILDING_POWER} BP)` : `Outside territory`}
-        {buildersHere > 0 && ` + ${buildersHere} builder${buildersHere > 1 ? 's' : ''} (+${buildersHere * BUILDER_POWER} BP)`}
+        {buildersHere > 0 && ` + University workforce ${buildersHere} slot${buildersHere > 1 ? 's' : ''} (+${buildersHere * BUILDER_POWER} BP when task matches)`}
         {' '}= {availBP} BP total
       </p>
       {buildingGroups.length > 0 && (
@@ -4501,8 +4921,7 @@ function BuildMenu({ q, r, inTerritory, buildersHere, unitsHere, tile, hasRoadCo
           {items.map(b => {
             const cost = BUILDING_COSTS[b.type];
             const canAfford = (human?.gold ?? 0) >= cost;
-            const blocked = b.needsUnits && !hasUnitsForDeposit;
-            const enabled = canAfford && !blocked;
+            const enabled = canAfford;
             const bpCost = BUILDING_BP_COST[b.type];
             const bpPerSec = availBP / BP_RATE_BASE;
             const buildTime = bpPerSec > 0 ? Math.ceil(bpCost / bpPerSec) : Infinity;
@@ -4522,7 +4941,6 @@ function BuildMenu({ q, r, inTerritory, buildersHere, unitsHere, tile, hasRoadCo
                   <span className="text-empire-parchment/40">{b.desc}</span>
                   <span className="text-empire-parchment/30 text-[10px]">~{buildTime < Infinity ? `${buildTime}s` : '---'}</span>
                 </div>
-                {blocked && <p className="text-red-400/60 text-[10px] mt-0.5">Move units here first</p>}
               </button>
             );
           })}
@@ -4617,6 +5035,8 @@ function SupplyViewPanel() {
   const phase = useGameStore(s => s.phase);
   const supplyViewTab = useGameStore(s => s.supplyViewTab);
   const setSupplyViewTab = useGameStore(s => s.setSupplyViewTab);
+  const territoryDisplayStyle = useGameStore(s => s.territoryDisplayStyle);
+  const setTerritoryDisplayStyle = useGameStore(s => s.setTerritoryDisplayStyle);
 
   if (phase !== 'playing') return null;
 
@@ -4643,6 +5063,30 @@ function SupplyViewPanel() {
             }`}
           >
             Supply
+          </button>
+        </div>
+        <div className="flex border-t border-empire-stone/20">
+          <button
+            type="button"
+            onClick={() => setTerritoryDisplayStyle('fill')}
+            className={`flex-1 px-2 py-1.5 text-[10px] font-medium transition-colors ${
+              territoryDisplayStyle === 'fill'
+                ? 'bg-empire-gold/15 text-empire-gold'
+                : 'text-empire-parchment/50 hover:text-empire-parchment/75 hover:bg-empire-stone/15'
+            }`}
+          >
+            Terr. fill
+          </button>
+          <button
+            type="button"
+            onClick={() => setTerritoryDisplayStyle('dashed')}
+            className={`flex-1 px-2 py-1.5 text-[10px] font-medium transition-colors border-l border-empire-stone/20 ${
+              territoryDisplayStyle === 'dashed'
+                ? 'bg-empire-gold/15 text-empire-gold'
+                : 'text-empire-parchment/50 hover:text-empire-parchment/75 hover:bg-empire-stone/15'
+            }`}
+          >
+            Terr. dashed
           </button>
         </div>
         {supplyViewTab === 'supply' && (

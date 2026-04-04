@@ -8,6 +8,10 @@ const config: Config = {
   ],
   theme: {
     extend: {
+      fontFamily: {
+        'cinzel': ['var(--font-cinzel-decorative)', 'serif'],
+        'medieval': ['var(--font-medieval)', 'cursive'],
+      },
       colors: {
         empire: {
           gold: "#c9a84c",

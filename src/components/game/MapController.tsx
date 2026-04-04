@@ -5,8 +5,13 @@ import { MapControls } from '@react-three/drei';
 import { useThree, useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 
-/** Fixed offset from target so the view angle never tilts when zooming/panning. */
-const CAMERA_OFFSET = new THREE.Vector3(60, 80, 60);
+/**
+ * Fixed offset from target so the view angle never tilts when zooming/panning.
+ * Equal X/Z and Y = √2 × run gives a symmetric “true” isometric-style ortho view
+ * (camera direction along (1, √2, 1) before normalize).
+ */
+const ISO_RUN = 72;
+export const MAP_CAMERA_OFFSET = new THREE.Vector3(ISO_RUN, ISO_RUN * Math.SQRT2, ISO_RUN);
 
 interface MapControllerProps {
   target?: [number, number, number];
@@ -34,7 +39,7 @@ export default function MapController({ target }: MapControllerProps) {
     const controls = controlsRef.current;
     if (!controls?.target) return;
     const t = controls.target;
-    camera.position.set(t.x + CAMERA_OFFSET.x, t.y + CAMERA_OFFSET.y, t.z + CAMERA_OFFSET.z);
+    camera.position.set(t.x + MAP_CAMERA_OFFSET.x, t.y + MAP_CAMERA_OFFSET.y, t.z + MAP_CAMERA_OFFSET.z);
     camera.lookAt(t.x, t.y, t.z);
   });
 

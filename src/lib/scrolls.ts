@@ -2,7 +2,6 @@ import {
   Unit,
   Tile,
   Player,
-  SpecialRegion,
   ScrollItem,
   ScrollAttachment,
   ScrollKind,
@@ -12,17 +11,23 @@ import {
   isNavalUnitType,
   SCROLL_SEARCH_CYCLES_REQUIRED,
   SCROLL_DISPLAY_NAME,
+  scrollKindForTerrain,
 } from '@/types/game';
 
 export function makeScrollItem(kind: ScrollKind): ScrollItem {
   return { id: generateId('scroll'), kind };
 }
 
-/** Unit contributes to “searching” a special region (cycles toward scroll unlock). */
-export function unitCountsTowardScrollSearch(u: Unit, region: SpecialRegion, tileAtUnit: Tile | undefined): boolean {
+/** Land military (or any ship on isle_lost) counts toward the scroll line for this terrain. */
+export function unitCountsTowardScrollSearch(
+  u: Unit,
+  tileAtUnit: Tile | undefined,
+  targetScroll: ScrollKind,
+): boolean {
   if (u.hp <= 0 || u.aboardShipId || u.type === 'builder') return false;
-  if (!tileAtUnit || tileAtUnit.specialRegionId !== region.id) return false;
-  if (region.kind === 'isle_lost') {
+  if (!tileAtUnit?.specialTerrainKind) return false;
+  if (scrollKindForTerrain(tileAtUnit.specialTerrainKind) !== targetScroll) return false;
+  if (tileAtUnit.specialTerrainKind === 'isle_lost') {
     return true;
   }
   return !isNavalUnitType(u.type);
@@ -56,13 +61,14 @@ export function armyHasMovementScroll(
   return hexHasScrollKind(at.q, at.r, ownerId, 'movement', units, attachments);
 }
 
+const SCROLL_LINES: ScrollKind[] = ['combat', 'defense', 'movement'];
+
 /**
- * Advance search progress; at threshold, grant scroll item to player inventory.
- * `scrollSearchProgress[regionId][playerId]` = cycles accumulated (0..threshold).
+ * Advance search progress per scroll line; at threshold, grant scroll to inventory.
+ * Keys: scrollSearchProgress[kind][playerId], scrollSearchClaimed[kind] = player ids.
  */
 export function tickScrollRegionSearch(opts: {
   newCycle: number;
-  specialRegions: SpecialRegion[];
   tiles: Map<string, Tile>;
   units: Unit[];
   players: Player[];
@@ -76,7 +82,6 @@ export function tickScrollRegionSearch(opts: {
   notifications: GameNotification[];
 } {
   const {
-    specialRegions,
     tiles,
     units,
     players,
@@ -94,9 +99,9 @@ export function tickScrollRegionSearch(opts: {
     if (!scrollInventory[p.id]) scrollInventory[p.id] = [];
   }
 
-  for (const region of specialRegions) {
-    const claimed = new Set(scrollSearchClaimed[region.id] ?? []);
-    const progForRegion = { ...(scrollSearchProgress[region.id] ?? {}) };
+  for (const scrollKind of SCROLL_LINES) {
+    const claimed = new Set(scrollSearchClaimed[scrollKind] ?? []);
+    const progForKind = { ...(scrollSearchProgress[scrollKind] ?? {}) };
 
     for (const p of players) {
       if (claimed.has(p.id)) continue;
@@ -105,7 +110,7 @@ export function tickScrollRegionSearch(opts: {
       for (const u of units) {
         if (u.ownerId !== p.id) continue;
         const t = tiles.get(tileKey(u.q, u.r));
-        if (unitCountsTowardScrollSearch(u, region, t)) {
+        if (unitCountsTowardScrollSearch(u, t, scrollKind)) {
           any = true;
           break;
         }
@@ -113,26 +118,26 @@ export function tickScrollRegionSearch(opts: {
 
       if (!any) continue;
 
-      const cur = progForRegion[p.id] ?? 0;
+      const cur = progForKind[p.id] ?? 0;
       const next = cur + 1;
-      progForRegion[p.id] = next;
+      progForKind[p.id] = next;
 
       if (next >= SCROLL_SEARCH_CYCLES_REQUIRED) {
         claimed.add(p.id);
-        const item = makeScrollItem(region.scrollReward);
+        const item = makeScrollItem(scrollKind);
         scrollInventory[p.id] = [...(scrollInventory[p.id] ?? []), item];
         const label = p.isHuman ? 'You' : p.name;
         notifications.push({
           id: generateId('n'),
           turn: opts.newCycle,
-          message: `${label} uncovered ${region.name}: ${SCROLL_DISPLAY_NAME[region.scrollReward]}.`,
+          message: `${label} uncovered ${SCROLL_DISPLAY_NAME[scrollKind]} in the wilds.`,
           type: 'success',
         });
       }
     }
 
-    scrollSearchProgress[region.id] = progForRegion;
-    scrollSearchClaimed[region.id] = [...claimed];
+    scrollSearchProgress[scrollKind] = progForKind;
+    scrollSearchClaimed[scrollKind] = [...claimed];
   }
 
   return { scrollSearchProgress, scrollSearchClaimed, scrollInventory, notifications };

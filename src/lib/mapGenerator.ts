@@ -7,11 +7,11 @@ import {
   hexNeighbors,
   hexDistance,
   tileKey,
-  SPECIAL_REGION_HEX_RADIUS,
-  SPECIAL_REGION_DISPLAY_NAME,
+  SPECIAL_TERRAIN_CLUSTER_THRESHOLD,
+  SPECIAL_TERRAIN_NOISE_SCALE,
+  createSpecialRegionMetadata,
   type SpecialRegion,
   type SpecialRegionKind,
-  type ScrollKind,
 } from '@/types/game';
 
 // ─── Seeded PRNG (Mulberry32) ──────────────────────────────────────
@@ -40,6 +40,7 @@ export function generateMap(config: MapConfig): GeneratorResult {
   const elevationNoise = createNoise2D(rng);
   const moistureNoise = createNoise2D(rng);
   const detailNoise = createNoise2D(rng);
+  const scrollTerrainNoise = createNoise2D(rng);
 
   // ── Pass 1: Generate biomes ────────────────────────────────────
   const tileMap = new Map<string, Tile>();
@@ -49,7 +50,7 @@ export function generateMap(config: MapConfig): GeneratorResult {
     for (let q = 0; q < config.width; q++) {
       const elevation = sampleElevation(q, r, config, elevationNoise, detailNoise);
       const moisture = sampleMoisture(q, r, config, moistureNoise);
-      const biome = classifyBiome(elevation, moisture);
+      const biome = classifyBiome(elevation, moisture, config);
       const height = computeHeight(biome, elevation);
 
       const tile: Tile = {
@@ -78,8 +79,13 @@ export function generateMap(config: MapConfig): GeneratorResult {
   sprinkleOceanIslands(allTiles, tileMap, config, rng);
   labelIslandLandmasses(allTiles, tileMap, config);
 
-  // ── Pass 2: Empire overlay ─────────────────────────────────────
-  const landTiles = allTiles.filter((t) => t.biome !== 'water');
+  // ── Pass 2: Scroll terrain (noise-sprinkled, biome-integrated; before hubs & villages) ──
+  sprinkleSpecialTerrain(allTiles, tileMap, rng, scrollTerrainNoise);
+  finalizeSpecialTerrainVariety(allTiles, tileMap, rng);
+  const specialRegions = createSpecialRegionMetadata();
+
+  // ── Pass 3: Empire overlay — province centers avoid scroll terrain ───
+  const landTiles = allTiles.filter((t) => t.biome !== 'water' && !t.specialTerrainKind);
   const provinceCenters = selectProvinceCenters(landTiles, config, rng);
 
   for (const center of provinceCenters) {
@@ -89,146 +95,116 @@ export function generateMap(config: MapConfig): GeneratorResult {
   generateRoads(provinceCenters, tileMap, config);
   scatterRuins(allTiles, tileMap, config, rng);
 
-  // ── Pass 3: Villages ───────────────────────────────────────────
+  // ── Pass 4: Villages (not inside scroll regions) ───────────────────────
   spawnVillages(allTiles, config, rng);
 
-  // ── Pass 4: Quarry & Mine deposits (biome-based) ───────────────
+  // ── Pass 5: Quarry & Mine deposits (biome-based) ───────────────────────
   scatterResourceDeposits(allTiles, rng);
-
-  // ── Pass 5: Special scroll regions (large scattered zones) ──────
-  const specialRegions = placeSpecialRegions(allTiles, tileMap, config, rng);
 
   return { tiles: allTiles, provinceCenters, specialRegions };
 }
 
-/** Keep region disks from overlapping (2×radius + small buffer). */
-const MIN_SPECIAL_REGION_CENTER_SEP = 14;
+function waterTouchesIslandLand(t: Tile, tileMap: Map<string, Tile>): boolean {
+  return hexNeighbors(t.q, t.r).some(([nq, nr]) => {
+    const n = tileMap.get(tileKey(nq, nr));
+    return n != null && n.biome !== 'water' && n.isIsland;
+  });
+}
 
-function placeSpecialRegions(
+function pickSpecialTerrainKind(t: Tile, rng: () => number): SpecialRegionKind {
+  if (t.isIsland && t.biome !== 'water') {
+    if (rng() < 0.4) return 'isle_lost';
+  }
+  switch (t.biome) {
+    case 'desert':
+      return rng() < 0.52 ? 'mexca' : rng() < 0.5 ? 'hills_lost' : 'forest_secrets';
+    case 'forest':
+      return rng() < 0.64 ? 'forest_secrets' : rng() < 0.5 ? 'hills_lost' : 'mexca';
+    case 'mountain':
+      return rng() < 0.7 ? 'hills_lost' : rng() < 0.55 ? 'forest_secrets' : 'mexca';
+    case 'plains':
+      return rng() < 0.4 ? 'mexca' : rng() < 0.5 ? 'hills_lost' : 'forest_secrets';
+    default:
+      return 'mexca';
+  }
+}
+
+/**
+ * Sprinkles scroll-discovery terrain using simplex clusters (biome-like patches, higher coverage than old disks).
+ */
+function sprinkleSpecialTerrain(
   allTiles: Tile[],
   tileMap: Map<string, Tile>,
-  config: MapConfig,
   rng: () => number,
-): SpecialRegion[] {
-  const specs: { kind: SpecialRegionKind; scrollReward: ScrollKind }[] = [
-    { kind: 'mexca', scrollReward: 'combat' },
-    { kind: 'hills_lost', scrollReward: 'defense' },
-    { kind: 'forest_secrets', scrollReward: 'movement' },
-    { kind: 'isle_lost', scrollReward: 'combat' },
-  ];
-  for (let i = specs.length - 1; i > 0; i--) {
-    const j = Math.floor(rng() * (i + 1));
-    [specs[i], specs[j]] = [specs[j], specs[i]];
-  }
-
-  const takenCenters: { q: number; r: number }[] = [];
-  const regions: SpecialRegion[] = [];
-  const margin = SPECIAL_REGION_HEX_RADIUS + 2;
-
-  for (const spec of specs) {
-    const pool = candidateCentersForSpecialRegion(
-      spec.kind,
-      allTiles,
-      config,
-      takenCenters,
-      margin,
-      MIN_SPECIAL_REGION_CENTER_SEP,
-    );
-    if (pool.length === 0) continue;
-
-    const center = pool[Math.floor(rng() * pool.length)];
-    takenCenters.push(center);
-    const id = `sr_${spec.kind}_${regions.length}`;
-    regions.push({
-      id,
-      kind: spec.kind,
-      name: SPECIAL_REGION_DISPLAY_NAME[spec.kind],
-      centerQ: center.q,
-      centerR: center.r,
-      radius: SPECIAL_REGION_HEX_RADIUS,
-      scrollReward: spec.scrollReward,
-    });
-    paintSpecialRegion(tileMap, allTiles, center, spec.kind, id, config);
-    const centerTile = tileMap.get(tileKey(center.q, center.r));
-    if (centerTile && spec.kind === 'mexca' && centerTile.biome !== 'water') {
-      centerTile.hasRuins = true;
-    }
-  }
-
-  return regions;
-}
-
-function candidateCentersForSpecialRegion(
-  kind: SpecialRegionKind,
-  allTiles: Tile[],
-  config: MapConfig,
-  takenCenters: { q: number; r: number }[],
-  margin: number,
-  minSep: number,
-): Tile[] {
-  const w = config.width;
-  const h = config.height;
-  const farFromEdge = (t: Tile) =>
-    t.q >= margin && t.r >= margin && t.q < w - margin && t.r < h - margin;
-  const farFromTaken = (t: Tile) =>
-    takenCenters.every(c => hexDistance(c.q, c.r, t.q, t.r) >= minSep);
-
-  let pool = allTiles.filter(t => t.biome !== 'water' && farFromEdge(t) && farFromTaken(t));
-
-  const byKind = (): Tile[] => {
-    switch (kind) {
-      case 'mexca':
-        return pool.filter(t => t.biome === 'desert' || t.biome === 'plains');
-      case 'hills_lost':
-        return pool.filter(t => t.biome === 'mountain' || (t.biome === 'plains' && t.elevation > 0.32));
-      case 'forest_secrets':
-        return pool.filter(t => t.biome === 'forest');
-      case 'isle_lost':
-        return pool.filter(t => t.isIsland);
-      default:
-        return pool;
-    }
-  };
-
-  let out = byKind();
-  if (out.length === 0 && kind === 'forest_secrets') {
-    out = pool.filter(t => t.biome === 'plains' || t.biome === 'forest');
-  }
-  if (out.length === 0 && kind === 'mexca') {
-    out = pool.filter(t => t.biome !== 'mountain');
-  }
-  if (out.length === 0 && kind === 'hills_lost') {
-    out = pool.filter(t => t.biome === 'mountain' || t.biome === 'desert');
-  }
-  if (out.length === 0 && kind === 'isle_lost') {
-    out = allTiles.filter(
-      t =>
-        t.biome !== 'water' &&
-        t.biome !== 'mountain' &&
-        farFromEdge(t) &&
-        farFromTaken(t),
-    );
-  }
-  return out;
-}
-
-function paintSpecialRegion(
-  tileMap: Map<string, Tile>,
-  allTiles: Tile[],
-  center: { q: number; r: number },
-  _kind: SpecialRegionKind,
-  regionId: string,
-  config: MapConfig,
+  clusterNoise: (x: number, y: number) => number,
 ): void {
-  const R = SPECIAL_REGION_HEX_RADIUS;
-  const isle = _kind === 'isle_lost';
+  const scale = SPECIAL_TERRAIN_NOISE_SCALE;
+  const thresh = SPECIAL_TERRAIN_CLUSTER_THRESHOLD;
 
   for (const t of allTiles) {
-    if (hexDistance(center.q, center.r, t.q, t.r) > R) continue;
-    if (!isle && t.biome === 'water') continue;
-    if (t.specialRegionId) continue;
+    if (t.biome === 'water') continue;
+    const n = (clusterNoise(t.q * scale, t.r * scale) + 1) / 2;
+    if (n < thresh) continue;
     const tile = tileMap.get(tileKey(t.q, t.r));
-    if (tile) tile.specialRegionId = regionId;
+    if (!tile) continue;
+    tile.specialTerrainKind = pickSpecialTerrainKind(t, rng);
+  }
+
+  const waterScale = scale * 1.02;
+  for (const t of allTiles) {
+    if (t.biome !== 'water') continue;
+    if (!waterTouchesIslandLand(t, tileMap)) continue;
+    const n = (clusterNoise(t.q * waterScale + 31.7, t.r * waterScale + 12.4) + 1) / 2;
+    if (n < thresh + 0.02) continue;
+    if (rng() > 0.48) continue;
+    const tile = tileMap.get(tileKey(t.q, t.r));
+    if (tile && !tile.specialTerrainKind) tile.specialTerrainKind = 'isle_lost';
+  }
+}
+
+/**
+ * Each match uses a random subset of scroll terrain lines (not all four every time), but at least
+ * one special terrain flavor remains somewhere on the map.
+ */
+function finalizeSpecialTerrainVariety(
+  allTiles: Tile[],
+  tileMap: Map<string, Tile>,
+  rng: () => number,
+): void {
+  const kinds: SpecialRegionKind[] = ['mexca', 'hills_lost', 'forest_secrets', 'isle_lost'];
+  const shuffled = [...kinds].sort(() => rng() - 0.5);
+  const subsetSize = 1 + Math.floor(rng() * kinds.length);
+  const active = new Set<SpecialRegionKind>(shuffled.slice(0, subsetSize));
+
+  for (const t of allTiles) {
+    if (t.specialTerrainKind && !active.has(t.specialTerrainKind)) {
+      t.specialTerrainKind = undefined;
+    }
+  }
+
+  const hasAny = allTiles.some(t => t.specialTerrainKind);
+  if (hasAny) return;
+
+  const pickKind = (): SpecialRegionKind => {
+    const arr = [...active];
+    return arr[Math.floor(rng() * arr.length)]!;
+  };
+
+  const landCandidates = allTiles.filter(
+    t => t.biome !== 'water' && t.biome !== 'mountain' && !t.isProvinceCenter,
+  );
+  if (landCandidates.length > 0) {
+    const t = landCandidates[Math.floor(rng() * landCandidates.length)]!;
+    const tile = tileMap.get(tileKey(t.q, t.r));
+    if (tile) tile.specialTerrainKind = pickKind();
+    return;
+  }
+
+  const anyLand = allTiles.filter(t => t.biome !== 'water' && t.biome !== 'mountain');
+  if (anyLand.length > 0) {
+    const t = anyLand[Math.floor(rng() * anyLand.length)]!;
+    const tile = tileMap.get(tileKey(t.q, t.r));
+    if (tile) tile.specialTerrainKind = pickKind();
   }
 }
 
@@ -303,23 +279,37 @@ function sampleElevation(
   // Island falloff — gentler uplift so coastlines stay lower and seas read larger
   const cx = config.width / 2;
   const cy = config.height / 2;
-  const dx = (q - cx) / cx;
-  const dy = (r - cy) / cy;
+  const dx = (q - cx) / Math.max(1, cx);
+  const dy = (r - cy) / Math.max(1, cy);
   const distFromCenter = Math.sqrt(dx * dx + dy * dy);
   const falloff = 1.0 - Math.pow(distFromCenter, 1.65);
-  e = e * 0.74 + falloff * 0.22;
 
-  // Ensure land in all 4 corners (for 4-bot maps)
+  if (config.mapTerrain === 'islands') {
+    // Archipelago: much less continental uplift — almost all deep ocean; land only on noise peaks + corners.
+    e = e * 0.48 + falloff * 0.05;
+    e -= 0.14;
+  } else {
+    e = e * 0.74 + falloff * 0.22;
+  }
+
+  /** Large inland sea — pull map center down so classifyBiome yields a central water body. */
+  if (config.mapTerrain === 'lake') {
+    e -= Math.max(0, 1 - distFromCenter * 1.12) * 0.44;
+  }
+
+  // Ensure land in all 4 corners (for 4-bot maps) — lighter touch on archipelago so the map stays ocean-heavy.
   if (config.ensureCornerLand) {
     const w = config.width;
     const h = config.height;
     const cornerRadius = Math.min(14, Math.floor(Math.min(w, h) * 0.22));
     const corners: [number, number][] = [[0, 0], [w - 1, 0], [0, h - 1], [w - 1, h - 1]];
+    const boostScale = config.mapTerrain === 'islands' ? 0.12 : 0.25;
+    const floorBase = config.mapTerrain === 'islands' ? 0.08 : -0.05;
     for (const [cq, cr] of corners) {
       const d = hexDistance(q, r, cq, cr);
       if (d <= cornerRadius) {
-        const boost = 0.25 * (1 - d / cornerRadius);
-        e = Math.max(e, -0.05 + boost);
+        const boost = boostScale * (1 - d / cornerRadius);
+        e = Math.max(e, floorBase + boost);
       }
     }
   }
@@ -340,8 +330,17 @@ function sampleMoisture(
 
 // ─── Biome Classification ──────────────────────────────────────────
 
-function classifyBiome(elevation: number, moisture: number): Biome {
-  if (elevation < 0.02) return 'water';
+function classifyBiome(elevation: number, moisture: number, config: MapConfig): Biome {
+  const terrain = config.mapTerrain ?? 'continents';
+
+  if (terrain === 'no_water') {
+    if (elevation < 0.02) return moisture < 0.28 ? 'desert' : 'plains';
+  } else {
+    // Islands: high threshold + lowered sampleElevation → ~85–95% water; scattered peaks = land.
+    const waterCut = terrain === 'islands' ? 0.22 : 0.02;
+    if (elevation < waterCut) return 'water';
+  }
+
   if (elevation > 0.55) return 'mountain';
   if (moisture < 0.3) return 'desert';
   if (moisture > 0.6 && elevation > 0.05) return 'forest';
@@ -613,7 +612,8 @@ function spawnVillages(
       tile.biome === 'water' ||
       tile.biome === 'mountain' ||
       tile.isProvinceCenter ||
-      tile.hasRuins
+      tile.hasRuins ||
+      tile.specialTerrainKind
     ) continue;
 
     const islandBoost = tile.isIsland ? 1.8 : 1;
@@ -633,9 +633,10 @@ function sprinkleOceanIslands(
   const waterCandidates = allTiles.filter((t) => t.biome === 'water');
   if (waterCandidates.length < 20) return;
 
+  const baseAttempts = Math.floor((config.width * config.height) / 280);
   const attempts = Math.max(
     12,
-    Math.floor((config.width * config.height) / 280),
+    config.mapTerrain === 'islands' ? Math.floor(baseAttempts * 3.2) : baseAttempts,
   );
   for (let a = 0; a < attempts; a++) {
     const seed = waterCandidates[Math.floor(rng() * waterCandidates.length)];

@@ -11,9 +11,10 @@ import {
   City, Unit, Player, Hero, Tile, TerritoryInfo,
   CityBuilding, ScoutMission, WallSection, ScoutTower, WeatherEvent,
   ConstructionSite, BuildingType,
+  Commander, ScrollItem, ScrollAttachment, COMMANDER_STARTING_PICK,
   STARTING_GOLD, VILLAGE_CITY_TEMPLATE, CITY_CENTER_STORAGE,
   BUILDING_COSTS, BUILDING_IRON_COSTS, BUILDING_BP_COST, BUILDING_JOBS, getBuildingJobs,
-  CITY_BUILDING_POWER, BUILDER_POWER, BP_RATE_BASE,
+  BP_RATE_BASE,
   WORKERS_PER_LEVEL,
   BARACKS_UPGRADE_COST, FACTORY_UPGRADE_COST, FARM_UPGRADE_COST,
   UNIT_COSTS, UNIT_L2_COSTS, UNIT_L3_COSTS, getUnitStats,
@@ -41,6 +42,10 @@ import {
 import { releaseAttackWaveHolds } from '../lib/siege';
 import { applyDeployFlagsForMoveMutable, marchHexDistanceAtOrder } from '../lib/garrison';
 import { rollForWeatherEvent, tickWeatherEvent, getWeatherHarvestMultiplier } from '../lib/weather';
+import { computeConstructionAvailableBp } from '../lib/builders';
+import { computeContestedZoneHexKeys, applyContestedZonePayout } from '../lib/contestedZone';
+import { rollCommanderIdentity, createCommanderRecord, syncCommandersToAssignments, unassignCommandersWithDeadAnchors, clearInvalidCommanderAssignments } from '../lib/commanders';
+import { tickScrollRegionSearch, returnScrollsForDeadCarriers } from '../lib/scrolls';
 
 export type { AiParams };
 export { DEFAULT_AI_PARAMS };
@@ -71,6 +76,18 @@ export type SimState = {
   simTimeMs: number;
   /** Cache: unitId -> { clusterKey, q, r }; recomputed only when unit moves or cities change. */
   supplyCache?: Map<string, SupplyCacheEntry>;
+  /** Contested zone hex keys (purple band between two capitals). */
+  contestedZoneHexKeys: string[];
+  /** Named commanders with trait bonuses; synced to assignments each cycle. */
+  commanders: Commander[];
+  /** Scroll discovery progress per line per player. */
+  scrollSearchProgress: Record<string, Record<string, number>>;
+  /** Which scroll lines have been claimed (player ids). */
+  scrollSearchClaimed: Record<string, string[]>;
+  /** Scroll inventory per player. */
+  scrollInventory: Record<string, ScrollItem[]>;
+  /** Active scroll attachments to carrier units. */
+  scrollAttachments: ScrollAttachment[];
 };
 
 let _cityNameIdx = 0;
@@ -137,6 +154,26 @@ export function initBotVsBotGame(
     createAiHero(city2.q, city2.r, AI_ID_2),
   ];
 
+  const contestedZoneHexKeys = computeContestedZoneHexKeys(tiles, ai1Q, ai1R, ai2Q, ai2R, config);
+
+  const commanders: Commander[] = [];
+  for (const city of cities) {
+    for (let i = 0; i < COMMANDER_STARTING_PICK; i++) {
+      const rolled = rollCommanderIdentity(config.seed ^ (city.q * 65521) ^ (city.r * 524287) ^ (i * 0xaced));
+      commanders.push(createCommanderRecord(
+        city.ownerId,
+        rolled,
+        undefined,
+        city.q,
+        city.r,
+        { kind: 'city_defense', cityId: city.id },
+      ));
+    }
+  }
+
+  const scrollInventory: Record<string, ScrollItem[]> = {};
+  for (const p of players) scrollInventory[p.id] = [];
+
   return {
     config,
     tiles,
@@ -156,6 +193,12 @@ export function initBotVsBotGame(
     constructions: [],
     cityCaptureHold: {},
     simTimeMs: 0,
+    contestedZoneHexKeys,
+    commanders,
+    scrollSearchProgress: {},
+    scrollSearchClaimed: {},
+    scrollInventory,
+    scrollAttachments: [],
   };
 }
 
@@ -381,6 +424,19 @@ export type SimDiagnostics = {
   allStarvingCyclesAi1?: number;
   /** Cycles when all military were starving (AI2). */
   allStarvingCyclesAi2?: number;
+  // ── New system telemetry ──
+  /** Contested zone payouts won by AI1. */
+  contestedZoneWinsAi1?: number;
+  /** Contested zone payouts won by AI2. */
+  contestedZoneWinsAi2?: number;
+  /** Scrolls discovered by AI1. */
+  scrollsDiscoveredAi1?: number;
+  /** Scrolls discovered by AI2. */
+  scrollsDiscoveredAi2?: number;
+  /** Commanders assigned to field by AI1. */
+  commanderFieldAssignmentsAi1?: number;
+  /** Commanders assigned to field by AI2. */
+  commanderFieldAssignmentsAi2?: number;
 };
 
 /** Single step: economy + AI actions + one movement/combat/siege/capture tick. */
@@ -427,6 +483,62 @@ export function stepSimulation(
   let cities = econ.cities;
   let units = econ.units;
   let players = econ.players;
+
+  // ── Contested zone payout (every 2nd cycle) ──
+  const preContestedGold1 = players.find(p => p.id === AI_ID)?.gold ?? 0;
+  const preContestedGold2 = players.find(p => p.id === AI_ID_2)?.gold ?? 0;
+  const preContestedIron1 = cities.filter(c => c.ownerId === AI_ID).reduce((s, c) => s + (c.storage.iron ?? 0), 0);
+  const preContestedIron2 = cities.filter(c => c.ownerId === AI_ID_2).reduce((s, c) => s + (c.storage.iron ?? 0), 0);
+  const contested = applyContestedZonePayout({
+    zoneKeys: state.contestedZoneHexKeys,
+    newCycle,
+    gameMode: 'bot_vs_bot',
+    units,
+    heroes: state.heroes,
+    cities,
+    players,
+  });
+  players = contested.players;
+  cities = contested.cities;
+  if (diagnostics) {
+    const postGold1 = players.find(p => p.id === AI_ID)?.gold ?? 0;
+    const postGold2 = players.find(p => p.id === AI_ID_2)?.gold ?? 0;
+    const postIron1 = cities.filter(c => c.ownerId === AI_ID).reduce((s, c) => s + (c.storage.iron ?? 0), 0);
+    const postIron2 = cities.filter(c => c.ownerId === AI_ID_2).reduce((s, c) => s + (c.storage.iron ?? 0), 0);
+    if (postGold1 > preContestedGold1 || postIron1 > preContestedIron1) {
+      diagnostics.contestedZoneWinsAi1 = (diagnostics.contestedZoneWinsAi1 ?? 0) + 1;
+    }
+    if (postGold2 > preContestedGold2 || postIron2 > preContestedIron2) {
+      diagnostics.contestedZoneWinsAi2 = (diagnostics.contestedZoneWinsAi2 ?? 0) + 1;
+    }
+  }
+
+  // ── Scroll search progress ──
+  const prevScrollCount1 = (state.scrollInventory[AI_ID] ?? []).length;
+  const prevScrollCount2 = (state.scrollInventory[AI_ID_2] ?? []).length;
+  const scrollResult = tickScrollRegionSearch({
+    newCycle,
+    tiles: state.tiles,
+    units,
+    players,
+    scrollSearchProgress: state.scrollSearchProgress,
+    scrollSearchClaimed: state.scrollSearchClaimed,
+    scrollInventory: state.scrollInventory,
+  });
+  let scrollSearchProgress = scrollResult.scrollSearchProgress;
+  let scrollSearchClaimed = scrollResult.scrollSearchClaimed;
+  let scrollInventory = scrollResult.scrollInventory;
+  let scrollAttachments = [...state.scrollAttachments];
+  if (diagnostics) {
+    const newScrollCount1 = (scrollInventory[AI_ID] ?? []).length;
+    const newScrollCount2 = (scrollInventory[AI_ID_2] ?? []).length;
+    if (newScrollCount1 > prevScrollCount1) {
+      diagnostics.scrollsDiscoveredAi1 = (diagnostics.scrollsDiscoveredAi1 ?? 0) + (newScrollCount1 - prevScrollCount1);
+    }
+    if (newScrollCount2 > prevScrollCount2) {
+      diagnostics.scrollsDiscoveredAi2 = (diagnostics.scrollsDiscoveredAi2 ?? 0) + (newScrollCount2 - prevScrollCount2);
+    }
+  }
 
   // ── Upkeep (reuse clusters from economy; supply cache avoids recomputing per-unit supply when position unchanged) ──
   const supplyCache = state.supplyCache ?? new Map<string, SupplyCacheEntry>();
@@ -533,7 +645,10 @@ export function stepSimulation(
     { id: AI_ID_2, params: paramsB },
   ];
 
-  const plans = aiConfigs.map(({ id, params }) => planAiTurn(id, cities, units, players, state.tiles, state.territory, params, state.wallSections));
+  const plans = aiConfigs.map(({ id, params }) => planAiTurn(
+    id, cities, units, players, state.tiles, state.territory, params, state.wallSections,
+    state.contestedZoneHexKeys, state.commanders, scrollInventory, scrollAttachments,
+  ));
 
   if (traceCallback) {
     const ai1Pop = ai1Cities.reduce((s, c) => s + c.population, 0);
@@ -662,10 +777,9 @@ export function stepSimulation(
         const totalGunsL2 = cities.filter(c => c.ownerId === aiPlayerId).reduce((sum, c) => sum + (c.storage.gunsL2 ?? 0), 0);
         if (totalGunsL2 < gunL2Upkeep) continue;
       }
-      const isBuilder = rec.type === 'builder';
-      const academy = city.buildings.find(b => b.type === 'academy');
-      const sq = isBuilder ? (academy ? academy.q : city.q) : city.q;
-      const sr = isBuilder ? (academy ? academy.r : city.r) : city.r;
+      if (rec.type === 'builder') continue;
+      const sq = city.q;
+      const sr = city.r;
       const newUnit: Unit = {
         id: generateId('unit'), type: rec.type,
         q: sq, r: sr, ownerId: aiPlayerId,
@@ -677,7 +791,7 @@ export function stepSimulation(
       };
       if (wantL2) newUnit.armsLevel = 2;
       if (wantL3 || rec.type === 'defender') newUnit.armsLevel = 3;
-      if (!isBuilder && !isNavalUnitType(rec.type)) {
+      if (!isNavalUnitType(rec.type)) {
         newUnit.garrisonCityId = city.id;
         newUnit.defendCityId = city.id;
       }
@@ -792,36 +906,56 @@ export function stepSimulation(
     }
   }
 
+  // ── Apply new AI actions: commander assignments, scroll attachments, university tasks ──
+  let commandersMut = state.commanders.map(c => ({ ...c }));
+  for (let cfgIdx = 0; cfgIdx < aiConfigs.length; cfgIdx++) {
+    const { id: aiPlayerId } = aiConfigs[cfgIdx];
+    const aiPlan = plans[cfgIdx];
+
+    for (const ca of aiPlan.commanderAssignments ?? []) {
+      const cmd = commandersMut.find(c => c.id === ca.commanderId && c.ownerId === aiPlayerId);
+      if (cmd) {
+        cmd.assignment = ca.assignment;
+        if (diagnostics && ca.assignment.kind === 'field') {
+          if (aiPlayerId === AI_ID) diagnostics.commanderFieldAssignmentsAi1 = (diagnostics.commanderFieldAssignmentsAi1 ?? 0) + 1;
+          else diagnostics.commanderFieldAssignmentsAi2 = (diagnostics.commanderFieldAssignmentsAi2 ?? 0) + 1;
+        }
+      }
+    }
+
+    for (const sa of aiPlan.scrollAttachments ?? []) {
+      const inv = scrollInventory[aiPlayerId] ?? [];
+      const scrollItem = inv.find(s => s.id === sa.scrollId);
+      if (!scrollItem) continue;
+      const carrier = units.find(u => u.id === sa.carrierUnitId && u.ownerId === aiPlayerId);
+      if (!carrier || carrier.hp <= 0) continue;
+      const already = scrollAttachments.some(a => a.scrollId === sa.scrollId);
+      if (already) continue;
+      scrollAttachments.push({
+        id: generateId('sa'),
+        scrollId: scrollItem.id,
+        kind: scrollItem.kind,
+        carrierUnitId: carrier.id,
+        ownerId: aiPlayerId,
+      });
+      scrollInventory[aiPlayerId] = inv.filter(s => s.id !== sa.scrollId);
+    }
+
+    for (const ut of aiPlan.universityTasks ?? []) {
+      const cityIdx = cities.findIndex(c => c.id === ut.cityId && c.ownerId === aiPlayerId);
+      if (cityIdx >= 0) {
+        cities[cityIdx] = { ...cities[cityIdx], universityBuilderTask: ut.task };
+      }
+    }
+  }
+
   // ── Construction tick (one cycle = 30s; same BP logic as live game) ──
   if (constructions.length > 0) {
     const remaining: ConstructionSite[] = [];
     const updatedCities = cities.map(c => ({ ...c, buildings: [...c.buildings] }));
 
     for (const site of constructions) {
-      let availBP = 0;
-      if (site.type !== 'trebuchet' && site.type !== 'scout_tower' && site.type !== 'city_defense') {
-        const terr = state.territory.get(tileKey(site.q, site.r));
-        if (terr && terr.playerId === site.ownerId) availBP += CITY_BUILDING_POWER;
-      }
-      const bpHexes: { q: number; r: number }[] = [{ q: site.q, r: site.r }];
-      if (site.type === 'city_defense' && site.cityDefenseBuilderBpHex) {
-        bpHexes.push(site.cityDefenseBuilderBpHex);
-      }
-      const builderIds = new Set<string>();
-      for (const { q: hq, r: hr } of bpHexes) {
-        for (const u of units) {
-          if (
-            u.q === hq &&
-            u.r === hr &&
-            u.ownerId === site.ownerId &&
-            u.type === 'builder' &&
-            u.hp > 0
-          ) {
-            builderIds.add(u.id);
-          }
-        }
-      }
-      availBP += builderIds.size * BUILDER_POWER;
+      const availBP = computeConstructionAvailableBp(site, state.territory, cities);
 
       if (availBP === 0) {
         remaining.push(site);
@@ -895,7 +1029,18 @@ export function stepSimulation(
 
   aliveUnits = movingUnits.filter(u => u.hp > 0 && !combatResult.killedUnitIds.includes(u.id));
 
+  // ── Commander sync: update positions, clear dead anchors, clear invalid city assignments ──
+  let commandersNext = commandersMut;
+  unassignCommandersWithDeadAnchors(commandersNext, aliveUnits);
+  clearInvalidCommanderAssignments(commandersNext, citiesToSet);
+  syncCommandersToAssignments(commandersNext, citiesToSet, aliveUnits);
+
+  // ── Return scrolls from dead carriers to inventory ──
   const killedIds = new Set(combatResult.killedUnitIds);
+  const scrollReturn = returnScrollsForDeadCarriers(killedIds, scrollAttachments, scrollInventory);
+  scrollAttachments = scrollReturn.attachments;
+  scrollInventory = scrollReturn.scrollInventory;
+
   const popDeductByCityId: Record<string, number> = {};
   for (const u of units) {
     if (killedIds.has(u.id) && u.originCityId) {
@@ -1016,5 +1161,11 @@ export function stepSimulation(
     simTimeMs: newSimTimeMs,
     heroes: movingHeroes.filter(h => !(combatResult.killedHeroIds ?? []).includes(h.id)),
     supplyCache: supplyCacheNext,
+    contestedZoneHexKeys: state.contestedZoneHexKeys,
+    commanders: commandersNext,
+    scrollSearchProgress,
+    scrollSearchClaimed,
+    scrollInventory,
+    scrollAttachments,
   };
 }

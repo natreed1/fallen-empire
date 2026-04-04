@@ -2,14 +2,21 @@ import {
   City, Unit, Player, Tile, TerritoryInfo, Hero, WallSection,
   BuildingType, UnitType, BUILDING_COSTS, UNIT_COSTS, UNIT_L2_COSTS, UNIT_L3_COSTS, getUnitStats,
   BARACKS_UPGRADE_COST, FACTORY_UPGRADE_COST, FARM_UPGRADE_COST,
-  hexDistance, hexNeighbors, tileKey, generateId, getHexRing,
+  hexDistance, hexNeighbors, tileKey, generateId, getHexRing, parseTileKey,
   STARTING_CITY_TEMPLATE, HERO_NAMES, CITY_CENTER_STORAGE,
   BUILDING_IRON_COSTS, SCOUT_MISSION_COST, VILLAGE_INCORPORATE_COST, DEFENDER_IRON_COST, HERO_BASE_HP,
   WALL_SECTION_STONE_COST, WALL_SECTION_HP,
   MapConfig,
+  Commander, ScrollItem, ScrollAttachment, BuilderTask,
+  isNavalUnitType,
 } from '@/types/game';
 import { computeCityProductionRate } from '@/lib/gameLoop';
-import { appendStartingBarracksToCity, appendStartingAcademyToCity } from '@/lib/kingdomSpawn';
+import {
+  appendStartingBarracksToCity,
+  appendStartingAcademyToCity,
+  isCapitalStartHex,
+  clearVillageForCapitalTile,
+} from '@/lib/kingdomSpawn';
 
 // ─── AI Action Types ───────────────────────────────────────────────
 
@@ -55,6 +62,21 @@ export interface AiWallRingAction {
   ring: 1 | 2;
 }
 
+export interface AiCommanderAssignAction {
+  commanderId: string;
+  assignment: { kind: 'field'; anchorUnitId: string } | { kind: 'city_defense'; cityId: string };
+}
+
+export interface AiScrollAttachAction {
+  scrollId: string;
+  carrierUnitId: string;
+}
+
+export interface AiUniversityTaskAction {
+  cityId: string;
+  task: 'expand_quarries' | 'expand_iron_mines' | 'expand_forestry' | 'city_defenses';
+}
+
 export interface AiActions {
   builds: AiBuildAction[];
   upgrades: AiUpgradeAction[];
@@ -63,6 +85,9 @@ export interface AiActions {
   scouts: AiScoutAction[];
   incorporateVillages: AiIncorporateAction[];
   buildWallRings: AiWallRingAction[];
+  commanderAssignments: AiCommanderAssignAction[];
+  scrollAttachments: AiScrollAttachAction[];
+  universityTasks: AiUniversityTaskAction[];
 }
 
 // ─── Evolvable AI Parameters (for self-improvement / training) ───────
@@ -185,6 +210,30 @@ export interface AiParams {
   supplyStarvationRiskWeight: number;
   /** Value capturing/incorporating city/village as anchor (0–1). */
   supplyCityAcquisitionBias: number;
+
+  // ── Contested zone ──
+  /** Share of idle military to send toward contested zone hexes (0–1). */
+  contestedZoneCommitShare: number;
+  /** Min surplus military before diverting any to contested zone (0–20). */
+  contestedZoneMinSurplusMilitary: number;
+
+  // ── Commanders ──
+  /** Chance to assign an idle city-defense commander to a field army per cycle (0–1). */
+  commanderFieldAssignRate: number;
+  /** Min army stack size before attaching a commander (1–10). */
+  commanderMinArmySize: number;
+
+  // ── Scrolls ──
+  /** Priority for positioning units on special terrain for scroll discovery (0–1). */
+  scrollTerrainPriority: number;
+  /** Max units to divert toward scroll terrain per cycle (1–5). */
+  scrollTerrainMaxDivert: number;
+
+  // ── University / builder tasks ──
+  /** Preference weight for iron mines over quarries when setting university task (0–1). */
+  universityIronMinePref: number;
+  /** When to switch university to city_defenses (0–1; higher = switch earlier). */
+  universityCityDefenseThreshold: number;
 }
 
 const DEFAULT_MILITARY_LEVEL_MIX: MilitaryLevelMix = { L1: 0.6, L2: 0.3, L3: 0.1 };
@@ -243,6 +292,14 @@ export const DEFAULT_AI_PARAMS: AiParams = {
   supplyAnchorDistanceWeight: 0.5,
   supplyStarvationRiskWeight: 0.5,
   supplyCityAcquisitionBias: 0.3,
+  contestedZoneCommitShare: 0.15,
+  contestedZoneMinSurplusMilitary: 4,
+  commanderFieldAssignRate: 0.4,
+  commanderMinArmySize: 3,
+  scrollTerrainPriority: 0.3,
+  scrollTerrainMaxDivert: 2,
+  universityIronMinePref: 0.5,
+  universityCityDefenseThreshold: 0.3,
 };
 
 /**
@@ -267,6 +324,14 @@ export const ADVANCED_AI_PARAMS: AiParams = {
   supplyCityAcquisitionBias: 0.45,
   defenderAssignmentPriority: 0.7,
   incorporateVillageChance: 1,
+  contestedZoneCommitShare: 0.25,
+  contestedZoneMinSurplusMilitary: 3,
+  commanderFieldAssignRate: 0.6,
+  commanderMinArmySize: 2,
+  scrollTerrainPriority: 0.45,
+  scrollTerrainMaxDivert: 3,
+  universityIronMinePref: 0.6,
+  universityCityDefenseThreshold: 0.4,
 };
 
 // ─── Food-aware recruit gating (avoid starvation lock in headless sim) ──
@@ -311,14 +376,18 @@ export function planAiTurn(
   territory: Map<string, TerritoryInfo>,
   params: AiParams = DEFAULT_AI_PARAMS,
   wallSections: WallSection[] = [],
+  contestedZoneHexKeys: string[] = [],
+  commanders: Commander[] = [],
+  scrollInventory: Record<string, ScrollItem[]> = {},
+  scrollAttachments: ScrollAttachment[] = [],
 ): AiActions {
   const aiCities = cities.filter(c => c.ownerId === aiPlayerId);
   const aiPlayer = players.find(p => p.id === aiPlayerId);
   if (!aiPlayer || aiCities.length === 0) {
-    return { builds: [], upgrades: [], recruits: [], moveTargets: [], scouts: [], incorporateVillages: [], buildWallRings: [] };
+    return { builds: [], upgrades: [], recruits: [], moveTargets: [], scouts: [], incorporateVillages: [], buildWallRings: [], commanderAssignments: [], scrollAttachments: [], universityTasks: [] };
   }
 
-  const actions: AiActions = { builds: [], upgrades: [], recruits: [], moveTargets: [], scouts: [], incorporateVillages: [], buildWallRings: [] };
+  const actions: AiActions = { builds: [], upgrades: [], recruits: [], moveTargets: [], scouts: [], incorporateVillages: [], buildWallRings: [], commanderAssignments: [], scrollAttachments: [], universityTasks: [] };
   let goldBudget = aiPlayer.gold;
   const enemyCities = cities.filter(c => c.ownerId !== aiPlayerId);
   const aiUnits = units.filter(u => u.ownerId === aiPlayerId && u.hp > 0);
@@ -456,7 +525,7 @@ export function planAiTurn(
           armsLevel = 3;
           goldCost = UNIT_L3_COSTS.defender.gold;
           ironCost = UNIT_L3_COSTS.defender.iron ?? 0;
-        } else if (useSiege || pick === 'builder') {
+        } else if (useSiege) {
           goldCost = UNIT_COSTS[pick].gold;
           if (pick === 'trebuchet') refinedWoodCost = UNIT_COSTS.trebuchet.refinedWood ?? 0;
         } else {
@@ -493,19 +562,6 @@ export function planAiTurn(
       }
     }
 
-    // Recruit civilian: builders (hard: only when surplus >= foodBufferThreshold)
-    if (hasAcademy && city.population > 5 && foodStats.surplus >= foodThreshold) {
-      const cost = UNIT_COSTS.builder;
-      const goingForSiege = hasBarracks && (params.siegeChance ?? 0) >= 0.05;
-      const needBuildersForMinesOrSiege =
-        (toBuild === 'quarry' || toBuild === 'mine' || toBuild === 'gold_mine') || goingForSiege;
-      const boost = needBuildersForMinesOrSiege ? (params.builderRecruitForMinesAndSiege ?? 0) : 0;
-      const effectiveChance = Math.min(1, (params.builderRecruitChance ?? 0) * (1 + boost));
-      if (goldBudget >= cost.gold && Math.random() < effectiveChance) {
-        actions.recruits.push({ cityId: city.id, type: 'builder' });
-        goldBudget -= cost.gold;
-      }
-    }
   }
 
   // Scout: chance per cycle when gold allows (scoutChance)
@@ -662,6 +718,150 @@ export function planAiTurn(
     }
   }
 
+  // ── Contested zone: divert idle military toward contested hexes for gold/iron payouts ──
+  const unitIdsAlreadyTargeted = new Set(actions.moveTargets.map(mt => mt.unitId));
+  if (contestedZoneHexKeys.length > 0 && (params.contestedZoneCommitShare ?? 0) > 0) {
+    const commitShare = Math.max(0, Math.min(1, params.contestedZoneCommitShare ?? 0.15));
+    const minSurplus = Math.max(0, params.contestedZoneMinSurplusMilitary ?? 4);
+    const idleForContest = aiUnits.filter(
+      u => u.hp > 0 && u.type !== 'builder' && !isNavalUnitType(u.type) && !unitIdsAlreadyTargeted.has(u.id) && u.status !== 'fighting',
+    );
+    const numToCommit = Math.max(0, Math.min(
+      Math.floor(idleForContest.length * commitShare),
+      idleForContest.length - minSurplus,
+    ));
+    if (numToCommit > 0) {
+      const zoneCenter = parseTileKey(contestedZoneHexKeys[Math.floor(contestedZoneHexKeys.length / 2)]);
+      const sorted = [...idleForContest].sort(
+        (a, b) => hexDistance(a.q, a.r, zoneCenter[0], zoneCenter[1]) - hexDistance(b.q, b.r, zoneCenter[0], zoneCenter[1]),
+      );
+      for (let i = 0; i < numToCommit && i < sorted.length; i++) {
+        const u = sorted[i];
+        const targetHex = contestedZoneHexKeys[i % contestedZoneHexKeys.length];
+        const [tq, tr] = parseTileKey(targetHex);
+        if (hexDistance(u.q, u.r, tq, tr) > 1) {
+          actions.moveTargets.push({ unitId: u.id, toQ: tq, toR: tr });
+          unitIdsAlreadyTargeted.add(u.id);
+        }
+      }
+    }
+  }
+
+  // ── Commander field assignment: attach idle city-defense commanders to army stacks ──
+  const fieldAssignRate = Math.max(0, Math.min(1, params.commanderFieldAssignRate ?? 0.4));
+  const minArmySize = Math.max(1, Math.round(params.commanderMinArmySize ?? 3));
+  if (fieldAssignRate > 0 && commanders.length > 0) {
+    const myCommanders = commanders.filter(c => c.ownerId === aiPlayerId);
+    const idleCityDef = myCommanders.filter(
+      c => c.assignment?.kind === 'city_defense' && (c.commanderKind ?? 'land') === 'land',
+    );
+    if (idleCityDef.length > 1) {
+      const movingMilitary = aiUnits.filter(
+        u => u.hp > 0 && u.type !== 'builder' && !isNavalUnitType(u.type) && u.status === 'moving' && u.targetQ != null,
+      );
+      const hexStacks = new Map<string, Unit[]>();
+      for (const u of movingMilitary) {
+        const k = tileKey(u.q, u.r);
+        const arr = hexStacks.get(k) ?? [];
+        arr.push(u);
+        hexStacks.set(k, arr);
+      }
+      let assignedCount = 0;
+      for (const [, stack] of hexStacks) {
+        if (stack.length < minArmySize) continue;
+        if (assignedCount >= idleCityDef.length - 1) break;
+        if (Math.random() > fieldAssignRate) continue;
+        const anchor = stack.reduce((best, u) => u.hp > best.hp ? u : best, stack[0]);
+        const cmd = idleCityDef[assignedCount];
+        if (cmd) {
+          actions.commanderAssignments.push({
+            commanderId: cmd.id,
+            assignment: { kind: 'field', anchorUnitId: anchor.id },
+          });
+          assignedCount++;
+        }
+      }
+    }
+  }
+
+  // ── Scroll attachment: equip discovered scrolls onto leading army units ──
+  const myScrolls = scrollInventory[aiPlayerId] ?? [];
+  if (myScrolls.length > 0) {
+    const alreadyAttachedScrollIds = new Set(scrollAttachments.filter(a => a.ownerId === aiPlayerId).map(a => a.scrollId));
+    const unequipped = myScrolls.filter(s => !alreadyAttachedScrollIds.has(s.id));
+    if (unequipped.length > 0) {
+      const carrierCandidates = aiUnits.filter(
+        u => u.hp > 0 && u.type !== 'builder' && !isNavalUnitType(u.type) && u.status === 'moving',
+      );
+      const usedCarrierIds = new Set(scrollAttachments.filter(a => a.ownerId === aiPlayerId).map(a => a.carrierUnitId));
+      const available = carrierCandidates.filter(u => !usedCarrierIds.has(u.id));
+      for (let i = 0; i < unequipped.length && i < available.length; i++) {
+        actions.scrollAttachments.push({
+          scrollId: unequipped[i].id,
+          carrierUnitId: available[i].id,
+        });
+      }
+    }
+  }
+
+  // ── Scroll terrain awareness: divert some units toward special terrain for discovery ──
+  const scrollTerrainPriority = Math.max(0, Math.min(1, params.scrollTerrainPriority ?? 0.3));
+  const scrollMaxDivert = Math.max(0, Math.round(params.scrollTerrainMaxDivert ?? 2));
+  if (scrollTerrainPriority > 0 && scrollMaxDivert > 0) {
+    const specialTiles: Tile[] = [];
+    for (const t of tiles.values()) {
+      if (t.specialTerrainKind && t.biome !== 'water' && t.biome !== 'mountain') {
+        specialTiles.push(t);
+      }
+    }
+    if (specialTiles.length > 0) {
+      const divertable = aiUnits.filter(
+        u => u.hp > 0 && u.type !== 'builder' && !isNavalUnitType(u.type)
+          && !unitIdsAlreadyTargeted.has(u.id) && u.status !== 'fighting',
+      );
+      let diverted = 0;
+      for (const t of specialTiles) {
+        if (diverted >= scrollMaxDivert) break;
+        if (Math.random() > scrollTerrainPriority) continue;
+        const nearest = divertable
+          .filter(u => !unitIdsAlreadyTargeted.has(u.id))
+          .sort((a, b) => hexDistance(a.q, a.r, t.q, t.r) - hexDistance(b.q, b.r, t.q, t.r))[0];
+        if (nearest && hexDistance(nearest.q, nearest.r, t.q, t.r) > 1) {
+          actions.moveTargets.push({ unitId: nearest.id, toQ: t.q, toR: t.r });
+          unitIdsAlreadyTargeted.add(nearest.id);
+          diverted++;
+        }
+      }
+    }
+  }
+
+  // ── University task selection per city (based on available deposits and game state) ──
+  for (const city of aiCities) {
+    const hasAcademy = city.buildings.some(b => b.type === 'academy');
+    if (!hasAcademy) continue;
+    const hasMine = city.buildings.some(b => b.type === 'mine');
+    const hasQuarry = city.buildings.some(b => b.type === 'quarry');
+    const ironPref = params.universityIronMinePref ?? 0.5;
+    const defThreshold = params.universityCityDefenseThreshold ?? 0.3;
+
+    let task: BuilderTask = 'expand_quarries';
+    if (enemyCities.length > 0 && Math.random() < defThreshold) {
+      task = 'city_defenses';
+    } else if (hasMine && !hasQuarry) {
+      task = 'expand_quarries';
+    } else if (hasQuarry && !hasMine) {
+      task = 'expand_iron_mines';
+    } else if (Math.random() < ironPref) {
+      task = 'expand_iron_mines';
+    } else {
+      task = 'expand_quarries';
+    }
+
+    if (city.universityBuilderTask !== task) {
+      actions.universityTasks.push({ cityId: city.id, task });
+    }
+  }
+
   return actions;
 }
 
@@ -795,7 +995,8 @@ export function placeAiStartingCityAt(
   tiles: Map<string, Tile>,
 ): City | null {
   const tile = tiles.get(tileKey(atQ, atR));
-  if (!tile || tile.biome === 'water' || tile.biome === 'mountain') return null;
+  if (!tile || !isCapitalStartHex(tile)) return null;
+  clearVillageForCapitalTile(tiles, atQ, atR);
 
   const city: City = {
     id: generateId('city'),
@@ -834,10 +1035,9 @@ function landFractionInDisk(
 type AiStartCand = { q: number; r: number; landFrac: number; d: number };
 
 function compareAiStartFair(a: AiStartCand, b: AiStartCand, idealD: number): number {
-  if (a.landFrac !== b.landFrac) return b.landFrac - a.landFrac;
-  const da = Math.abs(a.d - idealD);
-  const db = Math.abs(b.d - idealD);
-  if (da !== db) return da - db;
+  const scoreA = a.landFrac * 10 - Math.abs(a.d - idealD) * 0.5;
+  const scoreB = b.landFrac * 10 - Math.abs(b.d - idealD) * 0.5;
+  if (scoreA !== scoreB) return scoreB - scoreA;
   if (a.q !== b.q) return a.q - b.q;
   return a.r - b.r;
 }
@@ -853,11 +1053,17 @@ export function placeAiStartingCity(
   const h = config.height;
   const seedMix = config.seed ^ humanCityQ * 1315423911 ^ humanCityR * 9737333;
   /** Minimum hex distance from the human capital so 1v1 starts aren’t adjacent. */
-  const minSep = Math.max(10, Math.floor(Math.min(w, h) * 0.18));
+  const minSep = Math.max(8, Math.floor(Math.min(w, h) * 0.15));
   /** Prefer a moderate separation — not the farthest corner of the map. */
-  const idealD = minSep + Math.floor(Math.min(w, h) * 0.2);
+  const idealD = minSep + Math.floor(Math.min(w, h) * 0.12);
+  const maxD = Math.floor(Math.min(w, h) * 0.55);
+  const margin = Math.max(3, Math.floor(Math.min(w, h) * 0.08));
+
+  const isInMapMargin = (q: number, r: number) =>
+    q < margin || q >= w - margin || r < margin || r >= h - margin;
 
   const placeAt = (q: number, r: number, seedSalt: number) => {
+    clearVillageForCapitalTile(tiles, q, r);
     const city: City = {
       id: generateId('city'),
       name: 'AI Capital',
@@ -875,29 +1081,167 @@ export function placeAiStartingCity(
   };
 
   const all: AiStartCand[] = [];
+  const allFallback: AiStartCand[] = [];
   for (const tile of tiles.values()) {
-    if (!tile || tile.biome === 'water' || tile.biome === 'mountain') continue;
+    if (!tile || !isCapitalStartHex(tile)) continue;
     if (tile.q === humanCityQ && tile.r === humanCityR) continue;
     const d = hexDistance(tile.q, tile.r, humanCityQ, humanCityR);
     const landFrac = landFractionInDisk(tiles, tile.q, tile.r, AI_START_LAND_DISK_RADIUS);
-    all.push({ q: tile.q, r: tile.r, landFrac, d });
+    const cand = { q: tile.q, r: tile.r, landFrac, d };
+    allFallback.push(cand);
+    if (!isInMapMargin(tile.q, tile.r) && d <= maxD) {
+      all.push(cand);
+    }
   }
 
-  const pickFrom = (pred: (c: AiStartCand) => boolean): AiStartCand | null => {
-    const sub = all.filter(pred);
+  const pickFrom = (pool: AiStartCand[], pred: (c: AiStartCand) => boolean): AiStartCand | null => {
+    const sub = pool.filter(pred);
     if (sub.length === 0) return null;
     sub.sort((a, b) => compareAiStartFair(a, b, idealD));
-    const topN = Math.min(5, sub.length);
+    const topN = Math.min(8, sub.length);
     const idx = Math.abs(seedMix) % topN;
     return sub[idx]!;
   };
 
   const chosen =
-    pickFrom((c) => c.landFrac > 0.5 && c.d >= minSep)
-    ?? pickFrom((c) => c.landFrac > 0.4 && c.d >= minSep)
-    ?? pickFrom((c) => c.d >= minSep)
-    ?? pickFrom((c) => c.landFrac > 0.5)
-    ?? pickFrom(() => true);
+    pickFrom(all, (c) => c.landFrac > 0.5 && c.d >= minSep)
+    ?? pickFrom(all, (c) => c.landFrac > 0.4 && c.d >= minSep)
+    ?? pickFrom(all, (c) => c.d >= minSep)
+    ?? pickFrom(allFallback, (c) => c.landFrac > 0.4 && c.d >= minSep)
+    ?? pickFrom(allFallback, () => true);
 
   return chosen ? placeAt(chosen.q, chosen.r, 0) : null;
+}
+
+type AiStartCandMulti = { q: number; r: number; landFrac: number; minD: number };
+
+function placeOneAiApartFromPoints(
+  aiPlayerId: string,
+  placed: { q: number; r: number }[],
+  tiles: Map<string, Tile>,
+  config: Pick<MapConfig, 'width' | 'height' | 'seed'>,
+  salt: number,
+): City | null {
+  const w = config.width;
+  const h = config.height;
+  const minSep = Math.max(6, Math.floor(Math.min(w, h) * 0.12));
+  const idealSep = minSep + Math.floor(Math.min(w, h) * 0.12);
+  const maxSep = Math.floor(Math.min(w, h) * 0.55);
+  const margin = Math.max(3, Math.floor(Math.min(w, h) * 0.08));
+  const seedMix = config.seed ^ salt * 0x9e3779b9;
+
+  const isInMapMargin = (q: number, r: number) =>
+    q < margin || q >= w - margin || r < margin || r >= h - margin;
+
+  const minDistToPlaced = (q: number, r: number) =>
+    Math.min(...placed.map(p => hexDistance(q, r, p.q, p.r)));
+
+  const scoreCandidate = (c: AiStartCandMulti): number => {
+    const distPenalty = Math.abs(c.minD - idealSep);
+    return c.landFrac * 10 - distPenalty * 0.4;
+  };
+
+  let all: AiStartCandMulti[] = [];
+  for (const tile of tiles.values()) {
+    if (!isCapitalStartHex(tile)) continue;
+    if (placed.some(p => p.q === tile.q && p.r === tile.r)) continue;
+    if (isInMapMargin(tile.q, tile.r)) continue;
+    const minD = minDistToPlaced(tile.q, tile.r);
+    if (minD < minSep || minD > maxSep) continue;
+    const landFrac = landFractionInDisk(tiles, tile.q, tile.r, AI_START_LAND_DISK_RADIUS);
+    all.push({ q: tile.q, r: tile.r, landFrac, minD });
+  }
+
+  if (all.length === 0) {
+    for (const tile of tiles.values()) {
+      if (!isCapitalStartHex(tile)) continue;
+      if (placed.some(p => p.q === tile.q && p.r === tile.r)) continue;
+      const minD = minDistToPlaced(tile.q, tile.r);
+      if (minD < minSep) continue;
+      const landFrac = landFractionInDisk(tiles, tile.q, tile.r, AI_START_LAND_DISK_RADIUS);
+      all.push({ q: tile.q, r: tile.r, landFrac, minD });
+    }
+  }
+
+  if (all.length === 0) return null;
+
+  all.sort((a, b) => scoreCandidate(b) - scoreCandidate(a));
+
+  const topN = Math.min(10, all.length);
+  const idx = Math.abs(seedMix) % topN;
+  const chosen = all[idx]!;
+  return placeAiStartingCityAt(aiPlayerId, chosen.q, chosen.r, tiles);
+}
+
+/** Human capital + N AI capitals spread apart (FFA). */
+export function placeAiStartingCitiesSequential(
+  humanQ: number,
+  humanR: number,
+  aiPlayerIds: string[],
+  tiles: Map<string, Tile>,
+  config: Pick<MapConfig, 'width' | 'height' | 'seed'>,
+): City[] {
+  const placed: { q: number; r: number }[] = [{ q: humanQ, r: humanR }];
+  const cities: City[] = [];
+  for (let i = 0; i < aiPlayerIds.length; i++) {
+    const id = aiPlayerIds[i]!;
+    const c = placeOneAiApartFromPoints(id, placed, tiles, config, i);
+    if (c) {
+      cities.push(c);
+      placed.push({ q: c.q, r: c.r });
+    }
+  }
+  return cities;
+}
+
+function pickFirstSpectateCapital(
+  tiles: Map<string, Tile>,
+  config: Pick<MapConfig, 'width' | 'height' | 'seed'>,
+): { q: number; r: number } | null {
+  const w = config.width;
+  const h = config.height;
+  const cq = Math.floor(w / 2);
+  const cr = Math.floor(h / 2);
+  let best: AiStartCandMulti | null = null;
+  for (const tile of tiles.values()) {
+    if (!isCapitalStartHex(tile)) continue;
+    const landFrac = landFractionInDisk(tiles, tile.q, tile.r, AI_START_LAND_DISK_RADIUS);
+    const distCenter = hexDistance(tile.q, tile.r, cq, cr);
+    const cand: AiStartCandMulti = { q: tile.q, r: tile.r, landFrac, minD: distCenter };
+    if (!best || cand.landFrac > best.landFrac || (cand.landFrac === best.landFrac && cand.minD > best.minD)) {
+      best = cand;
+    }
+  }
+  return best ? { q: best.q, r: best.r } : null;
+}
+
+/** Spectate: several AI capitals spread across the map (no human). */
+export function placeManyAiCapitalsApart(
+  count: number,
+  aiPlayerIds: string[],
+  tiles: Map<string, Tile>,
+  config: Pick<MapConfig, 'width' | 'height' | 'seed'>,
+): City[] {
+  const n = Math.min(count, aiPlayerIds.length);
+  if (n <= 0) return [];
+
+  const cities: City[] = [];
+  const placed: { q: number; r: number }[] = [];
+
+  const first = pickFirstSpectateCapital(tiles, config);
+  if (!first) return [];
+  const c0 = placeAiStartingCityAt(aiPlayerIds[0]!, first.q, first.r, tiles);
+  if (!c0) return [];
+  cities.push(c0);
+  placed.push({ q: c0.q, r: c0.r });
+
+  for (let i = 1; i < n; i++) {
+    const id = aiPlayerIds[i]!;
+    const c = placeOneAiApartFromPoints(id, placed, tiles, config, i + 16);
+    if (c) {
+      cities.push(c);
+      placed.push({ q: c.q, r: c.r });
+    }
+  }
+  return cities;
 }

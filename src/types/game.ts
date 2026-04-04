@@ -24,9 +24,15 @@ export type Tile = {
   hasWoodDeposit: boolean;
   /** Land tile not connected to map border via land (used for village flavor). */
   isIsland: boolean;
-  /** Set when this hex is part of a named special scroll region (see {@link SpecialRegion}). */
-  specialRegionId?: string;
+  /**
+   * Scroll-discovery terrain (sprinkled like biome patches). Visuals + which scroll line this hex feeds.
+   * Replaces old single large `specialRegionId` disks.
+   */
+  specialTerrainKind?: SpecialRegionKind;
 };
+
+/** Main-menu map shape presets (water layout & landmass style). */
+export type MapTerrainPreset = 'continents' | 'islands' | 'lake' | 'no_water';
 
 export type MapConfig = {
   width: number;
@@ -39,6 +45,11 @@ export type MapConfig = {
   villageDensity: number;
   /** When true, elevation is boosted near all 4 corners so they stay land (for 4-bot maps). */
   ensureCornerLand?: boolean;
+  /**
+   * Land / ocean layout: continents (default), islands (more ocean), lake (large central sea),
+   * no_water (no ocean tiles — dry map).
+   */
+  mapTerrain?: MapTerrainPreset;
 };
 
 export const DEFAULT_MAP_CONFIG: MapConfig = {
@@ -52,6 +63,23 @@ export const DEFAULT_MAP_CONFIG: MapConfig = {
   /** 20% fewer villages vs original 0.02 */
   villageDensity: 0.016,
 };
+
+/** Main-menu map sizes (width × height). */
+export const MAP_SIZE_PRESETS = {
+  small: { width: 38, height: 38 },
+  normal: { width: 52, height: 52 },
+  large: { width: 67, height: 67 },
+} as const;
+export type MapSizePreset = keyof typeof MAP_SIZE_PRESETS;
+
+/** Up to five AI opponents in Play / Spectate (ids match existing 1v1 + extras). */
+export const AI_PLAYER_IDS = [
+  'player_ai',
+  'player_ai_2',
+  'player_ai_3',
+  'player_ai_4',
+  'player_ai_5',
+] as const;
 
 // ─── Visual Constants (Map) ────────────────────────────────────────
 
@@ -101,7 +129,7 @@ export const WOOD_DEPOSIT_COLOR = '#166534';  // deep green
 
 // ─── Special map regions & scrolls ─────────────────────────────────
 
-/** Named wilderness zones (large hex-radius areas) where scrolls can be discovered. */
+/** Terrain flavors for scroll discovery (scattered across the map). */
 export type SpecialRegionKind = 'mexca' | 'hills_lost' | 'forest_secrets' | 'isle_lost';
 
 export type ScrollKind = 'combat' | 'defense' | 'movement';
@@ -111,11 +139,11 @@ export interface SpecialRegion {
   kind: SpecialRegionKind;
   /** Display name */
   name: string;
+  /** Legacy fields — unused for sprinkled terrain; kept for typing/UI metadata. */
   centerQ: number;
   centerR: number;
-  /** Hex distance from center; tiles with distance ≤ radius belong to the region. */
   radius: number;
-  /** Which scroll type is awarded when a player finishes searching this region. */
+  /** Scroll granted when discovery completes on this terrain line. */
   scrollReward: ScrollKind;
 }
 
@@ -133,11 +161,19 @@ export interface ScrollAttachment {
   ownerId: string;
 }
 
-/** Hex distance from center; tiles with distance ≤ this form the region (~“5×5” footprint). */
+/** Legacy disk radius (no longer used for generation; kept for tools/docs). */
 export const SPECIAL_REGION_HEX_RADIUS = 5;
 
-/** Economy cycles with military present in the region to reveal the scroll. */
-export const SCROLL_SEARCH_CYCLES_REQUIRED = 5;
+/** Noise scale for clustering special scroll terrain (simplex input). */
+export const SPECIAL_TERRAIN_NOISE_SCALE = 0.088;
+/**
+ * Cluster threshold in 0..1 space (higher = fewer special tiles).
+ * ~0.72 leaves ~28% of land candidates in the noise “upper” band before biome pick.
+ */
+export const SPECIAL_TERRAIN_CLUSTER_THRESHOLD = 0.72;
+
+/** Economy cycles with military on matching terrain to reveal the scroll (faster than old 5). */
+export const SCROLL_SEARCH_CYCLES_REQUIRED = 3;
 
 export const SCROLL_COMBAT_BONUS = 0.1;
 export const SCROLL_DEFENSE_BONUS = 0.1;
@@ -164,6 +200,27 @@ export const SCROLL_DISPLAY_NAME: Record<ScrollKind, string> = {
   movement: 'Scroll of Celerity',
 };
 
+/** Which scroll line a terrain flavor feeds (Mexca + Isle both → combat). */
+export function scrollKindForTerrain(kind: SpecialRegionKind): ScrollKind {
+  if (kind === 'mexca' || kind === 'isle_lost') return 'combat';
+  if (kind === 'hills_lost') return 'defense';
+  return 'movement';
+}
+
+/** Static metadata for UI (names / tints); terrain is on tiles via {@link Tile.specialTerrainKind}. */
+export function createSpecialRegionMetadata(): SpecialRegion[] {
+  const kinds: SpecialRegionKind[] = ['mexca', 'hills_lost', 'forest_secrets', 'isle_lost'];
+  return kinds.map((kind, i) => ({
+    id: `sr_meta_${kind}`,
+    kind,
+    name: SPECIAL_REGION_DISPLAY_NAME[kind],
+    centerQ: 0,
+    centerR: 0,
+    radius: 0,
+    scrollReward: scrollKindForTerrain(kind),
+  }));
+}
+
 /** One UI slot per kind; an army uses up to three carriers (one scroll each) to cover all three. */
 export const SCROLL_ARMY_SLOT_ORDER: ScrollKind[] = ['combat', 'defense', 'movement'];
 
@@ -182,7 +239,7 @@ export type GamePhase =
   | 'playing'
   | 'victory'
   | 'total_starvation';
-export type UIMode = 'normal' | 'move' | 'build' | 'build_mine' | 'build_quarry' | 'build_gold_mine' | 'build_logging_hut' | 'build_road' | 'defend' | 'intercept';
+export type UIMode = 'normal' | 'move' | 'build' | 'build_mine' | 'build_quarry' | 'build_gold_mine' | 'build_logging_hut' | 'build_road' | 'build_defense' | 'defend' | 'intercept';
 export type FoodPriority = 'civilian' | 'military';
 
 /** Playable kingdoms — human selection at game start; affects spawn, bonuses, and some units. */
@@ -201,6 +258,24 @@ export const KINGDOM_DISPLAY_NAMES: Record<KingdomId, string> = {
 export function pickAiKingdom(humanKingdom: KingdomId): KingdomId {
   const i = KINGDOM_IDS.indexOf(humanKingdom);
   return KINGDOM_IDS[(i + 1) % KINGDOM_IDS.length]!;
+}
+
+/** Kingdoms for AI rivals — cycles if there are more opponents than remaining tribes. */
+export function pickOpponentKingdoms(humanKingdom: KingdomId, count: number): KingdomId[] {
+  const pool = KINGDOM_IDS.filter(k => k !== humanKingdom);
+  const out: KingdomId[] = [];
+  for (let i = 0; i < count; i++) {
+    out.push(pool[i % pool.length]!);
+  }
+  return out;
+}
+
+export function pickKingdomsForSpectateBots(count: number): KingdomId[] {
+  const out: KingdomId[] = [];
+  for (let i = 0; i < count; i++) {
+    out.push(KINGDOM_IDS[i % KINGDOM_IDS.length]!);
+  }
+  return out;
 }
 
 /** Setup-screen art: distinctive unit/building sprites per tribe (public paths). */
@@ -223,7 +298,7 @@ export type UnitType =
   | 'infantry' | 'cavalry' | 'ranged' | 'horse_archer' | 'crusader_knight' | 'builder' | 'trebuchet' | 'battering_ram' | 'defender'
   | 'scout_ship' | 'warship' | 'transport_ship' | 'fisher_transport' | 'capital_ship';
 
-/** Naval units: move on water only; combat only vs naval on water. */
+/** Naval units: move on water only; ship-vs-ship combat on water. Warships/capital ships also shore-bombard land (separate tick). */
 export const NAVAL_UNIT_TYPES: ReadonlySet<UnitType> = new Set([
   'scout_ship', 'warship', 'transport_ship', 'fisher_transport', 'capital_ship',
 ]);
@@ -264,6 +339,21 @@ export interface CityBuilding {
   dockedShipIds?: string[];
 }
 
+/** University workforce directive — drives automated builds and which sites get extra BP. */
+export type BuilderTask = 'expand_quarries' | 'expand_iron_mines' | 'expand_forestry' | 'city_defenses';
+
+export const DEFAULT_BUILDER_TASK: BuilderTask = 'expand_quarries';
+
+export const BUILDER_TASK_LABELS: Record<BuilderTask, string> = {
+  expand_quarries: 'Expand quarries',
+  expand_iron_mines: 'Expand iron mines',
+  expand_forestry: 'Expand forestry',
+  city_defenses: 'City defenses',
+};
+
+/** Gold to upgrade University (academy) one level; L1→L2 … L4→L5. */
+export const UNIVERSITY_UPGRADE_COSTS: [number, number, number, number] = [22, 32, 42, 52];
+
 export interface City {
   id: string;
   name: string;
@@ -275,6 +365,8 @@ export interface City {
   storage: { food: number; goods: number; guns: number; gunsL2: number; iron: number; stone: number; wood: number; refinedWood: number };
   storageCap: { food: number; goods: number; guns: number; gunsL2: number; iron: number; stone: number; wood: number; refinedWood: number };
   buildings: CityBuilding[];
+  /** Workforce priority for this city's University — automation + extra BP on matching sites. */
+  universityBuilderTask?: BuilderTask;
   /** Cycles remaining as frontier city (+25% migration); only for incorporated villages */
   frontierCity?: number;
   /** Hex steps from center included in this city's territory; default {@link TERRITORY_RADIUS}. */
@@ -416,6 +508,9 @@ export type CommanderAssignment =
   | { kind: 'city_defense'; cityId: string }
   | { kind: 'field'; anchorUnitId: string };
 
+/** Land commanders lead armies; naval commanders lead ship stacks (~25% roll on recruit). */
+export type CommanderKind = 'land' | 'naval';
+
 export interface Commander {
   id: string;
   name: string;
@@ -429,6 +524,8 @@ export interface Commander {
   traitIds: CommanderTraitId[];
   backstory: string;
   assignment: CommanderAssignment | null;
+  /** Defaults to land when missing (older saves). */
+  commanderKind?: CommanderKind;
 }
 
 /** Draft pool at match start: pick {@link COMMANDER_STARTING_PICK} of these. */
@@ -439,6 +536,7 @@ export interface CommanderDraftOption {
   traitIds: CommanderTraitId[];
   portraitSeed: number;
   portraitDataUrl?: string;
+  commanderKind?: CommanderKind;
 }
 
 /** Candidates shown before you choose five; independent of barracks. */
@@ -448,6 +546,9 @@ export const COMMANDER_STARTING_PICK = 5;
 
 /** Additional commanders after the starting five (not limited by barracks). */
 export const COMMANDER_RECRUIT_GOLD = 50;
+
+/** Total population across your cities required before recruiting heroes (no starting hero). */
+export const HERO_POPULATION_UNLOCK = 300;
 
 // ─── Road construction (builder-built; free, takes builder time) ───
 
@@ -460,7 +561,7 @@ export interface RoadConstructionSite {
   bpAccumulated: number;
 }
 
-export const ROAD_BP_COST = 25; // ~75s with 1 builder so construction progress is visible
+export const ROAD_BP_COST = 40;
 
 // ─── City defense towers (builder-built on territory) ──────────────
 
@@ -557,7 +658,7 @@ export interface ScoutTower {
   ownerId: string;
 }
 export const SCOUT_TOWER_VISION_RANGE = 4;
-export const SCOUT_TOWER_BP_COST = 40;
+export const SCOUT_TOWER_BP_COST = 60;
 export const SCOUT_TOWER_GOLD_COST = 5;
 
 // ─── Scout Missions ───────────────────────────────────────────────
@@ -573,20 +674,20 @@ export const SCOUT_MISSION_COST = 5;
 export const SCOUT_MISSION_DURATION_SEC = 30;
 
 export const BUILDING_BP_COST: Record<BuildingType, number> = {
-  city_center: 0, farm: 50, banana_farm: 50, factory: 50, barracks: 100, academy: 75, market: 30, quarry: 50, mine: 50, gold_mine: 60,
-  sawmill: 45, port: 80, shipyard: 90, fishery: 50, logging_hut: 50,
+  city_center: 0, farm: 75, banana_farm: 75, factory: 75, barracks: 150, academy: 110, market: 45, quarry: 75, mine: 75, gold_mine: 90,
+  sawmill: 70, port: 120, shipyard: 135, fishery: 75, logging_hut: 75,
 };
 
 /** BP required for builder to build a trebuchet in the field (on the hex). */
-export const TREBUCHET_FIELD_BP_COST = 60;
+export const TREBUCHET_FIELD_BP_COST = 90;
 /** Gold cost to start field trebuchet construction (same as barracks recruit). */
 export const TREBUCHET_FIELD_GOLD_COST = 8;
 /** Refined wood from city storage (sawmill) for trebuchet — barracks recruit and field build. */
 export const TREBUCHET_REFINED_WOOD_COST = 4;
 
-export const CITY_BUILDING_POWER = 100;
+export const CITY_BUILDING_POWER = 65;
 export const BUILDER_POWER = 10;
-export const BP_RATE_BASE = 30; // 50 BP available completes 50 BP of work in 30 seconds
+export const BP_RATE_BASE = 50;
 
 // ─── Notifications ─────────────────────────────────────────────────
 
@@ -619,12 +720,12 @@ export const MOVEMENT_HEXES_PER_CYCLE_ESTIMATE = 24;
 /** Units/builders get supply when within this hex distance of any friendly city. No roads required.
  *  >= MOVEMENT_HEXES_PER_CYCLE_ESTIMATE so one cycle of movement doesn't leave supply. */
 export const SUPPLY_VICINITY_RADIUS = 24;
-export const STARTING_GOLD = 150;
+export const STARTING_GOLD = 120;
 
 export const STARTING_CITY_TEMPLATE: Omit<City, 'id' | 'name' | 'q' | 'r' | 'ownerId'> = {
   population: 50,
   morale: 75,
-  storage: { food: 50, goods: 20, guns: 10, gunsL2: 0, iron: 0, stone: 0, wood: 0, refinedWood: 0 },
+  storage: { food: 35, goods: 15, guns: 5, gunsL2: 0, iron: 0, stone: 0, wood: 0, refinedWood: 0 },
   storageCap: { food: 100, goods: 100, guns: 100, gunsL2: 100, iron: 50, stone: 50, wood: 50, refinedWood: 50 },
   buildings: [],
 };
@@ -692,7 +793,7 @@ export const BARACKS_L3_UPGRADE_COST = 40;
 export const FACTORY_UPGRADE_COST = 15;
 export const FARM_UPGRADE_COST = 20;
 /** L2 farm total food per cycle (higher productivity per job than L1). */
-export const FARM_L2_FOOD_PER_CYCLE = 60;
+export const FARM_L2_FOOD_PER_CYCLE = 40;
 export const WALL_SECTION_STONE_COST = 5;
 export const WORKERS_PER_LEVEL = 5;
 export const MIN_STAFFING_RATIO = 0.4;
@@ -707,27 +808,27 @@ export const SAWMILL_WOOD_PER_REFINED = 2;
 
 export const BUILDING_PRODUCTION: Record<BuildingType, BuildingProduction> = {
   city_center: { food: 0, goods: 0, guns: 0 },
-  farm:        { food: 25, goods: 0, guns: 0 },
-  banana_farm: { food: 25, goods: 0, guns: 0 },
-  factory:     { food: 0, goods: 0, guns: 2 },
+  farm:        { food: 18, goods: 0, guns: 0 },
+  banana_farm: { food: 18, goods: 0, guns: 0 },
+  factory:     { food: 0, goods: 0, guns: 1 },
   barracks:    { food: 0, goods: 0, guns: 0 },
   academy:     { food: 0, goods: 0, guns: 0 },
   market:      { food: 0, goods: 0, guns: 0 },
-  quarry:      { food: 0, goods: 0, guns: 0, stone: 5 },
-  mine:        { food: 0, goods: 0, guns: 0, iron: 2 },
-  gold_mine:   { food: 0, goods: 0, guns: 0, gold: 10 },
-  sawmill:     { food: 0, goods: 0, guns: 0, refinedWood: 2 },
+  quarry:      { food: 0, goods: 0, guns: 0, stone: 3 },
+  mine:        { food: 0, goods: 0, guns: 0, iron: 1 },
+  gold_mine:   { food: 0, goods: 0, guns: 0, gold: 7 },
+  sawmill:     { food: 0, goods: 0, guns: 0, refinedWood: 1 },
   port:        { food: 0, goods: 0, guns: 0 },
   shipyard:    { food: 0, goods: 0, guns: 0 },
-  fishery:     { food: 22, goods: 0, guns: 0 },
-  logging_hut: { food: 0, goods: 0, guns: 0, wood: 3 },
+  fishery:     { food: 15, goods: 0, guns: 0 },
+  logging_hut: { food: 0, goods: 0, guns: 0, wood: 2 },
 };
 
 // L2 factory: 1 iron -> 10 gunsL2 per cycle
 export const FACTORY_L2_IRON_PER_CYCLE = 1;
-export const FACTORY_L2_ARMS_PER_CYCLE = 10;
+export const FACTORY_L2_ARMS_PER_CYCLE = 6;
 
-export const MARKET_GOLD_PER_CYCLE = 2;
+export const MARKET_GOLD_PER_CYCLE = 1;
 
 /** Storage cap provided by city center (1 per city, required) */
 export const CITY_CENTER_STORAGE = { food: 100, goods: 100, guns: 100, gunsL2: 100, iron: 50, stone: 50, wood: 50, refinedWood: 50 };
@@ -941,7 +1042,7 @@ export const HERO_NAMES = [
 ];
 
 export const TERRAIN_FOOD_YIELD: Record<Biome, number> = {
-  water: 0, plains: 2, forest: 1, mountain: 0, desert: 0.5,
+  water: 0, plains: 1.5, forest: 0.5, mountain: 0, desert: 0.25,
 };
 
 // ─── Population Growth Constants ─────────────────────────────────
@@ -953,7 +1054,20 @@ export const POP_EXPECTED_K_ALPHA = 0.25;
 /** Extra deaths per cycle when city has no food in storage (starvation) */
 export const STARVATION_DEATHS = 2;
 
-export const PLAYER_COLORS = { human: '#55aaee', ai: '#ee5555', ai2: '#eebb44', ai3: '#55cc88', ai4: '#aa66dd' };
+export const PLAYER_COLORS = {
+  human: '#55aaee',
+  ai: '#ee5555',
+  ai2: '#eebb44',
+  ai3: '#55cc88',
+  ai4: '#aa66dd',
+  ai5: '#cc8866',
+};
+
+export function aiPlayerColorBySlot(slotIndex: number): string {
+  const keys = ['ai', 'ai2', 'ai3', 'ai4', 'ai5'] as const;
+  const k = keys[Math.min(Math.max(0, slotIndex), keys.length - 1)];
+  return PLAYER_COLORS[k];
+}
 
 // ─── Weather / Natural Disasters ──────────────────────────────────
 
@@ -1011,10 +1125,13 @@ export const COMBAT_TICK_MS = 1000;           // combat resolution every 1s
 export const UNIT_MOVEMENT_DELAY_MULT = 1.45;
 /**
  * Multiplier on unit-vs-unit combat damage (melee same-hex, ranged/counter, hero vs unit).
- * Tuned with {@link COMBAT_KILL_XP} and hit/glance rolls so ~5v5 L1 infantry on one hex lasts ~{@link CYCLE_INTERVAL_SEC} combat ticks (~1 economy cycle).
- * Does not apply to defense towers, siege vs walls, or starvation/upkeep.
+ * Tuned with {@link COMBAT_KILL_XP} and hit/glance rolls so a typical same-hex fight (e.g. 5v5 L1 infantry)
+ * lasts about {@link CYCLE_INTERVAL_SEC} combat ticks on average (~1 economy cycle), giving time to react;
+ * bigger engagements (multiple hexes, ranged/tower pressure, reinforcements) stack duration and often span multiple cycles.
+ * Sanity-check: `npm run sim-combat-length`.
+ * Does not apply to defense towers, siege vs walls, coastal bombardment, or starvation/upkeep.
  */
-export const COMBAT_UNIT_DAMAGE_SCALE = 0.61;
+export const COMBAT_UNIT_DAMAGE_SCALE = 0.545;
 /** XP granted to killer on unit kill in combat (kept low so brawls don’t spike level mid-fight). */
 export const COMBAT_KILL_XP = 4;
 /**
@@ -1024,6 +1141,20 @@ export const COMBAT_KILL_XP = 4;
 export const COMBAT_HIT_FULL_CHANCE = 0.72;
 export const COMBAT_HIT_GLANCE_CHANCE = 0.18;
 export const COMBAT_GLANCE_DAMAGE_MULT = 0.42;
+
+/** Battleship shore bombardment: max hex distance from ship (on water) to aim point on land. */
+export const COASTAL_BOMBARD_RANGE = 3;
+/** Chance the shell centers on the aimed hex; otherwise scatters to a random adjacent land hex. */
+export const COASTAL_BOMBARD_DIRECT_HIT_CHANCE = 0.38;
+/** HP removed from each enemy wall section in the 7-hex splash. */
+export const COASTAL_BOMBARD_WALL_DAMAGE = 3;
+/** Base raw damage to land units in splash before scaling and per-target splash rolls. */
+export const COASTAL_BOMBARD_UNIT_BASE = 11;
+/** Splash accuracy on land units (full / glance / miss); glance uses {@link COASTAL_BOMBARD_SPLASH_GLANCE_MULT}. */
+export const COASTAL_BOMBARD_SPLASH_FULL_CHANCE = 0.32;
+export const COASTAL_BOMBARD_SPLASH_GLANCE_CHANCE = 0.22;
+export const COASTAL_BOMBARD_SPLASH_GLANCE_MULT = 0.45;
+
 /** Retreat command: delay before retreat executes (design §5, 30). */
 export const RETREAT_DELAY_MS = 2000;
 /** Hold city center this long (ms) to capture (design §13). */

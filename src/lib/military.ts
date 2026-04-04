@@ -18,6 +18,13 @@ import {
   SCROLL_COMBAT_BONUS,
   SCROLL_DEFENSE_BONUS,
   SCROLL_MOVEMENT_BONUS,
+  COASTAL_BOMBARD_RANGE,
+  COASTAL_BOMBARD_DIRECT_HIT_CHANCE,
+  COASTAL_BOMBARD_WALL_DAMAGE,
+  COASTAL_BOMBARD_UNIT_BASE,
+  COASTAL_BOMBARD_SPLASH_FULL_CHANCE,
+  COASTAL_BOMBARD_SPLASH_GLANCE_CHANCE,
+  COASTAL_BOMBARD_SPLASH_GLANCE_MULT,
   type ScrollAttachment,
   type Commander,
 } from '@/types/game';
@@ -102,6 +109,47 @@ function applyHitOutcomeDamage(damage: number, outcome: 'full' | 'glance' | 'mis
   if (outcome === 'miss' || damage <= 0) return 0;
   if (outcome === 'glance') return Math.max(0, Math.floor(damage * COMBAT_GLANCE_DAMAGE_MULT));
   return damage;
+}
+
+function hitOutcomeFromBombardSplashRoll(r: number): 'full' | 'glance' | 'miss' {
+  if (r < COASTAL_BOMBARD_SPLASH_FULL_CHANCE) return 'full';
+  if (r < COASTAL_BOMBARD_SPLASH_FULL_CHANCE + COASTAL_BOMBARD_SPLASH_GLANCE_CHANCE) return 'glance';
+  return 'miss';
+}
+
+function applyBombardSplashDamage(damage: number, outcome: 'full' | 'glance' | 'miss'): number {
+  if (outcome === 'miss' || damage <= 0) return 0;
+  if (outcome === 'glance') return Math.max(0, Math.floor(damage * COASTAL_BOMBARD_SPLASH_GLANCE_MULT));
+  return damage;
+}
+
+/** When a ship sinks, cargo units aboard are also lost (same rule as combat tick). */
+export function expandKilledWithCargoIds(units: Unit[], killed: string[]): string[] {
+  const killedExpand = new Set(killed);
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const id of [...killedExpand]) {
+      const dead = units.find(u => u.id === id);
+      if (!dead?.cargoUnitIds?.length) continue;
+      for (const cid of dead.cargoUnitIds) {
+        const c = units.find(u => u.id === cid);
+        if (c?.aboardShipId === id && !killedExpand.has(cid)) {
+          killedExpand.add(cid);
+          grew = true;
+        }
+      }
+    }
+  }
+  return [...killedExpand];
+}
+
+function isBombardShipType(type: Unit['type']): boolean {
+  return type === 'warship' || type === 'capital_ship';
+}
+
+function landTargetableByBombardment(u: Unit): boolean {
+  return u.hp > 0 && !u.aboardShipId && !isNavalUnitType(u.type) && u.type !== 'builder';
 }
 
 function applyDefenseDamageToUnit(
@@ -305,6 +353,91 @@ export function enemyIntactWallOnCityHex(wallSections: WallSection[], city: City
   );
 }
 
+export interface ClosingFireResult {
+  killedUnitIds: string[];
+  notifications: GameNotification[];
+  rangedShotFx: RangedShotFx[];
+}
+
+/** Ranged units auto-fire at an army that just moved into their range (overwatch). */
+function closingFireOnArmy(
+  movedArmy: Unit[],
+  allUnits: Unit[],
+  heroes: Hero[],
+  cities: City[],
+  cycle: number,
+  nowMs: number,
+  result: ClosingFireResult,
+  scrollAttachments?: ScrollAttachment[],
+  commanders: Commander[] = [],
+): void {
+  const leader = movedArmy[0];
+  if (!leader || leader.hp <= 0) return;
+  if (isNavalUnitType(leader.type)) return;
+
+  const armyQ = leader.q;
+  const armyR = leader.r;
+
+  for (const shooter of allUnits) {
+    if (shooter.hp <= 0) continue;
+    if (shooter.ownerId === leader.ownerId) continue;
+    if (shooter.aboardShipId) continue;
+    if (isNavalUnitType(shooter.type)) continue;
+    if (!isBowUnitType(shooter.type)) continue;
+    if (shooter.retreatAt) continue;
+
+    const range = getUnitStats(shooter).range;
+    const dist = hexDistance(shooter.q, shooter.r, armyQ, armyR);
+    if (dist > range || dist === 0) continue;
+
+    const shooterInMelee = allUnits.some(
+      u => u.q === shooter.q && u.r === shooter.r &&
+        u.ownerId !== shooter.ownerId && u.hp > 0 &&
+        !u.aboardShipId && !isNavalUnitType(u.type),
+    );
+    if (shooterInMelee) continue;
+
+    const target = movedArmy.find(u => u.hp > 0 && !u.aboardShipId);
+    if (!target) break;
+
+    const shooterHero = heroes.find(
+      h => h.q === shooter.q && h.r === shooter.r && h.ownerId === shooter.ownerId,
+    );
+    const atkMult = combatScrollMult(allUnits, shooter, scrollAttachments);
+    const cmdAtk = commanderAttackMultiplierForUnit(shooter, commanders, cities, allUnits);
+    let rawDamage = getUnitAttack(shooter, shooterHero, { attackMult: atkMult, commanderAttackMult: cmdAtk });
+    let damage = applyTowerDefense(rawDamage, target.q, target.r, cities);
+    damage = applyDamageResist(damage, target, cities, allUnits, scrollAttachments);
+    damage = Math.max(1, Math.floor(damage * commanderDefenseDamageFactorForUnit(target, commanders, cities, allUnits)));
+    damage = scaleLandCombatDamageToUnit(damage);
+    const ro = combatRoll01(cycle, nowMs, shooter.id, target.id, 300);
+    damage = applyHitOutcomeDamage(damage, hitOutcomeFromRoll(ro));
+
+    target.hp -= damage;
+
+    result.rangedShotFx.push({
+      attackerId: shooter.id,
+      fromQ: shooter.q,
+      fromR: shooter.r,
+      toQ: armyQ,
+      toR: armyR,
+    });
+
+    if (target.hp <= 0) {
+      result.killedUnitIds.push(target.id);
+      const leveled = awardXp(shooter, COMBAT_KILL_XP);
+      if (leveled) {
+        result.notifications.push({
+          id: generateId('n'),
+          turn: cycle,
+          message: `${capitalize(shooter.type)} leveled up to ${shooter.level}!`,
+          type: 'success',
+        });
+      }
+    }
+  }
+}
+
 export function movementTick(
   units: Unit[],
   heroes: Hero[],
@@ -314,8 +447,11 @@ export function movementTick(
   nowMs: number = Date.now(),
   players: Player[] = [],
   scrollAttachments?: ScrollAttachment[],
-): void {
+  cycle: number = 0,
+  commanders: Commander[] = [],
+): ClosingFireResult {
   const now = nowMs;
+  const closingFireRes: ClosingFireResult = { killedUnitIds: [], notifications: [], rangedShotFx: [] };
 
   // Retreat execution: when retreatAt has passed, set target to hex away from enemies (design §5, 30)
   for (const u of units) {
@@ -422,21 +558,28 @@ export function movementTick(
         h.r = next[1];
       }
     }
+
+    if (!naval) {
+      closingFireOnArmy(army, units, heroes, cities, cycle, now, closingFireRes, scrollAttachments, commanders);
+    }
   };
 
   for (const army of landArmies) advanceArmy(army, false);
   for (const army of navalArmies) advanceArmy(army, true);
+
+  return closingFireRes;
 }
 
 // ═══════════════════════════════════════════════════════════════════
 //  Combat Tick — automatic 1-second engagement resolution
 // ═══════════════════════════════════════════════════════════════════
 
-/** Client-only combat VFX: defense towers and bow volleys (see HexGrid). */
+/** Client-only combat VFX: defense towers, bow volleys, coastal bombardment (see HexGrid). */
 export type DefenseVolleyFx =
   | { kind: 'mortar'; fromQ: number; fromR: number; splashKeys: string[] }
   | { kind: 'archer_tower'; fromQ: number; fromR: number; targetQ: number; targetR: number }
-  | { kind: 'ballista'; fromQ: number; fromR: number; targetQ: number; targetR: number };
+  | { kind: 'ballista'; fromQ: number; fromR: number; targetQ: number; targetR: number }
+  | { kind: 'coastal_bombard'; fromQ: number; fromR: number; splashKeys: string[] };
 
 export type RangedShotFx = {
   attackerId: string;
@@ -460,7 +603,7 @@ function tileIsWater(tiles: Map<string, Tile>, q: number, r: number): boolean {
   return tiles.get(tileKey(q, r))?.biome === 'water';
 }
 
-/** Naval may only fight naval on water; land only fights land (no coastal bombardment in v1). */
+/** Naval may only fight naval on water; land only fights land. Shore damage uses {@link coastalBombardmentTick}. */
 export function canUnitsFight(attacker: Unit, target: Unit, tiles: Map<string, Tile>): boolean {
   const aNav = isNavalUnitType(attacker.type);
   const tNav = isNavalUnitType(target.type);
@@ -702,25 +845,197 @@ export function combatTick(
     );
   }
 
-  const killedExpand = new Set(killed);
-  let grew = true;
-  while (grew) {
-    grew = false;
-    for (const id of [...killedExpand]) {
-      const dead = units.find(u => u.id === id);
-      if (!dead?.cargoUnitIds?.length) continue;
-      for (const cid of dead.cargoUnitIds) {
-        const c = units.find(u => u.id === cid);
-        if (c?.aboardShipId === id && !killedExpand.has(cid)) {
-          killedExpand.add(cid);
-          grew = true;
+  return {
+    killedUnitIds: expandKilledWithCargoIds(units, killed),
+    killedHeroIds,
+    notifications,
+    combatHexKeys,
+    defenseVolleyFx,
+    rangedShotFx,
+  };
+}
+
+/**
+ * Warships / capital ships on water bombard enemy land at range {@link COASTAL_BOMBARD_RANGE}.
+ * Separate from ship-vs-ship combat: scatter on aim, 7-hex splash, low per-target accuracy; damages walls.
+ */
+export function coastalBombardmentTick(
+  units: Unit[],
+  heroes: Hero[],
+  wallSections: WallSection[],
+  cycle: number,
+  cities: City[],
+  tiles: Map<string, Tile>,
+  nowMs: number,
+  scrollAttachments?: ScrollAttachment[],
+  commanders: Commander[] = [],
+): CombatTickResult {
+  const killed: string[] = [];
+  const killedHeroIds: string[] = [];
+  const notifications: GameNotification[] = [];
+  const combatHexKeys: string[] = [];
+  const defenseVolleyFx: DefenseVolleyFx[] = [];
+  const rangedShotFx: RangedShotFx[] = [];
+  const now = nowMs;
+
+  const bombardShips = units
+    .filter(
+      u =>
+        u.hp > 0 &&
+        !u.aboardShipId &&
+        isBombardShipType(u.type) &&
+        tileIsWater(tiles, u.q, u.r) &&
+        u.stance === 'aggressive',
+    )
+    .sort((a, b) => a.id.localeCompare(b.id));
+
+  for (const ship of bombardShips) {
+    let targetQ: number | null = null;
+    let targetR: number | null = null;
+
+    let bestWall: WallSection | null = null;
+    let bestWallD = Infinity;
+    for (const w of wallSections) {
+      if (w.ownerId === ship.ownerId) continue;
+      if ((w.hp ?? 0) <= 0) continue;
+      if (tileIsWater(tiles, w.q, w.r)) continue;
+      const d = hexDistance(ship.q, ship.r, w.q, w.r);
+      if (d > COASTAL_BOMBARD_RANGE) continue;
+      const better =
+        d < bestWallD ||
+        (d === bestWallD &&
+          (!bestWall || w.q < bestWall.q || (w.q === bestWall.q && w.r < bestWall.r)));
+      if (better) {
+        bestWallD = d;
+        bestWall = w;
+      }
+    }
+    if (bestWall) {
+      targetQ = bestWall.q;
+      targetR = bestWall.r;
+    } else {
+      type HexCand = { q: number; r: number; count: number; dist: number };
+      const byHex = new Map<string, HexCand>();
+      for (const u of units) {
+        if (!landTargetableByBombardment(u)) continue;
+        if (u.ownerId === ship.ownerId) continue;
+        if (tileIsWater(tiles, u.q, u.r)) continue;
+        const d = hexDistance(ship.q, ship.r, u.q, u.r);
+        if (d > COASTAL_BOMBARD_RANGE) continue;
+        const k = tileKey(u.q, u.r);
+        const cur = byHex.get(k);
+        if (!cur) byHex.set(k, { q: u.q, r: u.r, count: 1, dist: d });
+        else {
+          cur.count++;
+          cur.dist = Math.min(cur.dist, d);
+        }
+      }
+      const candidates = [...byHex.values()].sort((a, b) => {
+        if (b.count !== a.count) return b.count - a.count;
+        if (a.dist !== b.dist) return a.dist - b.dist;
+        if (a.q !== b.q) return a.q - b.q;
+        return a.r - b.r;
+      });
+      const bestHex = candidates[0];
+      if (bestHex) {
+        targetQ = bestHex.q;
+        targetR = bestHex.r;
+      }
+    }
+
+    if (targetQ === null || targetR === null) continue;
+
+    let centerQ = targetQ;
+    let centerR = targetR;
+    const aimRoll = combatRoll01(cycle, now, ship.id, `${targetQ},${targetR}`, 303);
+    if (aimRoll >= COASTAL_BOMBARD_DIRECT_HIT_CHANCE) {
+      const neighbors = hexNeighbors(targetQ, targetR);
+      const landNeighbors = neighbors.filter(([nq, nr]) => !tileIsWater(tiles, nq, nr));
+      if (landNeighbors.length > 0) {
+        const pick =
+          Math.floor(combatRoll01(cycle, now, ship.id, 'scatter', 304) * landNeighbors.length) %
+          landNeighbors.length;
+        centerQ = landNeighbors[pick][0];
+        centerR = landNeighbors[pick][1];
+      }
+    }
+
+    const splashKeysSet = new Set<string>();
+    const splashPairs: [number, number][] = [[centerQ, centerR], ...hexNeighbors(centerQ, centerR)];
+    for (const [sq, sr] of splashPairs) splashKeysSet.add(tileKey(sq, sr));
+    const splashKeys: string[] = [];
+    splashKeys.push(tileKey(centerQ, centerR));
+    for (const [sq, sr] of hexNeighbors(centerQ, centerR)) {
+      const k = tileKey(sq, sr);
+      if (!splashKeys.includes(k)) splashKeys.push(k);
+    }
+
+    for (const k of splashKeys) {
+      if (!combatHexKeys.includes(k)) combatHexKeys.push(k);
+    }
+
+    for (const w of wallSections) {
+      if (w.ownerId === ship.ownerId) continue;
+      if ((w.hp ?? 0) <= 0) continue;
+      if (!splashKeysSet.has(tileKey(w.q, w.r))) continue;
+      w.hp = Math.max(0, (w.hp ?? 0) - COASTAL_BOMBARD_WALL_DAMAGE);
+    }
+
+    let salt = 400;
+    for (const u of units) {
+      if (!landTargetableByBombardment(u)) continue;
+      if (u.ownerId === ship.ownerId) continue;
+      if (!splashKeysSet.has(tileKey(u.q, u.r))) continue;
+      salt++;
+      let damage = applyTowerDefense(COASTAL_BOMBARD_UNIT_BASE, u.q, u.r, cities);
+      damage = applyDamageResist(damage, u, cities, units, scrollAttachments);
+      if (commanders.length) {
+        const f = commanderDefenseDamageFactorForUnit(u, commanders, cities, units);
+        damage = Math.max(1, Math.floor(damage * f));
+      }
+      damage = scaleLandCombatDamageToUnit(damage);
+      const ro = combatRoll01(cycle, now, ship.id, u.id, salt);
+      damage = applyBombardSplashDamage(damage, hitOutcomeFromBombardSplashRoll(ro));
+      if (damage <= 0) continue;
+      u.hp -= damage;
+      ship.status = 'fighting';
+      if (u.hp <= 0) {
+        killed.push(u.id);
+        const leveled = awardXp(ship, COMBAT_KILL_XP);
+        if (leveled) {
+          notifications.push({
+            id: generateId('n'),
+            turn: cycle,
+            message: `${capitalize(ship.type)} leveled up to ${ship.level}!`,
+            type: 'success',
+          });
         }
       }
     }
+
+    for (const h of heroes) {
+      if (h.ownerId === ship.ownerId || heroHp(h) <= 0) continue;
+      if (!splashKeysSet.has(tileKey(h.q, h.r))) continue;
+      if (tileIsWater(tiles, h.q, h.r)) continue;
+      let dmg = scaleLandCombatDamageToUnit(applyTowerDefense(COASTAL_BOMBARD_UNIT_BASE, h.q, h.r, cities));
+      const ro = combatRoll01(cycle, now, ship.id, h.id, 450);
+      dmg = applyBombardSplashDamage(dmg, hitOutcomeFromBombardSplashRoll(ro));
+      if (dmg <= 0) continue;
+      h.hp = Math.max(0, (h.hp ?? HERO_BASE_HP) - dmg);
+      ship.status = 'fighting';
+      if ((h.hp ?? 0) <= 0) killedHeroIds.push(h.id);
+    }
+
+    defenseVolleyFx.push({
+      kind: 'coastal_bombard',
+      fromQ: ship.q,
+      fromR: ship.r,
+      splashKeys,
+    });
   }
 
   return {
-    killedUnitIds: [...killedExpand],
+    killedUnitIds: expandKilledWithCargoIds(units, killed),
     killedHeroIds,
     notifications,
     combatHexKeys,
@@ -731,6 +1046,14 @@ export function combatTick(
 
 function heroHp(hero: Hero | undefined): number {
   return hero?.hp ?? HERO_BASE_HP;
+}
+
+/** Formation screening: melee front-line (range ≤ 1, attack > 0) absorbs hits before ranged back-line is exposed. */
+function pickScreenedTarget(enemies: Unit[]): Unit | undefined {
+  return (
+    enemies.find(d => d.hp > 0 && getUnitStats(d).range <= 1 && getUnitStats(d).attack > 0) ??
+    enemies.find(d => d.hp > 0)
+  );
 }
 
 function resolveMeleeRound(
@@ -745,7 +1068,7 @@ function resolveMeleeRound(
 ) {
   for (const atk of side1) {
     if (atk.hp <= 0 || atk.retreatAt) continue;
-    const unitTarget = side2.find(d => d.hp > 0);
+    const unitTarget = pickScreenedTarget(side2);
     const heroTargetAlive = hero2 && heroHp(hero2) > 0;
     if (!unitTarget && !heroTargetAlive) break;
     const atkMult = combatScrollMult(allUnits, atk, scrollAttachments);
@@ -776,7 +1099,7 @@ function resolveMeleeRound(
   }
   for (const atk of side2) {
     if (atk.hp <= 0 || atk.retreatAt) continue;
-    const unitTarget = side1.find(d => d.hp > 0);
+    const unitTarget = pickScreenedTarget(side1);
     const heroTargetAlive = hero1 && heroHp(hero1) > 0;
     if (!unitTarget && !heroTargetAlive) break;
     const atkMult2 = combatScrollMult(allUnits, atk, scrollAttachments);
@@ -806,7 +1129,7 @@ function resolveMeleeRound(
     }
   }
   if (hero1 && heroHp(hero1) > 0) {
-    const target = side2.find(d => d.hp > 0);
+    const target = pickScreenedTarget(side2);
     if (target) {
       let dmg = applyTowerDefense(HERO_ATTACK, target.q, target.r, cities);
       const afterResist = applyDamageResist(dmg, target, cities, allUnits, scrollAttachments);
@@ -820,7 +1143,7 @@ function resolveMeleeRound(
     }
   }
   if (hero2 && heroHp(hero2) > 0) {
-    const target = side1.find(d => d.hp > 0);
+    const target = pickScreenedTarget(side1);
     if (target) {
       let dmg = applyTowerDefense(HERO_ATTACK, target.q, target.r, cities);
       const afterResist = applyDamageResist(dmg, target, cities, allUnits, scrollAttachments);

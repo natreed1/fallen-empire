@@ -21,7 +21,7 @@ const HUMAN_ID = 'player_human';
 const AI_ID = 'player_ai';
 const AI_ID_2 = 'player_ai_2';
 
-type PayoutGameMode = 'human_vs_ai' | 'human_solo' | 'bot_vs_bot' | 'bot_vs_bot_4';
+type PayoutGameMode = 'human_vs_ai' | 'human_solo' | 'bot_vs_bot' | 'bot_vs_bot_4' | 'spectate';
 
 function walkableLandTile(t: Tile | undefined, config: MapConfig, q: number, r: number): boolean {
   if (!t) return false;
@@ -94,6 +94,10 @@ function contestedRivalPair(gameMode: PayoutGameMode, players: Player[]): [strin
   }
   if (gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4') {
     if (has(AI_ID) && has(AI_ID_2)) return [AI_ID, AI_ID_2];
+  }
+  if (gameMode === 'spectate') {
+    const ais = players.filter(p => !p.isHuman);
+    if (ais.length >= 2) return [ais[0]!.id, ais[1]!.id];
   }
   return null;
 }

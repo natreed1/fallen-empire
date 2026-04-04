@@ -93,6 +93,20 @@ function isBuildableLand(t: Tile | undefined): boolean {
   return !!t && t.biome !== 'water' && t.biome !== 'mountain';
 }
 
+/** Human/AI capitals and scored start — not on scroll regions. Villages are cleared when a capital is placed. */
+export function isCapitalStartHex(t: Tile | undefined): boolean {
+  if (!isBuildableLand(t)) return false;
+  if (t!.specialTerrainKind) return false;
+  return true;
+}
+
+/** Remove village marker from a hex when placing a capital (city replaces the settlement). */
+export function clearVillageForCapitalTile(tiles: Map<string, Tile>, q: number, r: number): void {
+  const k = tileKey(q, r);
+  const t = tiles.get(k);
+  if (t?.hasVillage) tiles.set(k, { ...t, hasVillage: false });
+}
+
 /** Land hexes within `radius` steps of (q,r) that are buildable (for territory estimate). */
 function landHexesInRadius(
   tiles: Map<string, Tile>,
@@ -214,7 +228,7 @@ export function findBestStartHex(
 
   tiles.forEach((tile) => {
     const { q, r } = tile;
-    if (!isBuildableLand(tile)) return;
+    if (!isCapitalStartHex(tile)) return;
 
     let score = 0;
 

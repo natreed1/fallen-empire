@@ -2,10 +2,12 @@ import {
   City,
   Commander,
   CommanderAssignment,
+  CommanderKind,
   CommanderTraitId,
   COMMANDER_TRAIT_INFO,
   Unit,
   generateId,
+  isNavalUnitType,
 } from '@/types/game';
 
 export function sumCommanderTraitBonuses(traitIds: CommanderTraitId[]): {
@@ -32,8 +34,12 @@ export function commanderAppliesToUnit(
 ): boolean {
   if (commander.ownerId !== unit.ownerId || !commander.assignment) return false;
 
+  const kind = commander.commanderKind ?? 'land';
+  if (kind === 'naval' && unit.aboardShipId) return false;
+
   const a = commander.assignment;
   if (a.kind === 'city_defense') {
+    if (kind === 'naval') return false;
     const city = cities.find(c => c.id === a.cityId);
     return !!(
       city &&
@@ -44,14 +50,21 @@ export function commanderAppliesToUnit(
   }
 
   const anchor = units.find(u => u.id === a.anchorUnitId);
-  return !!(
-    anchor &&
-    anchor.hp > 0 &&
-    !anchor.aboardShipId &&
-    anchor.ownerId === unit.ownerId &&
-    anchor.q === unit.q &&
-    anchor.r === unit.r
-  );
+  if (
+    !anchor ||
+    anchor.hp <= 0 ||
+    anchor.aboardShipId ||
+    anchor.ownerId !== unit.ownerId ||
+    anchor.q !== unit.q ||
+    anchor.r !== unit.r
+  ) {
+    return false;
+  }
+
+  if (kind === 'naval') {
+    return isNavalUnitType(unit.type) && !unit.aboardShipId;
+  }
+  return !isNavalUnitType(unit.type) && unit.type !== 'builder' && !unit.aboardShipId;
 }
 
 export function commanderAttackMultiplierForUnit(
@@ -171,7 +184,13 @@ const TRAIT_POOL: CommanderTraitId[] = [
 
 export function createCommanderRecord(
   ownerId: string,
-  identity: { name: string; backstory: string; traitIds: CommanderTraitId[]; portraitSeed: number },
+  identity: {
+    name: string;
+    backstory: string;
+    traitIds: CommanderTraitId[];
+    portraitSeed: number;
+    commanderKind?: CommanderKind;
+  },
   portraitDataUrl: string | undefined,
   q: number,
   r: number,
@@ -188,6 +207,7 @@ export function createCommanderRecord(
     q,
     r,
     assignment,
+    commanderKind: identity.commanderKind ?? 'land',
   };
 }
 
@@ -196,6 +216,7 @@ export function rollCommanderIdentity(seed: number): {
   backstory: string;
   traitIds: CommanderTraitId[];
   portraitSeed: number;
+  commanderKind: CommanderKind;
 } {
   const rnd = mulberry32(seed);
   const first = FIRST[Math.floor(rnd() * FIRST.length)];
@@ -212,6 +233,7 @@ export function rollCommanderIdentity(seed: number): {
   }
   const traitIds = [...picks];
   const portraitSeed = (Math.floor(rnd() * 1e9) ^ seed) >>> 0;
+  const commanderKind: CommanderKind = rnd() < 0.25 ? 'naval' : 'land';
 
-  return { name, backstory, traitIds, portraitSeed };
+  return { name, backstory, traitIds, portraitSeed, commanderKind };
 }

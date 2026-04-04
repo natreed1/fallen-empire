@@ -18,3 +18,91 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
+
+/* ─── Medieval menu frame ─── */
+
+.medieval-frame {
+  position: relative;
+  background: linear-gradient(
+    145deg,
+    #f5d67b 0%,
+    #c9a84c 15%,
+    #8b6914 35%,
+    #a0842a 50%,
+    #c9a84c 65%,
+    #f5d67b 85%,
+    #c9a84c 100%
+  );
+  padding: 5px;
+  border-radius: 4px;
+  box-shadow:
+    0 0 0 1px #3d2e08,
+    0 0 0 3px rgba(201, 168, 76, 0.35),
+    0 4px 40px rgba(0, 0, 0, 0.6),
+    0 0 80px rgba(201, 168, 76, 0.1);
+}
+
+.medieval-frame-inner {
+  background:
+    radial-gradient(ellipse at 50% 0%, rgba(201, 168, 76, 0.08) 0%, transparent 50%),
+    linear-gradient(180deg, #1e1e38 0%, #141428 100%);
+  border-radius: 2px;
+  border: 1px solid rgba(201, 168, 76, 0.15);
+  position: relative;
+}
+
+.medieval-frame-inner::after {
+  content: '';
+  position: absolute;
+  inset: 6px;
+  border: 1px solid rgba(201, 168, 76, 0.08);
+  border-radius: 1px;
+  pointer-events: none;
+}
+
+.medieval-title {
+  background: linear-gradient(180deg, #f5d67b 0%, #d4af37 35%, #c9a84c 60%, #8b6914 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.medieval-divider {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.medieval-divider::before,
+.medieval-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(201, 168, 76, 0.4), transparent);
+}
+
+@keyframes gold-shimmer {
+  0%, 100% { filter: drop-shadow(0 0 8px rgba(201, 168, 76, 0.25)); }
+  50% { filter: drop-shadow(0 0 18px rgba(201, 168, 76, 0.5)); }
+}
+
+.medieval-shimmer {
+  animation: gold-shimmer 3s ease-in-out infinite;
+}
+
+.medieval-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+
+.medieval-scroll::-webkit-scrollbar-track {
+  background: rgba(20, 20, 40, 0.5);
+}
+
+.medieval-scroll::-webkit-scrollbar-thumb {
+  background: rgba(201, 168, 76, 0.3);
+  border-radius: 3px;
+}
+
+.medieval-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(201, 168, 76, 0.5);
+}

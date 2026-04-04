@@ -18,8 +18,8 @@ except ImportError:
 
 OUT_DIR = os.path.join(os.path.dirname(__file__), "..", "public", "sprites", "overlays", "biomes")
 SIZE = 128
-FEATURE_SIZE = 48
 VARIANTS = 4
+# Resource deposit overlays: full hex (SIZE×SIZE) so art sits flush on terrain like embedded ore.
 
 
 def _rim_xz_cylinder(radius: float) -> list[tuple[float, float]]:
@@ -93,53 +93,136 @@ def _smoothstep(edge0: float, edge1: float, x: float) -> float:
     return t * t * (3.0 - 2.0 * t)
 
 
+def _water_palette() -> list[tuple[int, int, int]]:
+    """Discrete blues — banded depth, no smooth gradient."""
+    return [
+        (34, 72, 102),
+        (40, 84, 114),
+        (46, 94, 124),
+        (52, 104, 134),
+        (58, 114, 144),
+    ]
+
+
+def _bayer2(x: int, y: int) -> int:
+    """2×2 ordered dither for pixel-art bands."""
+    m = ((0, 2), (3, 1))
+    return m[y & 1][x & 1]
+
+
 def draw_water(im: Image.Image, draw: ImageDraw.ImageDraw, mask, rng: random.Random) -> None:
-    base = (42, 88, 118)
+    """
+    Open water: banded/dithered base + directional wave streaks (crests), not starfield speckles.
+    """
+    seed_base = rng.randint(1, 60000)
+    pal = _water_palette()
+    ph1 = rng.random() * 6.28
+    ph2 = rng.random() * 6.28
+    kx1 = 0.11 + rng.random() * 0.05
+    ky1 = 0.018 + rng.random() * 0.028
+    kx2 = 0.07 + rng.random() * 0.04
+    ky2 = 0.05 + rng.random() * 0.04
+
     for y in range(SIZE):
         for x in range(SIZE):
             if not mask(x, y):
                 continue
-            n = noise2(x, y, rng.randint(0, 9999))
-            wave = 0.5 + 0.5 * math.sin((x + y) * (0.1 + rng.random() * 0.04) + n * 3)
-            r = int(base[0] + wave * 28 + n * 18)
-            g = int(base[1] + wave * 22 + n * 12)
-            b = int(base[2] + wave * 20 + n * 14)
-            im.putpixel((x, y), (min(255, r), min(255, g), min(255, b), 255))
-    for _ in range(160 + rng.randint(0, 120)):
-        x = rng.randint(0, SIZE - 1)
-        y = rng.randint(0, SIZE - 1)
-        if not mask(x, y):
+            w1 = math.sin(x * kx1 + y * ky1 + ph1)
+            w2 = 0.55 * math.sin(x * kx2 + y * ky2 + ph2)
+            coarse = noise2(x // 3, y // 3, seed_base)
+            # Quantize to bands + tiny dither (readable pixel art)
+            t = 0.5 + 0.45 * w1 + 0.25 * w2 + (coarse - 0.5) * 0.12
+            t = max(0.0, min(1.0, t))
+            bi = int(t * (len(pal) - 1) + (_bayer2(x, y) - 1.5) * 0.08)
+            bi = max(0, min(len(pal) - 1, bi))
+            r, g, b = pal[bi]
+            im.putpixel((x, y), (r, g, b, 255))
+
+    # Crest streaks: short horizontal / gentle-diagonal segments (2–4 px), clustered on wave fronts
+    crest_hi = ((88, 148, 178), (108, 172, 202), (128, 188, 218))
+    crest_mid = ((62, 118, 148), (72, 132, 162))
+
+    for _ in range(220 + rng.randint(0, 100)):
+        cx = rng.randint(1, SIZE - 4)
+        cy = rng.randint(1, SIZE - 2)
+        if not mask(cx, cy):
             continue
-        if noise2(x, y, rng.randint(0, 255)) > 0.68:
-            for dx, dy in ((0, 0), (1, 0), (0, 1), (-1, 0)):
-                if mask(x + dx, y + dy):
-                    im.putpixel((x + dx, y + dy), (165, 210, 228, 255))
+        w1 = math.sin(cx * kx1 + cy * ky1 + ph1)
+        if w1 < 0.25:
+            continue
+        ln = 2 + rng.randint(0, 2)
+        ang = rng.random() * 0.12 - 0.06
+        col = rng.choice(crest_hi if w1 > 0.65 else crest_mid)
+        for i in range(ln):
+            xx = cx + i
+            yy = cy + int(i * ang + 0.5)
+            if 0 <= xx < SIZE and 0 <= yy < SIZE and mask(xx, yy):
+                im.putpixel((xx, yy), (*col, 255))
+
+    # Secondary ripples (shorter, more horizontal)
+    for _ in range(140 + rng.randint(0, 60)):
+        cx = rng.randint(0, SIZE - 3)
+        cy = rng.randint(0, SIZE - 1)
+        if not mask(cx, cy):
+            continue
+        w2 = math.sin(cx * kx2 + cy * ky2 + ph2)
+        if w2 < 0.4:
+            continue
+        ln = 2 + rng.randint(0, 1)
+        col = rng.choice(crest_mid)
+        for i in range(ln):
+            xx = cx + i
+            if 0 <= xx < SIZE and mask(xx, cy) and rng.random() > 0.15:
+                im.putpixel((xx, cy), (*col, 255))
 
 
 def draw_water_coast(im: Image.Image, draw: ImageDraw.ImageDraw, mask, rng: random.Random) -> None:
-    """Shallow water: lighter, foam, sand bleed from bottom of hex."""
+    """Shallow water: stepped depth bands toward sand + foam streaks (no white starfield)."""
+    seed_c = rng.randint(1, 50000)
+    ph = rng.random() * 6.28
+    kx = 0.12 + rng.random() * 0.05
+    ky = 0.025 + rng.random() * 0.03
+
     for y in range(SIZE):
         for x in range(SIZE):
             if not mask(x, y):
                 continue
-            depth = (y / SIZE) ** 0.7
-            sand = max(0, (depth - 0.35) * 2.2)
-            r = int(55 + sand * 85 + noise2(x, y, 1) * 20)
-            g = int(120 + sand * 40 + noise2(x, y, 2) * 25)
-            b = int(155 + sand * 25 + noise2(x, y, 3) * 20)
-            im.putpixel((x, y), (min(255, r), min(255, g), min(255, b), 255))
-    for _ in range(280 + rng.randint(0, 100)):
-        x = rng.randint(0, SIZE - 1)
-        y = rng.randint(0, SIZE - 1)
-        if not mask(x, y):
+            depth = (y / max(SIZE - 1, 1)) ** 0.75
+            sand = max(0.0, (depth - 0.32) * 2.0)
+            # Stepped bands instead of smooth linear gradient
+            band = int(sand * 6 + noise2(x // 2, y // 2, seed_c) * 0.8) % 7
+            br = 52 + band * 10 + (noise2(x, y, 7) > 0.72)
+            bg = 108 + band * 8 + (noise2(x, y, 8) > 0.72)
+            bb = 138 + band * 6
+            # Pull toward tan in lower rows (quantized)
+            if sand > 0.15:
+                t = min(1.0, (sand - 0.15) * 1.4)
+                br = int(br * (1 - t * 0.35) + 195 * t * 0.35)
+                bg = int(bg * (1 - t * 0.28) + 175 * t * 0.28)
+                bb = int(bb * (1 - t * 0.22) + 120 * t * 0.22)
+            im.putpixel((x, y), (_clamp255(br), _clamp255(bg), _clamp255(bb), 255))
+
+    foam = ((200, 230, 245), (175, 215, 235), (155, 200, 225))
+    for _ in range(200 + rng.randint(0, 80)):
+        cx = rng.randint(1, SIZE - 4)
+        cy = rng.randint(SIZE // 3, SIZE - 2)
+        if not mask(cx, cy):
             continue
-        if noise2(x, y, 4) > 0.45:
-            im.putpixel((x, y), (235, 248, 252, 255))
-    for _ in range(40):
+        w = math.sin(cx * kx + cy * ky + ph)
+        if w < 0.2:
+            continue
+        ln = 2 + rng.randint(0, 2)
+        col = rng.choice(foam)
+        for i in range(ln):
+            xx = cx + i
+            if 0 <= xx < SIZE and mask(xx, cy):
+                im.putpixel((xx, cy), (*col, 255))
+
+    for _ in range(36):
         x = rng.randint(0, SIZE - 2)
         y = rng.randint(SIZE // 2, SIZE - 1)
         if mask(x, y):
-            im.putpixel((x, y), (210, 195, 150, 255))
+            im.putpixel((x, y), (200, 185, 145, 255))
 
 
 def draw_beach(im: Image.Image, draw: ImageDraw.ImageDraw, mask, rng: random.Random) -> None:
@@ -196,136 +279,115 @@ def draw_plains(im: Image.Image, draw: ImageDraw.ImageDraw, mask, rng: random.Ra
 
 
 def draw_forest(im: Image.Image, draw: ImageDraw.ImageDraw, mask, rng: random.Random) -> None:
-    dark = (32, 68, 36)
+    """Forest floor / undergrowth only — actual trees are billboard sprites (entities/tree.png)."""
+    seed_ground = rng.randint(1, 50)
     for y in range(SIZE):
         for x in range(SIZE):
             if not mask(x, y):
                 continue
-            n = noise2(x, y, rng.randint(1, 50))
-            r = int(dark[0] + n * 28)
-            g = int(dark[1] + n * 32)
-            b = int(dark[2] + n * 22)
-            im.putpixel((x, y), (min(255, r), min(255, g), min(255, b), 255))
-    trees = 95 + rng.randint(0, 80)
-    for _ in range(trees):
-        x = rng.randint(8, SIZE - 9)
-        y = rng.randint(8, SIZE - 9)
-        if not mask(x, y):
+            n = noise2(x, y, seed_ground)
+            r = int(42 + n * 24)
+            g = int(78 + n * 30)
+            b = int(36 + n * 18)
+            a = int(110 + n * 45)
+            im.putpixel((x, y), (_clamp255(r), _clamp255(g), _clamp255(b), _clamp255(a)))
+
+    # Undergrowth patches — denser leaf litter clusters
+    for _ in range(200 + rng.randint(0, 100)):
+        cx = rng.randint(6, SIZE - 7)
+        cy = rng.randint(6, SIZE - 7)
+        if not mask(cx, cy):
             continue
-        trunk = (58, 40, 26)
-        top = (22 + rng.randint(0, 28), 72 + rng.randint(0, 45), 28 + rng.randint(0, 22))
-        h = 4 + rng.randint(0, 3)
-        for dy in range(h):
-            w = max(1, 4 - dy // 2)
-            for dx in range(-w, w + 1):
-                px, py = x + dx, y - dy
+        rad = 2 + rng.randint(0, 3)
+        r = 34 + rng.randint(0, 22)
+        g = 65 + rng.randint(0, 35)
+        b = 28 + rng.randint(0, 16)
+        for dy in range(-rad, rad + 1):
+            for dx in range(-rad, rad + 1):
+                if dx * dx + dy * dy > rad * rad:
+                    continue
+                px, py = cx + dx, cy + dy
                 if 0 <= px < SIZE and 0 <= py < SIZE and mask(px, py):
-                    im.putpixel((px, py), (*top, 255))
-        th = 2 + rng.randint(0, 2)
-        for dy in range(th):
-            if mask(x, y + dy):
-                im.putpixel((x, y + dy), (*trunk, 255))
-    for _ in range(35):
+                    im.putpixel((px, py), (_clamp255(r), _clamp255(g), _clamp255(b), 165))
+
+    # Mossy highlights and fallen leaves
+    for _ in range(60 + rng.randint(0, 40)):
         x = rng.randint(4, SIZE - 5)
         y = rng.randint(4, SIZE - 5)
-        if mask(x, y) and rng.random() > 0.65:
-            im.putpixel((x, y), (50, 110, 55, 255))
+        if mask(x, y) and rng.random() > 0.4:
+            im.putpixel((x, y), (48 + rng.randint(0, 18), 90 + rng.randint(0, 30), 38 + rng.randint(0, 14), 185))
+    # Tiny dark root / shadow specks
+    for _ in range(40 + rng.randint(0, 30)):
+        x = rng.randint(3, SIZE - 4)
+        y = rng.randint(3, SIZE - 4)
+        if mask(x, y) and rng.random() > 0.5:
+            im.putpixel((x, y), (28 + rng.randint(0, 10), 42 + rng.randint(0, 15), 22 + rng.randint(0, 8), 150))
 
 
 def draw_mountain(im: Image.Image, draw: ImageDraw.ImageDraw, mask, rng: random.Random) -> None:
-    """
-    Mystical range tile: layered rock, diagonal ridges, strata, violet-shadow hollows,
-    and a soft snow cap toward the hex top (reads as summit on the parchment map).
-    """
-    cx, cy = SIZE / 2, SIZE / 2
+    """Rocky ground / scree only — actual mountain peaks are billboard sprites (entities/mountain.png)."""
+    seed_base = rng.randint(1, 120)
     ridge_angle = rng.random() * math.pi
     ridge_freq = 0.16 + rng.random() * 0.1
     strata_ph = rng.random() * 6.28
-    cross_ridge = rng.random() * math.pi
 
     for y in range(SIZE):
         for x in range(SIZE):
             if not mask(x, y):
                 continue
-            peak_t = 1.0 - (y / max(SIZE - 1, 1))
+            n1 = noise2(x, y, seed_base)
+            n2 = noise2(x // 2, y // 2, seed_base + 80)
+            fbm = n1 * 0.6 + n2 * 0.4
 
-            n1 = noise2(x, y, rng.randint(1, 120))
-            n2 = noise2(x // 2, y // 2, rng.randint(121, 200))
-            n3 = noise2(x // 4, y // 4, rng.randint(201, 280))
-            fbm = n1 * 0.5 + n2 * 0.33 + n3 * 0.17
-
-            dx, dy = x - cx, y - cy
+            dx, dy = x - SIZE / 2, y - SIZE / 2
             rv = (dx * math.cos(ridge_angle) + dy * math.sin(ridge_angle)) * ridge_freq
-            ridge = 0.5 + 0.5 * math.sin(rv + fbm * 6.0)
-            cross = 0.5 + 0.5 * math.sin(
-                (dx * math.cos(cross_ridge) + dy * math.sin(cross_ridge)) * (ridge_freq * 1.4) + n2 * 4.0
-            )
-            strata = 0.5 + 0.5 * math.sin(y * 0.12 + strata_ph + n3 * 4.5)
+            ridge = 0.5 + 0.5 * math.sin(rv + fbm * 5.0)
+            strata = 0.5 + 0.5 * math.sin(y * 0.12 + strata_ph + n2 * 4.0)
 
-            shadow = (1.0 - peak_t) ** 1.12
-            lit = peak_t * 0.38 + ridge * 0.22 + cross * 0.1 + strata * 0.1
+            lit = ridge * 0.22 + strata * 0.15
 
-            br = 72 + fbm * 48 + lit * 32 - shadow * 58
-            bg = 76 + fbm * 42 + lit * 26 - shadow * 50
-            bb = 94 + fbm * 38 + lit * 24 - shadow * 42
+            br = int(68 + fbm * 42 + lit * 28)
+            bg = int(72 + fbm * 36 + lit * 22)
+            bb = int(88 + fbm * 34 + lit * 20)
 
-            if fbm < 0.36 and shadow > 0.22:
-                br += 20
-                bg += 10
-                bb += 32
+            if fbm < 0.36:
+                br += 15
+                bg += 8
+                bb += 24
             if ridge > 0.75:
-                br += 26
-                bg += 22
-                bb += 20
-            if cross > 0.82:
-                br += 12
-                bg += 12
+                br += 18
+                bg += 16
                 bb += 14
 
-            br = max(38, min(230, br))
-            bg = max(40, min(228, bg))
-            bb = max(52, min(245, bb))
+            a = int(115 + fbm * 50 + ridge * 20)
+            im.putpixel((x, y), (_clamp255(br), _clamp255(bg), _clamp255(bb), _clamp255(a)))
 
-            ss = 0.52 + n1 * 0.07
-            sf = 0.76 + n2 * 0.1
-            snow_w = _smoothstep(ss, sf, peak_t)
+    # Gravel / scree clusters
+    for _ in range(160 + rng.randint(0, 80)):
+        cx = rng.randint(6, SIZE - 7)
+        cy = rng.randint(6, SIZE - 7)
+        if not mask(cx, cy):
+            continue
+        rad = 2 + rng.randint(0, 2)
+        shade = 58 + rng.randint(0, 30)
+        for dy in range(-rad, rad + 1):
+            for dx in range(-rad, rad + 1):
+                if dx * dx + dy * dy > rad * rad:
+                    continue
+                px, py = cx + dx, cy + dy
+                if 0 <= px < SIZE and 0 <= py < SIZE and mask(px, py):
+                    im.putpixel((px, py), (_clamp255(shade), _clamp255(shade + 4), _clamp255(shade + 14), 155))
 
-            sr, sg, sb = 236, 240, 252
-            if snow_w > 0.03:
-                r = br * (1 - snow_w) + sr * snow_w
-                g = bg * (1 - snow_w) + sg * snow_w
-                b = bb * (1 - snow_w) + sb * snow_w
-                mid = 0.55 < snow_w < 0.88
-                if mid:
-                    r -= 5.0 * (1.0 - abs(snow_w - 0.72))
-                    g -= 3.0 * (1.0 - abs(snow_w - 0.72))
-                    b += 10.0 * (1.0 - abs(snow_w - 0.72))
-                if snow_w > 0.9 and noise2(x, y, 444) > 0.93:
-                    r, g, b = 255, 255, 255
-                elif snow_w > 0.85 and noise2(x, y, 445) > 0.97:
-                    r, g, b = 248, 250, 255
-            else:
-                r, g, b = br, bg, bb
-
-            im.putpixel((x, y), (_clamp255(r), _clamp255(g), _clamp255(b), 255))
-
-    for _ in range(28 + rng.randint(0, 35)):
+    # Dark crevice lines
+    for _ in range(18 + rng.randint(0, 12)):
         x0 = rng.randint(8, SIZE - 9)
         y0 = rng.randint(8, SIZE - 9)
-        ln = 12 + rng.randint(0, 22)
+        ln = 6 + rng.randint(0, 10)
         for t in range(ln):
             xx = x0 + t + rng.randint(-1, 1)
             yy = y0 + t // 2 + rng.randint(-1, 1)
             if 0 <= xx < SIZE and 0 <= yy < SIZE and mask(xx, yy):
-                im.putpixel((xx, yy), (52, 54, 62, 255))
-    for _ in range(14 + rng.randint(0, 18)):
-        x0 = rng.randint(6, SIZE - 7)
-        y0 = rng.randint(6, SIZE - 7)
-        for t in range(8 + rng.randint(0, 10)):
-            xx = x0 + rng.randint(-1, 1)
-            yy = y0 - t
-            if 0 <= xx < SIZE and 0 <= yy < SIZE and mask(xx, yy):
-                im.putpixel((xx, yy), (88, 92, 108, 255))
+                im.putpixel((xx, yy), (48, 50, 58, 165))
 
 
 def draw_desert(im: Image.Image, draw: ImageDraw.ImageDraw, mask, rng: random.Random) -> None:
@@ -374,83 +436,198 @@ def make_single(name: str, painter: Callable, biome_id: int) -> None:
     print(f"Wrote {path}")
 
 
-def draw_feature_quarry(im: Image.Image, draw: ImageDraw.ImageDraw) -> None:
-    rng = random.Random(11)
-    for y in range(FEATURE_SIZE):
-        for x in range(FEATURE_SIZE):
-            d = math.hypot(x - FEATURE_SIZE // 2, y - FEATURE_SIZE // 2)
-            if d < 20:
-                n = noise2(x, y, 11)
-                c = (110 + int(n * 30), 108 + int(n * 25), 105 + int(n * 20), 255)
-                im.putpixel((x, y), c)
-    for _ in range(35):
-        x = rng.randint(8, FEATURE_SIZE - 9)
-        y = rng.randint(8, FEATURE_SIZE - 9)
-        im.putpixel((x, y), (72, 76, 80, 255))
+def _deposit_alpha(x: int, y: int, cx: float, cy: float, rough: float) -> float:
+    """Irregular inclusion mask (not a sphere): noise-warped falloff, solid center → transparent rim."""
+    dx, dy = x - cx, y - cy
+    d = math.hypot(dx, dy) / (SIZE * 0.36)
+    n = noise2(x // 2, y // 2, 101) * 0.28 + noise2(x, y, 102) * 0.45 + noise2(x // 4, y // 4, 103) * 0.27
+    edge = rough + n * 0.38
+    if d > edge + 0.22:
+        return 0.0
+    # 1 in center, 0 past outer rim
+    return float(max(0.0, min(1.0, 1.0 - _smoothstep(edge - 0.1, edge + 0.16, d))))
 
 
-def draw_feature_mine(im: Image.Image, draw: ImageDraw.ImageDraw) -> None:
-    rng = random.Random(12)
-    cx, cy = FEATURE_SIZE // 2, FEATURE_SIZE // 2
-    for y in range(FEATURE_SIZE):
-        for x in range(FEATURE_SIZE):
-            d = math.hypot(x - cx, y - cy)
-            if d < 18:
-                n = noise2(x, y, 12)
-                c = (52 + int(n * 25), 38 + int(n * 20), 28 + int(n * 15), 255)
-                im.putpixel((x, y), c)
-    for (px, py) in ((16, 14), (22, 20), (18, 24)):
-        im.putpixel((px, py), (195, 205, 215, 255))
+def draw_feature_quarry(im: Image.Image, draw: ImageDraw.ImageDraw, mask, rng: random.Random) -> None:
+    """Exposed bedrock / gravel — large pixel blocks (8px-scale cells), readable cobbles."""
+    cx, cy = SIZE / 2, SIZE / 2
+    # Base tone ~6px tiles; variation ~9px — reads chunky on hex caps
+    C, W = 6, 9
+    for y in range(SIZE):
+        for x in range(SIZE):
+            if not mask(x, y):
+                continue
+            a = _deposit_alpha(x, y, cx, cy, 0.48)
+            if a < 0.04:
+                continue
+            ai = _clamp255(a * 255)
+            bx, by = x // C, y // C
+            wx, wy = x // W, y // W
+            n1 = noise2(bx, by, 11)
+            n2 = noise2(bx // 2 + by // 3, by // 2, 12)
+            base = 84 + n1 * 34 + n2 * 22
+            r = int(base + noise2(wx, wy, 13) * 9)
+            g = int(base - 4 + noise2(wx, wy, 14) * 7)
+            b = int(base - 8 + noise2(wx, wy, 15) * 11)
+            if noise2(wx + 3, wy + 1, 16) > 0.58:
+                r, g, b = int(r * 0.48), int(g * 0.48), int(b * 0.48)
+            elif noise2(bx + 7, by + 2, 17) > 0.55:
+                r = min(255, r + 24)
+                g = min(255, g + 22)
+                b = min(255, b + 15)
+            im.putpixel((x, y), (_clamp255(r), _clamp255(g), _clamp255(b), ai))
+    # Explicit stone lumps (4–7 px) — main readable “rocks”
+    for _ in range(22 + rng.randint(0, 14)):
+        px = rng.randint(14, SIZE - 15)
+        py = rng.randint(14, SIZE - 15)
+        if not mask(px, py):
+            continue
+        rad = 3 + rng.randint(0, 3)
+        shade = 72 + rng.randint(0, 40)
+        for dy in range(-rad, rad + 1):
+            for dx in range(-rad, rad + 1):
+                if dx * dx + dy * dy > rad * rad + rng.randint(0, 2):
+                    continue
+                x, y = px + dx, py + dy
+                if 0 <= x < SIZE and 0 <= y < SIZE and mask(x, y):
+                    a = _deposit_alpha(x, y, cx, cy, 0.48)
+                    if a < 0.08:
+                        continue
+                    ai = _clamp255(a * 255)
+                    ds = rng.randint(-14, 14)
+                    im.putpixel(
+                        (x, y),
+                        (_clamp255(shade + ds), _clamp255(shade - 4 + ds), _clamp255(shade - 14 + ds), ai),
+                    )
 
 
-def draw_feature_gold(im: Image.Image, draw: ImageDraw.ImageDraw) -> None:
-    rng = random.Random(13)
-    for y in range(FEATURE_SIZE):
-        for x in range(FEATURE_SIZE):
-            d = math.hypot(x - FEATURE_SIZE // 2, y - FEATURE_SIZE // 2)
-            if d < 19:
-                n = noise2(x, y, 13)
-                c = (205 + int(n * 40), 155 + int(n * 35), 40 + int(n * 25), 255)
-                im.putpixel((x, y), c)
-    for _ in range(18):
-        x = rng.randint(10, FEATURE_SIZE - 11)
-        y = rng.randint(10, FEATURE_SIZE - 11)
-        im.putpixel((x, y), (255, 250, 210, 255))
+def draw_feature_mine(im: Image.Image, draw: ImageDraw.ImageDraw, mask, rng: random.Random) -> None:
+    """Iron in host rock — ~7px matrix blocks, wide metallic plates, big ore smears."""
+    cx, cy = SIZE / 2, SIZE / 2
+    C = 7
+    for y in range(SIZE):
+        for x in range(SIZE):
+            if not mask(x, y):
+                continue
+            a = _deposit_alpha(x, y, cx, cy, 0.46)
+            if a < 0.04:
+                continue
+            ai = _clamp255(a * 255)
+            bx, by = x // C, y // C
+            stratum = 0.5 + 0.5 * math.sin(y * 0.038 + noise2(bx // 2, by, 21) * 1.8)
+            n = noise2(bx, by, 22)
+            br = int(44 + stratum * 26 + n * 24)
+            bg = int(32 + stratum * 18 + n * 16)
+            bb = int(24 + stratum * 12 + n * 14)
+            # Large metallic plates (lower threshold → bigger bright regions)
+            om = noise2(bx + 3, by + 2, 23)
+            if om > 0.48:
+                br = min(255, br + 92)
+                bg = min(255, bg + 84)
+                bb = min(255, bb + 76)
+            elif noise2(bx, by, 24) > 0.62:
+                br, bg, bb = int(br * 0.52), int(bg * 0.52), int(bb * 0.52)
+            im.putpixel((x, y), (_clamp255(br), _clamp255(bg), _clamp255(bb), ai))
+    # Big iron smears (4×6-ish rects) — primary readable “ore”
+    for _ in range(16 + rng.randint(0, 12)):
+        px = rng.randint(16, SIZE - 17)
+        py = rng.randint(16, SIZE - 17)
+        if not mask(px, py):
+            continue
+        w, h = 3 + rng.randint(0, 4), 2 + rng.randint(0, 3)
+        gleam = 188 + rng.randint(0, 55)
+        gr = gleam - rng.randint(5, 25)
+        bl = gleam - rng.randint(35, 55)
+        for dy in range(-h, h + 1):
+            for dx in range(-w, w + 1):
+                x, y = px + dx, py + dy
+                if 0 <= x < SIZE and 0 <= y < SIZE and mask(x, y):
+                    a = _deposit_alpha(x, y, cx, cy, 0.46)
+                    if a < 0.08:
+                        continue
+                    ai = _clamp255(a * 255)
+                    # Soften rect edge
+                    edge = abs(dx) / max(1, w) + abs(dy) / max(1, h)
+                    if edge > 1.15:
+                        continue
+                    im.putpixel((x, y), (_clamp255(gleam), _clamp255(gr), _clamp255(bl), ai))
 
 
-def draw_feature_wood(im: Image.Image, draw: ImageDraw.ImageDraw) -> None:
-    rng = random.Random(14)
-    for log in range(4):
-        ox = 8 + log * 6 + rng.randint(-1, 1)
-        oy = 18 + (log % 2) * 3
-        for yy in range(8):
-            for xx in range(22):
-                x, y = ox + xx, oy + yy
-                if 0 <= x < FEATURE_SIZE and 0 <= y < FEATURE_SIZE:
-                    c = (92 + log * 6 + rng.randint(0, 8), 58 + yy, 36, 255)
-                    im.putpixel((x, y), c)
+def draw_feature_gold(im: Image.Image, draw: ImageDraw.ImageDraw, mask, rng: random.Random) -> None:
+    """Pale host rock with gold-bearing quartz veins."""
+    cx, cy = SIZE / 2, SIZE / 2
+    for y in range(SIZE):
+        for x in range(SIZE):
+            if not mask(x, y):
+                continue
+            a = _deposit_alpha(x, y, cx, cy, 0.47)
+            if a < 0.04:
+                continue
+            ai = _clamp255(a * 255)
+            vein = abs(math.sin((x * 0.14 + y * 0.09) + noise2(x, y, 31) * 5.0))
+            n = noise2(x, y, 32)
+            br = int(175 + vein * 35 + n * 30)
+            bg = int(148 + vein * 28 + n * 22)
+            bb = int(88 + vein * 20 + n * 18)
+            if vein > 0.72 or noise2(x, y, 33) > 0.86:
+                br = min(255, br + 55)
+                bg = min(255, int(bg + 40))
+                bb = min(255, int(bb + 8))
+            im.putpixel((x, y), (_clamp255(br), _clamp255(bg), _clamp255(bb), ai))
 
 
-def draw_feature_ancient(im: Image.Image, draw: ImageDraw.ImageDraw) -> None:
-    rng = random.Random(15)
-    for y in range(FEATURE_SIZE):
-        for x in range(FEATURE_SIZE):
-            d = math.hypot(x - FEATURE_SIZE // 2, y - FEATURE_SIZE // 2)
-            if d < 21:
-                n = noise2(x, y, 14)
-                c = (88 + int(n * 30), 68 + int(n * 25), 125 + int(n * 40), 255)
-                im.putpixel((x, y), c)
-    for _ in range(45):
-        x = rng.randint(6, FEATURE_SIZE - 7)
-        y = rng.randint(6, FEATURE_SIZE - 7)
-        if rng.random() > 0.55:
-            im.putpixel((x, y), (210, 190, 255, 255))
+def draw_feature_wood(im: Image.Image, draw: ImageDraw.ImageDraw, mask, rng: random.Random) -> None:
+    """Fallen timber half-buried along the ground plane (reads embedded, not stacked)."""
+    cx, cy = SIZE / 2, SIZE / 2
+    for log_i in range(3):
+        ox = int(22 + log_i * 28 + rng.randint(-4, 4))
+        oy = int(38 + log_i * 5 + rng.randint(-3, 3))
+        for yy in range(10):
+            for xx in range(36):
+                x, y = ox + xx - 18, oy + yy - 5
+                if not (0 <= x < SIZE and 0 <= y < SIZE) or not mask(x, y):
+                    continue
+                a = _deposit_alpha(x, y, cx, cy, 0.52) * 0.95
+                if a < 0.05:
+                    continue
+                ai = _clamp255(a * 255)
+                bark = 62 + log_i * 10 + yy + rng.randint(0, 4)
+                gr = 42 + yy // 2
+                bl = 28
+                if noise2(x, y, 41) > 0.9:
+                    bark, gr, bl = bark + 25, gr + 15, bl + 8
+                im.putpixel((x, y), (_clamp255(bark), _clamp255(gr), _clamp255(bl), ai))
+
+
+def draw_feature_ancient(im: Image.Image, draw: ImageDraw.ImageDraw, mask, rng: random.Random) -> None:
+    """Weathered ground with arcane fissures — embedded, not a crystal ball."""
+    cx, cy = SIZE / 2, SIZE / 2
+    for y in range(SIZE):
+        for x in range(SIZE):
+            if not mask(x, y):
+                continue
+            a = _deposit_alpha(x, y, cx, cy, 0.5)
+            if a < 0.04:
+                continue
+            ai = _clamp255(a * 255)
+            n = noise2(x, y, 51)
+            br = int(72 + n * 35)
+            bg = int(58 + n * 28)
+            bb = int(92 + n * 40)
+            fiss = noise2(x // 2, y // 2, 52)
+            if fiss > 0.78:
+                br = min(255, br + 55)
+                bg = min(255, bg + 40)
+                bb = min(255, bb + 70)
+            im.putpixel((x, y), (_clamp255(br), _clamp255(bg), _clamp255(bb), ai))
 
 
 def make_feature(name: str, painter: Callable) -> None:
-    im = Image.new("RGBA", (FEATURE_SIZE, FEATURE_SIZE), (0, 0, 0, 0))
+    rng = random.Random(8000 + sum(ord(c) for c in name) * 17)
+    im = Image.new("RGBA", (SIZE, SIZE), (0, 0, 0, 0))
     draw = ImageDraw.Draw(im)
-    painter(im, draw)
+    mask = make_hex_texture_mask(SIZE, 1.0)
+    painter(im, draw, mask, rng)
     path = os.path.join(OUT_DIR, f"feature_{name}.png")
     im.save(path, "PNG")
     print(f"Wrote {path}")

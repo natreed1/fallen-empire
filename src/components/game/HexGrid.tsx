@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useRef, useEffect, useState } from 'react';
+import { useMemo, useRef, useEffect, useLayoutEffect, useState } from 'react';
 import * as THREE from 'three';
 import { useFrame } from '@react-three/fiber';
 import { Html } from '@react-three/drei';
@@ -11,13 +11,13 @@ import {
   DEFENSE_TOWER_MORTAR_RANGE, DEFENSE_TOWER_ARCHER_RANGE,
   BuildingType,
   WeatherEventType,
-  BIOME_COLORS, BIOME_COLORS_DARK, ROAD_COLOR, RUINS_COLOR,
+  BIOME_COLORS, BIOME_COLORS_DARK, ROAD_COLOR,
   MOUNTAIN_SNOW_COLOR, PLAYER_COLORS,
   HEX_RADIUS, HEX_INNER_RATIO, axialToWorld, tileKey, parseTileKey, hexDistance, hexNeighbors,
   CONTESTED_ZONE_COLOR, GOLD_MINE_DEPOSIT_COLOR, QUARRY_DEPOSIT_COLOR, WOOD_DEPOSIT_COLOR,
   isNavalUnitType, MOVE_ORDER_MAX_IN_TERRITORY_BAND,
   SPECIAL_REGION_OVERLAY_COLORS,
-  type SpecialRegion,
+  type SpecialRegionKind,
 } from '@/types/game';
 import { isGarrisonedAtCity } from '@/lib/garrison';
 import { createTerrainHexTopGeometry, defaultBiomePaintRadius } from '@/lib/hexTopGeometry';
@@ -28,6 +28,10 @@ const PLAYER_HUMAN_ID = 'player_human';
 const HEX_SEGMENTS = 6;
 const UNIT_HEIGHT = 1.0;
 
+/** Billboards & map meshes above special-region tints/decals (see BiomeTextureLayer renderOrder 2–6). */
+const MAP_ENTITY_RENDER_ORDER = 12;
+const SPECIAL_REGION_TINT_RENDER_ORDER = 1;
+
 // ─── Sprite Texture Loader ──────────────────────────────────────────
 // Loads all game sprite textures once with nearest-neighbor filtering for pixel art crispness.
 //
@@ -36,6 +40,8 @@ const UNIT_HEIGHT = 1.0;
 // - Power-of-two dimensions recommended (e.g. 64×64)
 // - Crisp pixel edges; no anti-aliasing on pixel boundaries
 // Texture loader uses premultiplyAlpha: false — PNGs must NOT be premultiplied.
+// Re-run `python3 scripts/cleanup_sprite_backgrounds.py` after exporting new sprites if
+// flat grey / white borders remain (edge flood to alpha).
 
 const SPRITE_PATHS: Record<string, string> = {
   // Units
@@ -75,6 +81,14 @@ const SPRITE_PATHS: Record<string, string> = {
   // Entities
   city:     '/sprites/entities/city.png',
   village:  '/sprites/entities/village.png',
+  tree:     '/sprites/entities/tree.png',
+  mountain:        '/sprites/entities/mountain.png',
+  ruins:           '/sprites/entities/ruins.png',
+  deposit_quarry:  '/sprites/entities/deposit_quarry.png',
+  deposit_mine:    '/sprites/entities/deposit_mine.png',
+  deposit_gold:    '/sprites/entities/deposit_gold.png',
+  deposit_wood:    '/sprites/entities/deposit_wood.png',
+  deposit_ancient: '/sprites/entities/deposit_ancient.png',
   hero:     '/sprites/entities/hero.png',
   // Overlays (pixel art, tileable)
   road:     '/sprites/overlays/road.png',
@@ -95,10 +109,38 @@ const SPRITE_PATHS: Record<string, string> = {
   feature_gold:    '/sprites/overlays/biomes/feature_gold.png',
   feature_wood:    '/sprites/overlays/biomes/feature_wood.png',
   feature_ancient: '/sprites/overlays/biomes/feature_ancient.png',
+  // Ruins: isometric hex-cap art (variants — npm run generate-biomes does not create these)
+  ...(() => {
+    const m: Record<string, string> = {};
+    for (let v = 0; v < 4; v++) {
+      m[`overlay_ruins_${v}`] = `/sprites/overlays/biomes/overlay_ruins_${v}.png`;
+    }
+    return m;
+  })(),
+  // Special scroll regions (npm run generate-special-regions / scripts/generate_special_region_overlays.py)
+  ...(() => {
+    const m: Record<string, string> = {};
+    (
+      [
+        'sr_forest_secrets',
+        'sr_mexca',
+        'sr_hills_lost',
+        'sr_isle_lost_land',
+        'sr_isle_lost_water',
+        'sr_isle_lost_wreck',
+      ] as const
+    ).forEach(prefix => {
+      for (let v = 0; v < 4; v++) {
+        m[`${prefix}_${v}`] = `/sprites/overlays/biomes/${prefix}_${v}.png`;
+      }
+    });
+    return m;
+  })(),
 };
 
 const textureCache = new Map<string, THREE.Texture>();
 const textureLoader = new THREE.TextureLoader();
+const SPRITE_CACHE_BUST = `?v=${Date.now()}`;
 
 function getSpriteTexture(key: string): THREE.Texture {
   if (textureCache.has(key)) return textureCache.get(key)!;
@@ -108,7 +150,7 @@ function getSpriteTexture(key: string): THREE.Texture {
     textureCache.set(key, fallback);
     return fallback;
   }
-  const tex = textureLoader.load(path);
+  const tex = textureLoader.load(path + SPRITE_CACHE_BUST);
   tex.magFilter = THREE.NearestFilter;
   tex.minFilter = THREE.NearestFilter;
   tex.generateMipmaps = false;
@@ -124,6 +166,14 @@ function getSpriteTexture(key: string): THREE.Texture {
   textureCache.set(key, tex);
   return tex;
 }
+
+/** World-space billboards on orthographic camera: no distance shrink; crisp alpha. */
+const MAP_ENTITY_SPRITE_MAT = {
+  transparent: true as const,
+  alphaTest: 0.08,
+  depthWrite: false,
+  sizeAttenuation: false,
+};
 
 function useGameTextures(keys: string[]): Record<string, THREE.Texture> {
   return useMemo(() => {
@@ -267,17 +317,27 @@ function MedievalHexOutlineLayer({ tiles }: { tiles: Tile[] }) {
   return <instancedMesh ref={meshRef} args={[geometry, material, count]} raycast={() => null} renderOrder={5} />;
 }
 
-/** Pixel-art biome hex tops: variant texture key, 60° rotation steps + scale jitter so tiles don’t clone. */
+/** Pixel-art biome hex tops: variant texture key + slight scale jitter. Instance Y rotation is identity —
+ * the hex-cap geometry is already aligned with the terrain prism; rotating 60° per tile misaligned art
+ * (especially forest / isometric paints) vs the grid. */
 function BiomeTextureLayer({
   tiles,
   textureKey,
   opacity = 1,
   renderOrder = 2,
+  surfaceYOffset = 0.021,
+  /** RGBA decals (e.g. resource patches) need blending + a bit more polygon offset. */
+  transparentMap = false,
+  /** Optional discard threshold for masked hex caps (sr_*); keep 0 for soft feature art. */
+  alphaTest = 0,
 }: {
   tiles: Tile[];
   textureKey: string;
   opacity?: number;
   renderOrder?: number;
+  surfaceYOffset?: number;
+  transparentMap?: boolean;
+  alphaTest?: number;
 }) {
   const meshRef = useRef<THREE.InstancedMesh>(null);
   const count = tiles.length;
@@ -287,15 +347,16 @@ function BiomeTextureLayer({
     () =>
       new THREE.MeshBasicMaterial({
         map: tex,
-        transparent: opacity < 1,
+        transparent: transparentMap || opacity < 1,
         opacity,
         depthWrite: false,
         side: THREE.DoubleSide,
         polygonOffset: true,
-        polygonOffsetFactor: -0.5,
-        polygonOffsetUnits: 2,
+        polygonOffsetFactor: transparentMap ? -1 : -0.5,
+        polygonOffsetUnits: transparentMap ? 3 : 2,
+        alphaTest,
       }),
-    [tex, opacity],
+    [tex, opacity, transparentMap, alphaTest],
   );
 
   useEffect(() => {
@@ -304,17 +365,16 @@ function BiomeTextureLayer({
     const dummy = new THREE.Object3D();
     tiles.forEach((tile, i) => {
       const [x, z] = axialToWorld(tile.q, tile.r, HEX_RADIUS);
-      const rotSteps = (tile.q * 7 + tile.r * 13) % 6;
       // Never scale below 1 — sub-1.0 shrinks the cap inside the prism and shows dark sides as “black cracks”.
       const sc = 1.005 + terrainHash01(tile.q + 2, tile.r + 5) * 0.02;
-      dummy.position.set(x, tile.height + 0.021, z);
-      dummy.rotation.set(0, Math.PI / 6 + rotSteps * (Math.PI / 3), 0);
+      dummy.position.set(x, tile.height + surfaceYOffset, z);
+      dummy.rotation.set(0, 0, 0);
       dummy.scale.set(sc, sc, sc);
       dummy.updateMatrix();
       mesh.setMatrixAt(i, dummy.matrix);
     });
     mesh.instanceMatrix.needsUpdate = true;
-  }, [tiles, count]);
+  }, [tiles, count, surfaceYOffset]);
 
   useEffect(() => () => geometry.dispose(), [geometry]);
 
@@ -322,8 +382,198 @@ function BiomeTextureLayer({
   return <instancedMesh ref={meshRef} args={[geometry, material, count]} raycast={() => null} renderOrder={renderOrder} />;
 }
 
+/** Resource deposit billboard sprites — one per deposit tile, floating above terrain. */
+function DepositSpriteLayer({ tiles }: { tiles: Map<string, Tile> }) {
+  const texQuarry = useMemo(() => getSpriteTexture('deposit_quarry'), []);
+  const texMine = useMemo(() => getSpriteTexture('deposit_mine'), []);
+  const texGold = useMemo(() => getSpriteTexture('deposit_gold'), []);
+  const texWood = useMemo(() => getSpriteTexture('deposit_wood'), []);
+  const texAncient = useMemo(() => getSpriteTexture('deposit_ancient'), []);
+
+  const deposits = useMemo(() => {
+    const out: { tile: Tile; tex: THREE.Texture }[] = [];
+    for (const t of tiles.values()) {
+      if (t.hasQuarryDeposit) out.push({ tile: t, tex: texQuarry });
+      if (t.hasMineDeposit) out.push({ tile: t, tex: texMine });
+      if (t.hasGoldMineDeposit) out.push({ tile: t, tex: texGold });
+      if (t.hasWoodDeposit) out.push({ tile: t, tex: texWood });
+      if (t.hasAncientCity) out.push({ tile: t, tex: texAncient });
+    }
+    return out;
+  }, [tiles, texQuarry, texMine, texGold, texWood, texAncient]);
+
+  if (deposits.length === 0) return null;
+  return (
+    <group>
+      {deposits.map((d, i) => {
+        const [x, z] = axialToWorld(d.tile.q, d.tile.r, HEX_RADIUS);
+        return (
+          <sprite key={`dep_${tileKey(d.tile.q, d.tile.r)}_${i}`} position={[x, d.tile.height + 0.4, z]} scale={[1.0, 1.0, 1]} raycast={() => null} renderOrder={MAP_ENTITY_RENDER_ORDER}>
+            <spriteMaterial map={d.tex} {...MAP_ENTITY_SPRITE_MAT} />
+          </sprite>
+        );
+      })}
+    </group>
+  );
+}
+
+/** Ruins — billboard sprites placed on ruin tiles, like villages/trees. */
+function RuinSpriteLayer({ tiles }: { tiles: Tile[] }) {
+  const tex = useMemo(() => getSpriteTexture('ruins'), []);
+
+  if (tiles.length === 0) return null;
+  return (
+    <group>
+      {tiles.map(tile => {
+        const [x, z] = axialToWorld(tile.q, tile.r, HEX_RADIUS);
+        return (
+          <sprite key={`ruin_${tileKey(tile.q, tile.r)}`} position={[x, tile.height + 0.5, z]} scale={[1.2, 1.2, 1]} raycast={() => null} renderOrder={MAP_ENTITY_RENDER_ORDER}>
+            <spriteMaterial map={tex} {...MAP_ENTITY_SPRITE_MAT} />
+          </sprite>
+        );
+      })}
+    </group>
+  );
+}
+
+/** Scroll terrain — hex-cap decals from Tile.specialTerrainKind (sprinkled across biomes). */
+function SpecialRegionTextureDecals({ tiles }: { tiles: Map<string, Tile> }) {
+  const {
+    forestBuckets,
+    mexcaBuckets,
+    hillsBuckets,
+    isleLandBuckets,
+    isleWaterBuckets,
+    isleCoastWreckBuckets,
+  } = useMemo(() => {
+    const forest: Tile[] = [];
+    const mexca: Tile[] = [];
+    const hills: Tile[] = [];
+    const isleLand: Tile[] = [];
+    const isleWater: Tile[] = [];
+    const isleCoast: Tile[] = [];
+
+    for (const t of tiles.values()) {
+      const k = t.specialTerrainKind;
+      if (!k) continue;
+      switch (k) {
+        case 'forest_secrets':
+          forest.push(t);
+          break;
+        case 'mexca':
+          mexca.push(t);
+          break;
+        case 'hills_lost':
+          hills.push(t);
+          break;
+        case 'isle_lost':
+          if (t.biome === 'water') {
+            isleWater.push(t);
+          } else {
+            isleLand.push(t);
+            if (isBeachLandTile(t, tiles)) isleCoast.push(t);
+          }
+          break;
+        default:
+          break;
+      }
+    }
+
+    return {
+      forestBuckets: bucketTilesByVariant(forest),
+      mexcaBuckets: bucketTilesByVariant(mexca),
+      hillsBuckets: bucketTilesByVariant(hills),
+      isleLandBuckets: bucketTilesByVariant(isleLand),
+      isleWaterBuckets: bucketTilesByVariant(isleWater),
+      isleCoastWreckBuckets: bucketTilesByVariant(isleCoast),
+    };
+  }, [tiles]);
+
+  const y = 0.028;
+  const ro = 4;
+  const roWreck = 6;
+
+  return (
+    <>
+      {[0, 1, 2, 3].map(v => (
+        <BiomeTextureLayer
+          key={`sr-fs-${v}`}
+          tiles={forestBuckets[v]}
+          textureKey={`sr_forest_secrets_${v}`}
+          renderOrder={ro}
+          surfaceYOffset={y}
+          opacity={0.94}
+          transparentMap
+          alphaTest={0.04}
+        />
+      ))}
+      {[0, 1, 2, 3].map(v => (
+        <BiomeTextureLayer
+          key={`sr-mx-${v}`}
+          tiles={mexcaBuckets[v]}
+          textureKey={`sr_mexca_${v}`}
+          renderOrder={ro}
+          surfaceYOffset={y}
+          opacity={0.94}
+          transparentMap
+          alphaTest={0.04}
+        />
+      ))}
+      {[0, 1, 2, 3].map(v => (
+        <BiomeTextureLayer
+          key={`sr-hl-${v}`}
+          tiles={hillsBuckets[v]}
+          textureKey={`sr_hills_lost_${v}`}
+          renderOrder={ro}
+          surfaceYOffset={y}
+          opacity={0.94}
+          transparentMap
+          alphaTest={0.04}
+        />
+      ))}
+      {[0, 1, 2, 3].map(v => (
+        <BiomeTextureLayer
+          key={`sr-ill-${v}`}
+          tiles={isleLandBuckets[v]}
+          textureKey={`sr_isle_lost_land_${v}`}
+          renderOrder={ro}
+          surfaceYOffset={y}
+          opacity={0.94}
+          transparentMap
+          alphaTest={0.04}
+        />
+      ))}
+      {[0, 1, 2, 3].map(v => (
+        <BiomeTextureLayer
+          key={`sr-ilw-${v}`}
+          tiles={isleWaterBuckets[v]}
+          textureKey={`sr_isle_lost_water_${v}`}
+          renderOrder={ro}
+          surfaceYOffset={y}
+          opacity={0.94}
+          transparentMap
+          alphaTest={0.04}
+        />
+      ))}
+      {[0, 1, 2, 3].map(v => (
+        <BiomeTextureLayer
+          key={`sr-ilwr-${v}`}
+          tiles={isleCoastWreckBuckets[v]}
+          textureKey={`sr_isle_lost_wreck_${v}`}
+          renderOrder={roWreck}
+          surfaceYOffset={y + 0.004}
+          opacity={0.94}
+          transparentMap
+          alphaTest={0.04}
+        />
+      ))}
+    </>
+  );
+}
+
 function LandBiomeVariantLayers({ tiles, biome }: { tiles: Tile[]; biome: Exclude<Biome, 'water'> }) {
   const buckets = useMemo(() => bucketTilesByVariant(tiles), [tiles]);
+  const useTransparency = biome === 'forest' || biome === 'mountain';
   return (
     <>
       {[0, 1, 2, 3].map(v => (
@@ -331,6 +581,7 @@ function LandBiomeVariantLayers({ tiles, biome }: { tiles: Tile[]; biome: Exclud
           key={`${biome}-v${v}`}
           tiles={buckets[v]}
           textureKey={`biome_${biome}_${v}`}
+          {...(useTransparency && { transparentMap: true, alphaTest: 0.03 })}
         />
       ))}
     </>
@@ -444,23 +695,86 @@ function RoadOverlay({ tiles }: { tiles: Tile[] }) {
   );
 }
 
-// Wall sections — one overlay per player color (intact sections only)
+// Wall sections — tower sprites at each wall hex + 3D connecting segments between adjacent walls
 function WallOverlay({ wallSections, tiles, players }: { wallSections: WallSection[]; tiles: Map<string, Tile>; players: { id: string; color: string }[] }) {
+  const wallTex = useMemo(() => getSpriteTexture('wall'), []);
   const intact = useMemo(() => wallSections.filter(w => (w.hp ?? 1) > 0), [wallSections]);
-  const byPlayer = useMemo(() => {
-    const out: { playerId: string; color: string; tileList: Tile[] }[] = [];
-    for (const p of players) {
-      const list = intact.filter(w => w.ownerId === p.id).map(w => tiles.get(tileKey(w.q, w.r))).filter((t): t is Tile => !!t);
-      if (list.length) out.push({ playerId: p.id, color: p.color, tileList: list });
+
+  const { wallTiles, segments } = useMemo(() => {
+    const wallKeys = new Set(intact.map(w => tileKey(w.q, w.r)));
+    const ownerByKey = new Map(intact.map(w => [tileKey(w.q, w.r), w.ownerId]));
+    const wTiles: { tile: Tile; color: string }[] = [];
+    const segs: { x1: number; z1: number; x2: number; z2: number; y: number; color: string; key: string }[] = [];
+    const seenEdges = new Set<string>();
+
+    const playerColorMap = new Map(players.map(p => [p.id, p.color]));
+
+    for (const w of intact) {
+      const tile = tiles.get(tileKey(w.q, w.r));
+      if (!tile) continue;
+      const color = playerColorMap.get(w.ownerId) ?? '#888888';
+      wTiles.push({ tile, color });
+
+      for (const [nq, nr] of hexNeighbors(w.q, w.r)) {
+        const nk = tileKey(nq, nr);
+        if (!wallKeys.has(nk)) continue;
+        if (ownerByKey.get(nk) !== w.ownerId) continue;
+        const edgeKey = [tileKey(w.q, w.r), nk].sort().join('_');
+        if (seenEdges.has(edgeKey)) continue;
+        seenEdges.add(edgeKey);
+        const nTile = tiles.get(nk);
+        if (!nTile) continue;
+        const [x1, z1] = axialToWorld(w.q, w.r, HEX_RADIUS);
+        const [x2, z2] = axialToWorld(nq, nr, HEX_RADIUS);
+        const avgY = (tile.height + nTile.height) / 2;
+        segs.push({ x1, z1, x2, z2, y: avgY, color, key: edgeKey });
+      }
     }
-    return out;
-  }, [intact, players, tiles]);
+    return { wallTiles: wTiles, segments: segs };
+  }, [intact, tiles, players]);
+
+  const segMeshRef = useRef<THREE.InstancedMesh>(null);
+  const segGeo = useMemo(() => new THREE.BoxGeometry(1, 0.18, 0.12), []);
+  const segMat = useMemo(() => new THREE.MeshLambertMaterial({
+    color: '#a89880',
+    emissive: '#a89880',
+    emissiveIntensity: 0.08,
+  }), []);
+
+  useEffect(() => {
+    if (!segMeshRef.current || segments.length === 0) return;
+    const mesh = segMeshRef.current;
+    const dummy = new THREE.Object3D();
+    segments.forEach((seg, i) => {
+      const mx = (seg.x1 + seg.x2) / 2;
+      const mz = (seg.z1 + seg.z2) / 2;
+      const dx = seg.x2 - seg.x1;
+      const dz = seg.z2 - seg.z1;
+      const len = Math.sqrt(dx * dx + dz * dz);
+      const angle = Math.atan2(dz, dx);
+      dummy.position.set(mx, seg.y + 0.15, mz);
+      dummy.rotation.set(0, -angle, 0);
+      dummy.scale.set(len * 0.85, 1, 1);
+      dummy.updateMatrix();
+      mesh.setMatrixAt(i, dummy.matrix);
+    });
+    mesh.instanceMatrix.needsUpdate = true;
+  }, [segments]);
+
   return (
-    <>
-      {byPlayer.map(({ playerId, color, tileList }) => (
-        <OverlayLayer key={playerId} tiles={tileList} color={color} yOffset={0.06} radiusScale={0.48} height={0.14} />
-      ))}
-    </>
+    <group>
+      {segments.length > 0 && (
+        <instancedMesh ref={segMeshRef} args={[segGeo, segMat, segments.length]} raycast={() => null} renderOrder={MAP_ENTITY_RENDER_ORDER - 1} />
+      )}
+      {wallTiles.map(({ tile }) => {
+        const [x, z] = axialToWorld(tile.q, tile.r, HEX_RADIUS);
+        return (
+          <sprite key={`wall_${tileKey(tile.q, tile.r)}`} position={[x, tile.height + 0.5, z]} scale={[1.0, 1.0, 1]} raycast={() => null} renderOrder={MAP_ENTITY_RENDER_ORDER}>
+            <spriteMaterial map={wallTex} {...MAP_ENTITY_SPRITE_MAT} />
+          </sprite>
+        );
+      })}
+    </group>
   );
 }
 
@@ -492,8 +806,8 @@ function VillageLayer({ tiles }: { tiles: Tile[] }) {
       {tiles.map(tile => {
         const [x, z] = axialToWorld(tile.q, tile.r, HEX_RADIUS);
         return (
-          <sprite key={tileKey(tile.q, tile.r)} position={[x, tile.height + 0.5, z]} scale={[1.2, 1.2, 1]} raycast={() => null}>
-            <spriteMaterial map={tex} transparent alphaTest={0.05} depthWrite={false} />
+          <sprite key={tileKey(tile.q, tile.r)} position={[x, tile.height + 0.5, z]} scale={[1.2, 1.2, 1]} raycast={() => null} renderOrder={MAP_ENTITY_RENDER_ORDER}>
+            <spriteMaterial map={tex} {...MAP_ENTITY_SPRITE_MAT} />
           </sprite>
         );
       })}
@@ -501,65 +815,93 @@ function VillageLayer({ tiles }: { tiles: Tile[] }) {
   );
 }
 
-// ─── Resource deposit markers (pixel icons: quarry, iron, gold, timber, ancient sites) ──
+// ─── Forest Tree Sprites ────────────────────────────────────────────
 
-const DEPOSIT_SPRITE_OFFSETS: [number, number][] = [
-  [0, 0],
-  [0.28, 0],
-  [-0.24, 0.2],
-  [0.2, -0.22],
-  [-0.2, -0.18],
-];
+function ForestTreeLayer({ tiles }: { tiles: Tile[] }) {
+  const tex = useMemo(() => getSpriteTexture('tree'), []);
 
-type DepositFeatureKey = 'feature_quarry' | 'feature_mine' | 'feature_gold' | 'feature_wood' | 'feature_ancient';
-
-function DepositMarkers({ tiles }: { tiles: Map<string, Tile> }) {
-  const textures = useGameTextures([
-    'feature_quarry', 'feature_mine', 'feature_gold', 'feature_wood', 'feature_ancient',
-  ]);
-
-  const markers = useMemo(() => {
-    const out: { id: string; x: number; y: number; z: number; kind: DepositFeatureKey; scale: number }[] = [];
-    for (const tile of tiles.values()) {
-      const [cx, cz] = axialToWorld(tile.q, tile.r, HEX_RADIUS);
-      const h = tile.height;
-      const sc = 0.46 + terrainHash01(tile.q + 3, tile.r + 11) * 0.14;
-      const flags: { kind: DepositFeatureKey; on: boolean }[] = [
-        { kind: 'feature_quarry', on: tile.hasQuarryDeposit },
-        { kind: 'feature_mine', on: tile.hasMineDeposit },
-        { kind: 'feature_gold', on: tile.hasGoldMineDeposit },
-        { kind: 'feature_wood', on: tile.hasWoodDeposit },
-        { kind: 'feature_ancient', on: tile.hasAncientCity },
-      ];
-      let i = 0;
-      for (const { kind, on } of flags) {
-        if (!on) continue;
-        const [ox, oz] = DEPOSIT_SPRITE_OFFSETS[i % DEPOSIT_SPRITE_OFFSETS.length];
-        i += 1;
-        out.push({
-          id: `${tileKey(tile.q, tile.r)}-${kind}`,
-          x: cx + ox,
-          y: h + 0.34,
-          z: cz + oz,
-          kind,
-          scale: sc,
-        });
-      }
-    }
-    return out;
-  }, [tiles]);
-
-  if (markers.length === 0) return null;
+  if (tiles.length === 0) return null;
+  const scatter = HEX_RADIUS * 0.6;
   return (
     <group>
-      {markers.map(m => (
-        <sprite key={m.id} position={[m.x, m.y, m.z]} scale={[m.scale, m.scale, 1]} raycast={() => null}>
-          <spriteMaterial map={textures[m.kind]} transparent alphaTest={0.08} depthWrite={false} />
-        </sprite>
-      ))}
+      {tiles.flatMap(tile => {
+        const [cx, cz] = axialToWorld(tile.q, tile.r, HEX_RADIUS);
+        const baseHash = ((tile.q * 92837111) ^ (tile.r * 689287499)) >>> 0;
+        const treeCount = 3 + (baseHash % 3);
+        const key = tileKey(tile.q, tile.r);
+        const sprites: JSX.Element[] = [];
+        for (let i = 0; i < treeCount; i++) {
+          const h1 = ((baseHash + i * 127_031) * 16807) >>> 0;
+          const h2 = ((baseHash + i * 253_993) * 48271) >>> 0;
+          const h3 = ((baseHash + i * 374_761) * 69621) >>> 0;
+          const angle = ((h1 % 10000) / 10000) * Math.PI * 2;
+          const dist = Math.sqrt((h2 % 10000) / 10000) * scatter;
+          const dx = Math.cos(angle) * dist;
+          const dz = Math.sin(angle) * dist;
+          const scale = 0.9 + ((h3 % 1000) / 1000) * 0.4;
+          const dy = ((h1 % 500) / 1000) * 0.15;
+          sprites.push(
+            <sprite
+              key={`${key}_t${i}`}
+              position={[cx + dx, tile.height + 0.5 + dy, cz + dz]}
+              scale={[scale, scale, 1]}
+              raycast={() => null}
+              renderOrder={MAP_ENTITY_RENDER_ORDER}
+            >
+              <spriteMaterial map={tex} {...MAP_ENTITY_SPRITE_MAT} />
+            </sprite>,
+          );
+        }
+        return sprites;
+      })}
     </group>
   );
 }
+
+// ─── Mountain Peak Sprites ──────────────────────────────────────────
+
+function MountainPeakLayer({ tiles }: { tiles: Tile[] }) {
+  const tex = useMemo(() => getSpriteTexture('mountain'), []);
+
+  if (tiles.length === 0) return null;
+  const scatter = HEX_RADIUS * 0.5;
+  return (
+    <group>
+      {tiles.flatMap(tile => {
+        const [cx, cz] = axialToWorld(tile.q, tile.r, HEX_RADIUS);
+        const baseHash = ((tile.q * 72937111) ^ (tile.r * 589287499)) >>> 0;
+        const peakCount = 2 + (baseHash % 2);
+        const key = tileKey(tile.q, tile.r);
+        const sprites: JSX.Element[] = [];
+        for (let i = 0; i < peakCount; i++) {
+          const h1 = ((baseHash + i * 137_031) * 16807) >>> 0;
+          const h2 = ((baseHash + i * 263_993) * 48271) >>> 0;
+          const h3 = ((baseHash + i * 384_761) * 69621) >>> 0;
+          const angle = ((h1 % 10000) / 10000) * Math.PI * 2;
+          const dist = Math.sqrt((h2 % 10000) / 10000) * scatter;
+          const dx = Math.cos(angle) * dist;
+          const dz = Math.sin(angle) * dist;
+          const scale = 1.0 + ((h3 % 1000) / 1000) * 0.5;
+          const dy = ((h1 % 400) / 1000) * 0.12;
+          sprites.push(
+            <sprite
+              key={`${key}_m${i}`}
+              position={[cx + dx, tile.height + 0.55 + dy, cz + dz]}
+              scale={[scale, scale, 1]}
+              raycast={() => null}
+              renderOrder={MAP_ENTITY_RENDER_ORDER}
+            >
+              <spriteMaterial map={tex} {...MAP_ENTITY_SPRITE_MAT} />
+            </sprite>,
+          );
+        }
+        return sprites;
+      })}
+    </group>
+  );
+}
+
+// ─── Resource deposits: see DepositHexDecals (flush hex-cap decals, not floating sprites) ──
 
 // ─── Contested zone (between rivals) ───────────────────────────────
 
@@ -596,33 +938,36 @@ function ContestedZoneOverlay({ zoneKeys, tiles }: { zoneKeys: string[]; tiles: 
   }, [validTiles]);
 
   if (validTiles.length === 0) return null;
-  return <instancedMesh ref={meshRef} args={[geometry, material, validTiles.length]} />;
+  return (
+    <instancedMesh ref={meshRef} args={[geometry, material, validTiles.length]} renderOrder={5} raycast={() => null} />
+  );
 }
 
-/** Large scroll-discovery regions (subtle tint). */
-function SpecialRegionOverlay({ regions, tiles }: { regions: SpecialRegion[]; tiles: Map<string, Tile> }) {
-  const tilesByRegion = useMemo(() => {
-    const m = new Map<string, Tile[]>();
+/** Subtle tint per scroll terrain flavor (matches sprinkled tiles). */
+function SpecialRegionOverlay({ tiles }: { tiles: Map<string, Tile> }) {
+  const tilesByKind = useMemo(() => {
+    const m = new Map<SpecialRegionKind, Tile[]>();
     for (const t of tiles.values()) {
-      if (!t.specialRegionId) continue;
-      const arr = m.get(t.specialRegionId) ?? [];
+      const k = t.specialTerrainKind;
+      if (!k) continue;
+      const arr = m.get(k) ?? [];
       arr.push(t);
-      m.set(t.specialRegionId, arr);
+      m.set(k, arr);
     }
     return m;
   }, [tiles]);
 
-  if (regions.length === 0) return null;
+  const kinds: SpecialRegionKind[] = ['mexca', 'hills_lost', 'forest_secrets', 'isle_lost'];
   return (
     <group>
-      {regions.map(reg => {
-        const list = tilesByRegion.get(reg.id);
+      {kinds.map(kind => {
+        const list = tilesByKind.get(kind);
         if (!list?.length) return null;
         return (
           <SpecialRegionHexTint
-            key={reg.id}
+            key={kind}
             tiles={list}
-            color={SPECIAL_REGION_OVERLAY_COLORS[reg.kind]}
+            color={SPECIAL_REGION_OVERLAY_COLORS[kind]}
           />
         );
       })}
@@ -632,13 +977,14 @@ function SpecialRegionOverlay({ regions, tiles }: { regions: SpecialRegion[]; ti
 
 function SpecialRegionHexTint({ tiles: regionTiles, color }: { tiles: Tile[]; color: string }) {
   const meshRef = useRef<THREE.InstancedMesh>(null);
-  const geometry = useMemo(() => makeHexGeo(HEX_RADIUS * 0.99, 0.05), []);
+  /** Match biome paint decals (`defaultBiomePaintRadius`) so tint aligns with sr_* PNG caps. */
+  const geometry = useMemo(() => makeHexGeo(defaultBiomePaintRadius(), 0.05), []);
   const material = useMemo(
     () =>
       new THREE.MeshBasicMaterial({
         color,
         transparent: true,
-        opacity: 0.2,
+        opacity: 0.12,
         depthWrite: false,
       }),
     [color],
@@ -648,9 +994,10 @@ function SpecialRegionHexTint({ tiles: regionTiles, color }: { tiles: Tile[]; co
     if (!meshRef.current || regionTiles.length === 0) return;
     const mesh = meshRef.current;
     const dummy = new THREE.Object3D();
+    const yOff = 0.028;
     regionTiles.forEach((tile, i) => {
       const [x, z] = axialToWorld(tile.q, tile.r, HEX_RADIUS);
-      dummy.position.set(x, tile.height + 0.025, z);
+      dummy.position.set(x, tile.height + yOff, z);
       dummy.scale.set(1, 1, 1);
       dummy.updateMatrix();
       mesh.setMatrixAt(i, dummy.matrix);
@@ -658,13 +1005,22 @@ function SpecialRegionHexTint({ tiles: regionTiles, color }: { tiles: Tile[]; co
     mesh.instanceMatrix.needsUpdate = true;
   }, [regionTiles]);
 
-  return <instancedMesh ref={meshRef} args={[geometry, material, regionTiles.length]} />;
+  return (
+    <instancedMesh
+      ref={meshRef}
+      args={[geometry, material, regionTiles.length]}
+      renderOrder={SPECIAL_REGION_TINT_RENDER_ORDER}
+      raycast={() => null}
+    />
+  );
 }
 
 // ─── Territory Overlay ─────────────────────────────────────────────
 
-function TerritoryOverlay({ playerColor, tileKeys, tiles }: {
+function TerritoryOverlay({ playerColor, tileKeys, tiles, isHuman }: {
   playerColor: string; tileKeys: string[]; tiles: Map<string, Tile>;
+  /** Stronger tint + draw order so your land reads clearly vs AI. */
+  isHuman?: boolean;
 }) {
   const meshRef = useRef<THREE.InstancedMesh>(null);
   const validTiles = useMemo(() => {
@@ -672,10 +1028,16 @@ function TerritoryOverlay({ playerColor, tileKeys, tiles }: {
   }, [tileKeys, tiles]);
 
   const geometry = useMemo(() => makeHexGeo(HEX_RADIUS * 0.98, 0.04), []);
+  const fillOpacity = isHuman ? 0.4 : 0.18;
   const material = useMemo(() => new THREE.MeshBasicMaterial({
-    color: playerColor, transparent: true, opacity: 0.22,
+    color: playerColor,
+    transparent: true,
+    opacity: fillOpacity,
     depthWrite: false,
-  }), [playerColor]);
+    polygonOffset: true,
+    polygonOffsetFactor: -1,
+    polygonOffsetUnits: -1,
+  }), [playerColor, fillOpacity]);
 
   useEffect(() => {
     if (!meshRef.current || validTiles.length === 0) return;
@@ -683,16 +1045,101 @@ function TerritoryOverlay({ playerColor, tileKeys, tiles }: {
     const dummy = new THREE.Object3D();
     validTiles.forEach((tile, i) => {
       const [x, z] = axialToWorld(tile.q, tile.r, HEX_RADIUS);
-      dummy.position.set(x, tile.height + 0.02, z);
+      dummy.position.set(x, tile.height + (isHuman ? 0.024 : 0.02), z);
       dummy.scale.set(1, 1, 1);
       dummy.updateMatrix();
       mesh.setMatrixAt(i, dummy.matrix);
     });
     mesh.instanceMatrix.needsUpdate = true;
-  }, [validTiles]);
+  }, [validTiles, isHuman]);
 
   if (validTiles.length === 0) return null;
-  return <instancedMesh ref={meshRef} args={[geometry, material, validTiles.length]} />;
+  return (
+    <instancedMesh
+      ref={meshRef}
+      args={[geometry, material, validTiles.length]}
+      renderOrder={isHuman ? 5 : 3}
+      raycast={() => null}
+    />
+  );
+}
+
+/** Territory border only: dashed segments on edges adjacent to non-owned hexes. */
+function TerritoryDashedBorder({ playerColor, tileKeys, tiles, isHuman }: {
+  playerColor: string;
+  tileKeys: string[];
+  tiles: Map<string, Tile>;
+  isHuman?: boolean;
+}) {
+  const lineRef = useRef<THREE.LineSegments>(null);
+
+  const geometry = useMemo(() => {
+    const territorySet = new Set(tileKeys);
+    const positions: number[] = [];
+    const circum = HEX_RADIUS * 0.98;
+    const halfEdge = circum * 0.5;
+
+    for (const key of tileKeys) {
+      const tile = tiles.get(key);
+      if (!tile) continue;
+      const { q, r: rr } = tile;
+      const neighbors = hexNeighbors(q, rr);
+      for (let i = 0; i < 6; i++) {
+        const [nq, nr] = neighbors[i]!;
+        const nk = tileKey(nq, nr);
+        if (territorySet.has(nk)) continue;
+
+        const [cx, cz] = axialToWorld(q, rr, HEX_RADIUS);
+        const [nx, nz] = axialToWorld(nq, nr, HEX_RADIUS);
+        const dx = nx - cx;
+        const dz = nz - cz;
+        const len = Math.hypot(dx, dz) || 1;
+        const px = -dz / len;
+        const pz = dx / len;
+        const mx = (cx + nx) * 0.5;
+        const mz = (cz + nz) * 0.5;
+        const nTile = tiles.get(nk);
+        const y = Math.max(tile.height, nTile?.height ?? 0) + (isHuman ? 0.045 : 0.035);
+
+        positions.push(mx + px * halfEdge, y, mz + pz * halfEdge, mx - px * halfEdge, y, mz - pz * halfEdge);
+      }
+    }
+
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    return geo;
+  }, [tileKeys, tiles, isHuman]);
+
+  useEffect(() => () => geometry.dispose(), [geometry]);
+
+  useLayoutEffect(() => {
+    lineRef.current?.computeLineDistances();
+  }, [geometry]);
+
+  if (tileKeys.length === 0) return null;
+
+  const dashSize = isHuman ? 0.26 : 0.16;
+  const gapSize = isHuman ? 0.07 : 0.11;
+  const lineOpacity = isHuman ? 1 : 0.72;
+
+  return (
+    <lineSegments
+      ref={lineRef}
+      geometry={geometry}
+      renderOrder={isHuman ? 6 : 4}
+      frustumCulled={false}
+      raycast={() => null}
+    >
+      <lineDashedMaterial
+        color={playerColor}
+        transparent
+        opacity={lineOpacity}
+        dashSize={dashSize}
+        gapSize={gapSize}
+        depthWrite={false}
+      />
+    </lineSegments>
+  );
 }
 
 // ─── City Sprites ───────────────────────────────────────────────────
@@ -709,11 +1156,11 @@ function CityMarkers({ cities, tiles }: { cities: City[]; tiles: Map<string, Til
         const [x, z] = axialToWorld(city.q, city.r, HEX_RADIUS);
         const isHuman = city.ownerId.includes('human');
         return (
-          <sprite key={city.id} position={[x, h + 0.65, z]} scale={[1.6, 1.6, 1]} raycast={() => null}>
+          <sprite key={city.id} position={[x, h + 0.65, z]} scale={[1.6, 1.6, 1]} raycast={() => null} renderOrder={MAP_ENTITY_RENDER_ORDER}>
             <spriteMaterial
-              map={tex} transparent alphaTest={0.05}
+              map={tex}
+              {...MAP_ENTITY_SPRITE_MAT}
               color={isHuman ? '#ffffff' : '#ff9999'}
-              depthWrite={false}
             />
           </sprite>
         );
@@ -788,8 +1235,8 @@ function BuildingMarkers({ cities, tiles }: { cities: City[]; tiles: Map<string,
         const tex = textures[b.type];
         const [sx, sy] = BUILDING_SPRITE_SCALE[b.type] ?? [1.0, 1.0];
         return (
-          <sprite key={b.key} position={[b.x, b.y, b.z]} scale={[sx, sy, 1]} raycast={() => null}>
-            <spriteMaterial map={tex} transparent alphaTest={0.05} depthWrite={false} />
+          <sprite key={b.key} position={[b.x, b.y, b.z]} scale={[sx, sy, 1]} raycast={() => null} renderOrder={MAP_ENTITY_RENDER_ORDER}>
+            <spriteMaterial map={tex} {...MAP_ENTITY_SPRITE_MAT} />
           </sprite>
         );
       })}
@@ -1046,7 +1493,7 @@ function MortarVolleyLines({
   matLine,
   matSplash,
 }: {
-  fx: Extract<DefenseVolleyFx, { kind: 'mortar' }>;
+  fx: Extract<DefenseVolleyFx, { kind: 'mortar' | 'coastal_bombard' }>;
   tiles: Map<string, Tile>;
   matLine: THREE.LineBasicMaterial;
   matSplash: THREE.MeshBasicMaterial;
@@ -1161,6 +1608,14 @@ function CombatShotEffects({ tiles }: { tiles: Map<string, Tile> }) {
     () => new THREE.MeshBasicMaterial({ color: '#ff6611', transparent: true, depthWrite: false }),
     [],
   );
+  const matCoastalLine = useMemo(
+    () => new THREE.LineBasicMaterial({ color: '#6ec8e8', transparent: true, depthWrite: false }),
+    [],
+  );
+  const matCoastalSplash = useMemo(
+    () => new THREE.MeshBasicMaterial({ color: '#4a9ec4', transparent: true, depthWrite: false }),
+    [],
+  );
 
   useEffect(() => {
     return () => {
@@ -1168,8 +1623,10 @@ function CombatShotEffects({ tiles }: { tiles: Map<string, Tile> }) {
       matArrow.dispose();
       matBolt.dispose();
       matSplash.dispose();
+      matCoastalLine.dispose();
+      matCoastalSplash.dispose();
     };
-  }, [matMortar, matArrow, matBolt, matSplash]);
+  }, [matMortar, matArrow, matBolt, matSplash, matCoastalLine, matCoastalSplash]);
 
   useFrame(() => {
     const age = lastAt ? Date.now() - lastAt : 99999;
@@ -1178,6 +1635,8 @@ function CombatShotEffects({ tiles }: { tiles: Map<string, Tile> }) {
     matArrow.opacity = op * 0.88;
     matBolt.opacity = op * 0.88;
     matSplash.opacity = op * 0.42;
+    matCoastalLine.opacity = op * 0.9;
+    matCoastalSplash.opacity = op * 0.38;
   });
 
   if (defenseFx.length === 0 && rangedFx.length === 0) return null;
@@ -1188,6 +1647,17 @@ function CombatShotEffects({ tiles }: { tiles: Map<string, Tile> }) {
         if (fx.kind === 'mortar') {
           return (
             <MortarVolleyLines key={`mv-${i}`} fx={fx} tiles={tiles} matLine={matMortar} matSplash={matSplash} />
+          );
+        }
+        if (fx.kind === 'coastal_bombard') {
+          return (
+            <MortarVolleyLines
+              key={`cb-${i}`}
+              fx={fx}
+              tiles={tiles}
+              matLine={matCoastalLine}
+              matSplash={matCoastalSplash}
+            />
           );
         }
         const mat = fx.kind === 'ballista' ? matBolt : matArrow;
@@ -1251,9 +1721,76 @@ function BowUnitSprite({
   });
 
   return (
-    <sprite ref={ref} position={[x, y, z]} scale={[sx, sy, 1]} raycast={() => null}>
-      <spriteMaterial map={tex} transparent alphaTest={0.05} color={tint} depthWrite={false} />
+    <sprite ref={ref} position={[x, y, z]} scale={[sx, sy, 1]} raycast={() => null} renderOrder={MAP_ENTITY_RENDER_ORDER}>
+      <spriteMaterial map={tex} {...MAP_ENTITY_SPRITE_MAT} color={tint} />
     </sprite>
+  );
+}
+
+/** Naval units: gentle water bob when idle; stronger roll + sway + bob when marching. */
+function ShipUnitSprite({
+  id,
+  q,
+  r,
+  x,
+  y,
+  z,
+  tint,
+  sx,
+  sy,
+  tex,
+  moving,
+}: {
+  id: string;
+  q: number;
+  r: number;
+  x: number;
+  y: number;
+  z: number;
+  tint: string;
+  sx: number;
+  sy: number;
+  tex: THREE.Texture;
+  moving: boolean;
+}) {
+  const groupRef = useRef<THREE.Group>(null);
+  const spriteRef = useRef<THREE.Sprite>(null);
+  const selectHex = useGameStore(s => s.selectHex);
+  const phase = useMemo(() => {
+    let h = 0;
+    for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) | 0;
+    return (h & 0xffff) * 0.001;
+  }, [id]);
+
+  useFrame(({ clock }) => {
+    if (!groupRef.current || !spriteRef.current) return;
+    const t = clock.getElapsedTime();
+    const mv = moving;
+    const freq = mv ? 5.1 : 1.55;
+    const rollAmp = mv ? 0.13 : 0.038;
+    const bobAmp = mv ? 0.062 : 0.024;
+    const swayAmp = mv ? 0.045 : 0.014;
+    const roll = Math.sin(t * freq + phase) * rollAmp;
+    const bob = Math.sin(t * freq * 1.67 + phase * 1.2) * bobAmp;
+    const sway = Math.sin(t * freq * 0.88 + phase * 0.7) * swayAmp;
+    spriteRef.current.rotation.z = roll;
+    groupRef.current.position.set(x + sway, y + bob, z);
+  });
+
+  return (
+    <group ref={groupRef} position={[x, y, z]} renderOrder={MAP_ENTITY_RENDER_ORDER}>
+      <sprite
+        ref={spriteRef}
+        scale={[sx, sy, 1]}
+        renderOrder={MAP_ENTITY_RENDER_ORDER}
+        onClick={e => {
+          e.stopPropagation();
+          selectHex(q, r);
+        }}
+      >
+        <spriteMaterial map={tex} {...MAP_ENTITY_SPRITE_MAT} color={tint} />
+      </sprite>
+    </group>
   );
 }
 
@@ -1299,11 +1836,15 @@ function UnitMarkers({ units, tiles, cities }: { units: Unit[]; tiles: Map<strin
       else if (!u.ownerId.includes('human')) tintColor = '#ff7777';
 
       return {
-        id: u.id, type: u.type,
+        id: u.id,
+        type: u.type,
+        q: u.q,
+        r: u.r,
         x: x + offset * 0.3,
         y: h + 0.55,
         z: z - offset * 0.2,
         tint: tintColor,
+        moving: u.status === 'moving',
       };
     });
   }, [units, tiles, cities]);
@@ -1331,9 +1872,27 @@ function UnitMarkers({ units, tiles, cities }: { units: Unit[]; tiles: Map<strin
             />
           );
         }
+        if (isNavalUnitType(u.type)) {
+          return (
+            <ShipUnitSprite
+              key={u.id}
+              id={u.id}
+              q={u.q}
+              r={u.r}
+              x={u.x}
+              y={u.y}
+              z={u.z}
+              tint={u.tint}
+              sx={sx}
+              sy={sy}
+              tex={tex}
+              moving={u.moving}
+            />
+          );
+        }
         return (
-          <sprite key={u.id} position={[u.x, u.y, u.z]} scale={[sx, sy, 1]} raycast={() => null}>
-            <spriteMaterial map={tex} transparent alphaTest={0.05} color={u.tint} depthWrite={false} />
+          <sprite key={u.id} position={[u.x, u.y, u.z]} scale={[sx, sy, 1]} raycast={() => null} renderOrder={MAP_ENTITY_RENDER_ORDER}>
+            <spriteMaterial map={tex} {...MAP_ENTITY_SPRITE_MAT} color={u.tint} />
           </sprite>
         );
       })}
@@ -1421,8 +1980,8 @@ function HeroMarkers({ heroes, tiles }: { heroes: Hero[]; tiles: Map<string, Til
         const ht = tile?.height ?? 0.3;
         const [x, z] = axialToWorld(h.q, h.r, HEX_RADIUS);
         return (
-          <sprite key={h.id} position={[x, ht + 0.75, z]} scale={[1.2, 1.2, 1]} raycast={() => null}>
-            <spriteMaterial map={tex} transparent alphaTest={0.05} depthWrite={false} />
+          <sprite key={h.id} position={[x, ht + 0.75, z]} scale={[1.2, 1.2, 1]} raycast={() => null} renderOrder={MAP_ENTITY_RENDER_ORDER}>
+            <spriteMaterial map={tex} {...MAP_ENTITY_SPRITE_MAT} />
           </sprite>
         );
       })}
@@ -1496,7 +2055,9 @@ function ScoutTowerMarkers({ scoutTowers: towers, tiles, players }: { scoutTower
   }, [towers, tiles]);
 
   if (towers.length === 0) return null;
-  return <instancedMesh ref={meshRef} args={[geo, material, towers.length]} />;
+  return (
+    <instancedMesh ref={meshRef} args={[geo, material, towers.length]} renderOrder={MAP_ENTITY_RENDER_ORDER} />
+  );
 }
 
 const DEFENSE_SPRITE_KEY: Record<DefenseTowerType, string> = {
@@ -1550,14 +2111,8 @@ function CityDefenseMarkers({
         const [sx, sy] = DEFENSE_SPRITE_SCALE[d.type];
         const lm = 0.92 + d.level * 0.025;
         return (
-          <sprite key={d.id} position={[d.x, d.y, d.z]} scale={[sx * lm, sy * lm, 1]} raycast={() => null}>
-            <spriteMaterial
-              map={tex}
-              transparent
-              alphaTest={0.05}
-              depthWrite={false}
-              color={d.playerColor}
-            />
+          <sprite key={d.id} position={[d.x, d.y, d.z]} scale={[sx * lm, sy * lm, 1]} raycast={() => null} renderOrder={MAP_ENTITY_RENDER_ORDER}>
+            <spriteMaterial map={tex} {...MAP_ENTITY_SPRITE_MAT} color={d.playerColor} />
           </sprite>
         );
       })}
@@ -1597,7 +2152,55 @@ function ConstructionMarkers({ sites, tiles }: { sites: ConstructionSite[]; tile
   }, [sites, tiles]);
 
   if (sites.length === 0) return null;
-  return <instancedMesh ref={meshRef} args={[geometry, material, sites.length]} />;
+  return (
+    <instancedMesh ref={meshRef} args={[geometry, material, sites.length]} renderOrder={MAP_ENTITY_RENDER_ORDER} />
+  );
+}
+
+// ─── Builder at Construction Sites ──────────────────────────────────
+
+function BuilderAtSiteMarkers({ sites, roadSites, tiles }: {
+  sites: ConstructionSite[];
+  roadSites: RoadConstructionSite[];
+  tiles: Map<string, Tile>;
+}) {
+  const tex = useMemo(() => getSpriteTexture('builder'), []);
+  const allHexes = useMemo(() => {
+    const seen = new Set<string>();
+    const out: { q: number; r: number }[] = [];
+    for (const s of sites) {
+      const k = tileKey(s.q, s.r);
+      if (!seen.has(k)) { seen.add(k); out.push(s); }
+    }
+    for (const r of roadSites) {
+      const k = tileKey(r.q, r.r);
+      if (!seen.has(k)) { seen.add(k); out.push(r); }
+    }
+    return out;
+  }, [sites, roadSites]);
+
+  if (allHexes.length === 0) return null;
+  return (
+    <group>
+      {allHexes.map(site => {
+        const tile = tiles.get(tileKey(site.q, site.r));
+        if (!tile) return null;
+        const [x, z] = axialToWorld(site.q, site.r, HEX_RADIUS);
+        const ox = HEX_RADIUS * 0.35;
+        return (
+          <sprite
+            key={`bldr_${tileKey(site.q, site.r)}`}
+            position={[x + ox, tile.height + 0.45, z]}
+            scale={[0.8, 0.8, 1]}
+            raycast={() => null}
+            renderOrder={MAP_ENTITY_RENDER_ORDER}
+          >
+            <spriteMaterial map={tex} {...MAP_ENTITY_SPRITE_MAT} />
+          </sprite>
+        );
+      })}
+    </group>
+  );
 }
 
 // ─── Move Range Highlight ───────────────────────────────────────────
@@ -1935,7 +2538,7 @@ function BattleIcons({ units, tiles }: { units: Unit[]; tiles: Map<string, Tile>
   if (battleHexes.length === 0) return null;
 
   return (
-    <group ref={groupRef}>
+    <group ref={groupRef} renderOrder={MAP_ENTITY_RENDER_ORDER}>
       {battleHexes.map(({ q, r }) => {
         const tile = tiles.get(tileKey(q, r));
         const h = tile?.height ?? 0.3;
@@ -2163,9 +2766,9 @@ export default function HexGrid() {
   const assigningTacticalForSelectedStacks = useGameStore(s => s.assigningTacticalForSelectedStacks);
   const pendingTacticalOrders = useGameStore(s => s.pendingTacticalOrders);
   const contestedZoneHexKeys = useGameStore(s => s.contestedZoneHexKeys);
-  const specialRegions = useGameStore(s => s.specialRegions);
+  const territoryDisplayStyle = useGameStore(s => s.territoryDisplayStyle);
 
-  const visionActive = phase === 'playing' || phase === 'commander_setup';
+  const visionActive = phase === 'playing';
 
   const supplyClustersWithHealth = useMemo(() => {
     if (supplyViewTab !== 'supply') return [];
@@ -2213,6 +2816,17 @@ export default function HexGrid() {
     });
     return byPlayer;
   }, [territory]);
+
+  /** Draw AI first so human fill + dashed border win at shared edges. */
+  const playersTerritoryRenderOrder = useMemo(() => {
+    const list = [...players];
+    list.sort((a, b) => {
+      if (a.id === PLAYER_HUMAN_ID) return 1;
+      if (b.id === PLAYER_HUMAN_ID) return -1;
+      return 0;
+    });
+    return list;
+  }, [players]);
 
   // Two-tier vision: everything is always visible (terrain, cities, buildings, territory).
   // Only ENEMY UNITS and HEROES are hidden unless within active vision range.
@@ -2347,21 +2961,38 @@ export default function HexGrid() {
       <RoadOverlay tiles={biomeGroups.roadTiles} />
       <RoadConstructionOverlay sites={roadConstructions} tiles={tiles} />
       <WallOverlay wallSections={wallSections} tiles={tiles} players={players} />
-      <OverlayLayer tiles={biomeGroups.ruinTiles} color={RUINS_COLOR} yOffset={0.1} radiusScale={0.28} height={0.18} />
-      <VillageLayer tiles={biomeGroups.villageTiles} />
+      <RuinSpriteLayer tiles={biomeGroups.ruinTiles} />
 
-      {/* Resource deposit indicators */}
-      <DepositMarkers tiles={tiles} />
+      {/* Resource deposits — billboard sprites above terrain */}
+      <DepositSpriteLayer tiles={tiles} />
+      {phase === 'playing' && (
+        <>
+          {/* Tint below PNG decals (renderOrder); sprites/units use MAP_ENTITY_RENDER_ORDER above both */}
+          <SpecialRegionOverlay tiles={tiles} />
+          <SpecialRegionTextureDecals tiles={tiles} />
+        </>
+      )}
 
-      {/* Territory overlays (always visible) */}
-      {players.map(p => (
+      {/* Territory overlays (always visible); human drawn last for clearer borders */}
+      {playersTerritoryRenderOrder.map(p => (
         territoryByPlayer[p.id] && (
-          <TerritoryOverlay
-            key={p.id}
-            playerColor={p.color}
-            tileKeys={territoryByPlayer[p.id]}
-            tiles={tiles}
-          />
+          territoryDisplayStyle === 'fill' ? (
+            <TerritoryOverlay
+              key={p.id}
+              playerColor={p.color}
+              tileKeys={territoryByPlayer[p.id]}
+              tiles={tiles}
+              isHuman={p.id === PLAYER_HUMAN_ID}
+            />
+          ) : (
+            <TerritoryDashedBorder
+              key={p.id}
+              playerColor={p.color}
+              tileKeys={territoryByPlayer[p.id]}
+              tiles={tiles}
+              isHuman={p.id === PLAYER_HUMAN_ID}
+            />
+          )
         )
       ))}
 
@@ -2369,14 +3000,15 @@ export default function HexGrid() {
         <ContestedZoneOverlay zoneKeys={contestedZoneHexKeys} tiles={tiles} />
       )}
 
-      {specialRegions.length > 0 && phase === 'playing' && (
-        <SpecialRegionOverlay regions={specialRegions} tiles={tiles} />
-      )}
+      <VillageLayer tiles={biomeGroups.villageTiles} />
+      <ForestTreeLayer tiles={biomeGroups.groups.forest} />
+      <MountainPeakLayer tiles={biomeGroups.groups.mountain} />
 
       {/* Game entities — cities/buildings always visible, units/heroes vision-filtered */}
       <CityMarkers cities={cities} tiles={tiles} />
       <BuildingMarkers cities={cities} tiles={tiles} />
       <ConstructionMarkers sites={constructions} tiles={tiles} />
+      <BuilderAtSiteMarkers sites={constructions} roadSites={roadConstructions} tiles={tiles} />
       <ScoutTowerMarkers scoutTowers={scoutTowers} tiles={tiles} players={players} />
       <CityDefenseMarkers installations={defenseInstallations} tiles={tiles} players={players} />
       <CombatShotEffects tiles={tiles} />

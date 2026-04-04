@@ -6,7 +6,7 @@ import { Canvas, ThreeEvent, useThree } from '@react-three/fiber';
 import { OrthographicCamera } from '@react-three/drei';
 import * as THREE from 'three';
 import HexGrid from './HexGrid';
-import MapController from './MapController';
+import MapController, { MAP_CAMERA_OFFSET } from './MapController';
 import GameHUD from '../ui/GameHUD';
 import { useGameStore } from '@/store/useGameStore';
 import { setAiParams } from '@/lib/aiParams';
@@ -119,7 +119,7 @@ function useCameraTarget(): [number, number, number] {
 
   return useMemo(() => {
     // Bot-vs-bot (2 or 4): center camera on capitals so all are visible
-    if ((gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4') && cities.length >= 2) {
+    if ((gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4' || gameMode === 'spectate') && cities.length >= 2) {
       let sumX = 0, sumZ = 0;
       for (const c of cities) {
         const [x, z] = axialToWorld(c.q, c.r, HEX_RADIUS);
@@ -159,7 +159,7 @@ function CameraZoomController() {
 
   useEffect(() => {
     const cam = camera as THREE.OrthographicCamera;
-    if (phase === 'playing' && (gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4') && !botZoomSet.current) {
+    if (phase === 'playing' && (gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4' || gameMode === 'spectate') && !botZoomSet.current) {
       botZoomSet.current = true;
       cam.zoom = gameMode === 'bot_vs_bot_4' ? 10 : 14;
       cam.updateProjectionMatrix();
@@ -168,7 +168,7 @@ function CameraZoomController() {
 
     if (
       prevPhaseRef.current === 'place_city' &&
-      (phase === 'commander_setup' || phase === 'playing') &&
+      phase === 'playing' &&
       (gameMode === 'human_vs_ai' || gameMode === 'human_solo')
     ) {
       const targetZoom = 35;
@@ -216,7 +216,7 @@ export default function GameScene() {
   const phase = useGameStore(s => s.phase);
   const gameMode = useGameStore(s => s.gameMode);
   const liveTarget = useCameraTarget();
-  const isBotWatch = gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4';
+  const isBotWatch = gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4' || gameMode === 'spectate';
   const [mapTarget, setMapTarget] = useState(liveTarget);
   const [aiParamsLoadAttempted, setAiParamsLoadAttempted] = useState(false);
 
@@ -237,11 +237,10 @@ export default function GameScene() {
   const watchFour = watchParam === '4';
   const sandboxMode = searchParams.get('sandbox') != null && !watchMode;
 
-  // Generate map: 38×38 for ?watch (2 bot) or ?sandbox; skip for ?watch=4 (4-bot generates its own 52×52)
+  // Generate map only for dev URLs — main menu generates when you start a match (?watch / ?sandbox use 38×38)
   useEffect(() => {
-    if (!isGenerated && !watchFour) {
-      const smallMap = watchMode || sandboxMode;
-      generateWorld(smallMap ? { width: TRAIN_MAP_SIZE, height: TRAIN_MAP_SIZE } : undefined);
+    if (!isGenerated && !watchFour && (watchMode || sandboxMode)) {
+      generateWorld({ width: TRAIN_MAP_SIZE, height: TRAIN_MAP_SIZE });
     }
   }, [isGenerated, generateWorld, watchMode, watchFour, sandboxMode]);
 
@@ -273,7 +272,9 @@ export default function GameScene() {
   }, [sandboxMode, isGenerated, phase]);
 
   const cameraPosition: [number, number, number] = [
-    mapTarget[0] + 60, 80, mapTarget[2] + 60,
+    mapTarget[0] + MAP_CAMERA_OFFSET.x,
+    mapTarget[1] + MAP_CAMERA_OFFSET.y,
+    mapTarget[2] + MAP_CAMERA_OFFSET.z,
   ];
 
   return (
