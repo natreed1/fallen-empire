@@ -245,37 +245,93 @@ def draw_beach(im: Image.Image, draw: ImageDraw.ImageDraw, mask, rng: random.Ran
             im.putpixel((x, y), (140, 150, 160, 255))
 
 
+def _plains_palette() -> list[tuple[int, int, int]]:
+    """Fertile grass #6f8a3e–#9cb85c + shadow / highlight steps (discrete bands)."""
+    return [
+        (92, 112, 48),
+        (105, 128, 56),
+        (111, 138, 62),
+        (128, 156, 72),
+        (142, 172, 82),
+        (156, 184, 92),
+        (172, 198, 108),
+    ]
+
+
 def draw_plains(im: Image.Image, draw: ImageDraw.ImageDraw, mask, rng: random.Random) -> None:
-    base = (118, 138, 72)
+    """
+    Pixel-art plains: banded/dithered turf + upper-left light + chunky grass tufts + rare wildflowers.
+    """
+    seed_base = rng.randint(1, 60000)
+    seed_coarse = rng.randint(1, 60000)
+    ph1 = rng.random() * 6.28
+    ph2 = rng.random() * 6.28
+    kx1 = 0.09 + rng.random() * 0.06
+    ky1 = 0.055 + rng.random() * 0.045
+    kx2 = 0.13 + rng.random() * 0.05
+    ky2 = 0.075 + rng.random() * 0.05
+    pal = _plains_palette()
+
     for y in range(SIZE):
         for x in range(SIZE):
             if not mask(x, y):
                 continue
-            n = noise2(x, y, rng.randint(1, 99))
-            g = int(base[1] + n * 38 - 12)
-            r = int(base[0] + n * 22)
-            b = int(base[2] + n * 18)
-            im.putpixel((x, y), (min(255, r), min(255, g), min(255, b), 255))
-    tufts = 320 + rng.randint(0, 200)
+            # Light from upper-left: brighter toward small x,y (screen top-left).
+            lx = (1.0 - x / max(SIZE - 1, 1)) * 0.52 + (1.0 - y / max(SIZE - 1, 1)) * 0.52
+            n = noise2(x // 2, y // 2, seed_base)
+            n2 = noise2(x // 4, y // 4, seed_coarse)
+            w1 = math.sin(x * kx1 + y * ky1 + ph1)
+            w2 = 0.42 * math.sin(x * kx2 + y * ky2 + ph2)
+            t = 0.38 + 0.26 * (lx * 0.5) + 0.18 * n + 0.12 * n2 + 0.09 * w1 + 0.07 * w2
+            t = max(0.0, min(1.0, t))
+            bi = int(t * (len(pal) - 1) + (_bayer2(x, y) - 1.5) * 0.11)
+            bi = max(0, min(len(pal) - 1, bi))
+            r, g, b = pal[bi]
+            im.putpixel((x, y), (r, g, b, 255))
+
+    # Chunky grass tufts (2–5 px), darker greens for silhouette
+    tufts = 300 + rng.randint(0, 140)
     for _ in range(tufts):
         x = rng.randint(2, SIZE - 3)
         y = rng.randint(2, SIZE - 3)
         if not mask(x, y):
             continue
-        c = (48 + rng.randint(0, 45), 88 + rng.randint(0, 45), 28 + rng.randint(0, 30))
-        h = rng.randint(2, 4)
+        c = (
+            48 + rng.randint(0, 32),
+            86 + rng.randint(0, 38),
+            30 + rng.randint(0, 22),
+        )
+        h = rng.randint(2, 5)
         for dy in range(h):
             if mask(x, y - dy):
                 im.putpixel((x, y - dy), (*c, 255))
-            if rng.random() > 0.3 and mask(x - 1, y - dy):
+            if rng.random() > 0.32 and mask(x - 1, y - dy):
                 im.putpixel((x - 1, y - dy), (*c, 255))
-    for _ in range(25 + rng.randint(0, 25)):
+        if rng.random() > 0.55 and mask(x + 1, y):
+            im.putpixel((x + 1, y), (_clamp255(c[0] - 6), _clamp255(c[1] - 5), _clamp255(c[2] - 4), 255))
+
+    # Sparse wildflower accents (1–2 px clusters)
+    for _ in range(22 + rng.randint(0, 26)):
         x = rng.randint(4, SIZE - 5)
         y = rng.randint(4, SIZE - 5)
-        if mask(x, y) and rng.random() > 0.4:
-            im.putpixel((x, y), (215, 75, 85, 255))
-            if rng.random() > 0.5:
-                im.putpixel((x + 1, y), (255, 215, 90, 255))
+        if not mask(x, y) or rng.random() > 0.38:
+            continue
+        kind = rng.randint(0, 2)
+        if kind == 0:
+            im.putpixel((x, y), (198, 68, 88, 255))
+            if rng.random() > 0.45 and mask(x + 1, y):
+                im.putpixel((x + 1, y), (248, 218, 88, 255))
+        elif kind == 1:
+            im.putpixel((x, y), (88, 118, 195, 255))
+        else:
+            im.putpixel((x, y), (232, 205, 72, 255))
+
+    # Rare exposed soil / dry patch specks
+    for _ in range(40 + rng.randint(0, 40)):
+        x = rng.randint(3, SIZE - 4)
+        y = rng.randint(3, SIZE - 4)
+        if mask(x, y) and rng.random() > 0.74:
+            im.putpixel((x, y), (112, 95, 58, 255))
 
 
 def draw_forest(im: Image.Image, draw: ImageDraw.ImageDraw, mask, rng: random.Random) -> None:
@@ -390,28 +446,100 @@ def draw_mountain(im: Image.Image, draw: ImageDraw.ImageDraw, mask, rng: random.
                 im.putpixel((xx, yy), (48, 50, 58, 165))
 
 
+def _desert_palette() -> list[tuple[int, int, int]]:
+    """Warm sand #a68442–#d4b06a + shadow / bright crest."""
+    return [
+        (132, 102, 48),
+        (150, 118, 62),
+        (166, 132, 66),
+        (182, 148, 80),
+        (198, 164, 94),
+        (212, 176, 106),
+        (228, 192, 118),
+    ]
+
+
 def draw_desert(im: Image.Image, draw: ImageDraw.ImageDraw, mask, rng: random.Random) -> None:
-    sand = (195, 162, 98)
-    ph = rng.random() * 2.5
+    """
+    Pixel-art desert: quantized wind ripples (rotated per variant) + crest streaks + pebbles / dry grass.
+    """
+    seed_base = rng.randint(1, 60000)
+    ph1 = rng.random() * 6.28
+    ph2 = rng.random() * 6.28
+    ang = rng.random() * math.pi
+    ca, sa = math.cos(ang), math.sin(ang)
+    k = 0.10 + rng.random() * 0.06
+    k2 = 0.085 + rng.random() * 0.045
+    pal = _desert_palette()
+
     for y in range(SIZE):
         for x in range(SIZE):
             if not mask(x, y):
                 continue
-            n = noise2(x, y, rng.randint(1, 60))
-            rip = math.sin(x * 0.07 + y * 0.04 + ph) * 14
-            r = int(sand[0] + n * 22 + rip)
-            g = int(sand[1] + n * 18 + rip * 0.45)
-            b = int(sand[2] + n * 14)
-            im.putpixel((x, y), (min(255, r), min(255, g), min(255, b), 255))
-    for y in range(0, SIZE, 3 + rng.randint(0, 2)):
-        for x in range(SIZE):
-            if mask(x, y) and (x + y + rng.randint(0, 3)) % 6 < 2:
-                im.putpixel((x, y), (150, 118, 72, 255))
-    for _ in range(60 + rng.randint(0, 60)):
+            fx = x * ca - y * sa
+            fy = x * sa + y * ca
+            w1 = math.sin(fx * k + fy * k * 0.38 + ph1)
+            w2 = 0.48 * math.sin(fx * k2 - fy * k2 * 0.48 + ph2)
+            n = noise2(x // 3, y // 3, seed_base)
+            t = 0.45 + 0.24 * w1 + 0.12 * w2 + 0.19 * (n - 0.5)
+            t = max(0.0, min(1.0, t))
+            bi = int(t * (len(pal) - 1) + (_bayer2(x, y) - 1.5) * 0.12)
+            bi = max(0, min(len(pal) - 1, bi))
+            r, g, b = pal[bi]
+            im.putpixel((x, y), (r, g, b, 255))
+
+    crest_hi = ((228, 192, 118), (220, 184, 108))
+    crest_mid = ((188, 152, 88), (175, 138, 78))
+    crest_lo = ((148, 116, 64), (138, 108, 58))
+
+    for _ in range(200 + rng.randint(0, 110)):
+        cx = rng.randint(1, SIZE - 4)
+        cy = rng.randint(1, SIZE - 2)
+        if not mask(cx, cy):
+            continue
+        fx = cx * ca - cy * sa
+        fy = cx * sa + cy * ca
+        w1 = math.sin(fx * k + fy * k * 0.38 + ph1)
+        if w1 < 0.18:
+            continue
+        ln = 2 + rng.randint(0, 2)
+        col = rng.choice(crest_hi if w1 > 0.62 else crest_mid if w1 > 0.35 else crest_lo)
+        ang_j = (rng.random() - 0.5) * 0.14
+        for i in range(ln):
+            xx = cx + i
+            yy = cy + int(i * ang_j + 0.5)
+            if 0 <= xx < SIZE and 0 <= yy < SIZE and mask(xx, yy):
+                im.putpixel((xx, yy), (*col, 255))
+
+    for _ in range(130 + rng.randint(0, 70)):
+        cx = rng.randint(0, SIZE - 3)
+        cy = rng.randint(0, SIZE - 1)
+        if not mask(cx, cy):
+            continue
+        fx = cx * ca - cy * sa
+        fy = cx * sa + cy * ca
+        w2 = math.sin(fx * k2 - fy * k2 * 0.48 + ph2)
+        if w2 < 0.35:
+            continue
+        ln = 2 + rng.randint(0, 1)
+        col = rng.choice(crest_mid)
+        for i in range(ln):
+            xx = cx + i
+            if 0 <= xx < SIZE and mask(xx, cy) and rng.random() > 0.12:
+                im.putpixel((xx, cy), (*col, 255))
+
+    # Pebbles and dry grass specks (structured, not empty noise)
+    for _ in range(70 + rng.randint(0, 55)):
         x = rng.randint(2, SIZE - 3)
         y = rng.randint(2, SIZE - 3)
-        if mask(x, y) and rng.random() > 0.65:
-            im.putpixel((x, y), (125, 100, 58, 255))
+        if not mask(x, y):
+            continue
+        if rng.random() > 0.48:
+            im.putpixel((x, y), (122, 98, 58, 255))
+        else:
+            im.putpixel((x, y), (98, 108, 58, 255))
+        if rng.random() > 0.82 and mask(x + 1, y):
+            im.putpixel((x + 1, y), (108, 92, 52, 255))
 
 
 def make_biome_variant(stem: str, painter: Callable, variant: int, biome_id: int) -> None:

@@ -24,7 +24,7 @@ A single place to capture ideas, things to build, and notes so we can see them a
 
 *Future features, "would be cool", rough concepts. No commitment yet.*
 
-- *(none yet)*
+- **Field command UI polish** — Clearer hierarchy (primary vs secondary actions), consolidate repeated hex/coords into one “context chip,” compact tab + army header row, optional collapsible “advanced” (attach/link/map sub-panels), stronger empty states (commander, nothing to attach), and consistent button tiers (one accent for confirm, muted for cancel/danger).
 
 ---
 
@@ -64,4 +64,4 @@ A single place to capture ideas, things to build, and notes so we can see them a
 - [Simulation economy analysis](./SIMULATION_ECONOMY_ANALYSIS.md) — starvation lock, food-aware recruit gating
 - [Optimization](./OPTIMIZATION.md) — evolutionary model, GPU notes
 
-*Last updated: 2026-04-03*
+*Last updated: 2026-04-05*

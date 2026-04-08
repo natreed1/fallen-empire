@@ -6,12 +6,12 @@ import {
   DefenseInstallation, DefenseTowerType, DefenseTowerLevel,
   DEFENSE_TOWER_MAX_PER_CITY, DEFENSE_TOWER_LEVEL_COSTS, getDefenseTowerBpCost, DEFENSE_TOWER_DISPLAY_NAME,
   WeatherEvent, WallSection, RoadConstructionSite, ROAD_BP_COST,
-  tileKey, generateId, hexDistance, hexNeighbors, getHexRing, hexTouchesBiome,
+  tileKey, parseTileKey, generateId, hexDistance, hexNeighbors, getHexRing, hexTouchesBiome,
   STARTING_GOLD, STARTING_CITY_TEMPLATE, VILLAGE_CITY_TEMPLATE, VILLAGE_INCORPORATE_COST,
   CITY_CENTER_STORAGE, FRONTIER_CYCLES,
   isNavalUnitType, SHIP_RECRUIT_COSTS, getShipMaxCargo,
   PLAYER_COLORS, CITY_NAMES,
-  BUILDING_COSTS, UNIT_COSTS, UNIT_L2_COSTS, UNIT_L3_COSTS, UNIT_BASE_STATS, UNIT_L2_STATS, UNIT_DISPLAY_NAMES, HERO_NAMES,
+  BUILDING_COSTS, UNIT_COSTS, UNIT_L2_COSTS, UNIT_L3_COSTS, UNIT_BASE_STATS, UNIT_L2_STATS, UNIT_DISPLAY_NAMES,
   BUILDING_BP_COST, BUILDING_JOBS, getBuildingJobs, getUnitStats, BP_RATE_BASE,
   TREBUCHET_FIELD_BP_COST, TREBUCHET_FIELD_GOLD_COST, TREBUCHET_REFINED_WOOD_COST,
   DEFENDER_IRON_COST,
@@ -26,8 +26,9 @@ import {
   KINGDOM_DISPLAY_NAMES, pickAiKingdom, pickOpponentKingdoms, pickKingdomsForSpectateBots,
   AI_PLAYER_IDS, aiPlayerColorBySlot,
   CITY_CAPTURE_HOLD_MS,
+  GARRISON_PATROL_RADIUS_MIN, GARRISON_PATROL_RADIUS_MAX,
   WORKERS_PER_LEVEL, BUILDING_IRON_COSTS,
-  RETREAT_DELAY_MS, ASSAULT_ATTACK_DEBUFF, WALL_SECTION_HP, HERO_BASE_HP,
+  RETREAT_DELAY_MS, ASSAULT_ATTACK_DEBUFF, WALL_SECTION_HP, WALL_SECTION_BP_COST,
   AttackCityStyle,
   SpecialRegion,
   ScrollItem,
@@ -37,7 +38,19 @@ import {
   CommanderDraftOption,
   COMMANDER_STARTING_PICK,
   COMMANDER_RECRUIT_GOLD,
-  HERO_POPULATION_UNLOCK,
+  type AbilityId,
+  ABILITY_DEFS,
+  getAbilityForUnit,
+  type MajorEngagementDoctrine,
+  type UnitStack,
+  type OperationalArmy,
+  type ArmyCompositionEntry,
+  ensureCityBuildingHp,
+  isCityBuildingOperational,
+  UNIT_HP_REGEN_FRACTION_PER_CYCLE,
+  PATROL_DEFAULT_RADIUS,
+  RUINS_REPAIR_GOLD_RATIO,
+  defaultCityBuildingMaxHp,
 } from '@/types/game';
 import { renderCommanderPortraitDataUrl } from '@/lib/commanderPortrait';
 import {
@@ -59,40 +72,55 @@ import {
 import { getCityTerritory } from '@/lib/territory';
 import { computeContestedZoneHexKeys, applyContestedZonePayout } from '@/lib/contestedZone';
 import { calculateTerritory, findCityForRefinedWoodSpend, maxMoveOrderDistanceForDestination, isWithinPlayerMoveOrderRange } from '@/lib/territory';
-import { processEconomyTurn, computeClusterIncomeStatement } from '@/lib/gameLoop';
+import { processEconomyTurn, computeEmpireIncomeStatement } from '@/lib/gameLoop';
 import {
   planAiTurn,
   placeAiStartingCity,
   placeAiStartingCityAt,
   placeAiStartingCitiesSequential,
   placeManyAiCapitalsApart,
-  createAiHero,
 } from '@/lib/ai';
 import { getAiParams } from '@/lib/aiParams';
 import {
   movementTick,
   combatTick,
+  type CombatTickMajorEngagementOptions,
   coastalBombardmentTick,
   upkeepTick,
   siegeTick,
+  siegeBuildingsTick,
+  landUnitBuildingDamageTick,
   autoEmbarkLandUnitsOntoScoutShipsAtHex,
   landMilitaryContestsCityCapture,
   enemyIntactWallOnCityHex,
   type DefenseVolleyFx,
   type RangedShotFx,
 } from '@/lib/military';
+import { computeArmyReplenishment, updateArmyRallyFromUnits, mergeCompositionEntry } from '@/lib/armyReplenishment';
 import { computeVisibleHexes } from '@/lib/vision';
-import { computeTradeClusters, getCapitalCluster, computeConnectionPaths, computeConnectionPathsWithClusters } from '@/lib/logistics';
 import { rollForWeatherEvent, tickWeatherEvent, weatherAnnouncement, getWeatherHarvestMultiplier } from '@/lib/weather';
 import { withDeployFlags, applyDeployFlagsForMoveMutable, isLandMilitaryUnit, marchHexDistanceAtOrder } from '@/lib/garrison';
 import {
   getAttackMarchParams,
   selectUnitIdsByTypeCounts,
   releaseAttackWaveHolds,
+  releaseMarchEchelonHolds,
+  unitIdsMatchingTypes,
+  TACTICAL_FILTER_LAND_TYPES,
 } from '@/lib/siege';
 import { tickScrollRegionSearch, returnScrollsForDeadCarriers } from '@/lib/scrolls';
-import { computeConstructionAvailableBp, computeRoadAvailableBp } from '@/lib/builders';
+import { computeConstructionAvailableBp, computeRoadAvailableBp, getCityUniversityTask } from '@/lib/builders';
 import { planHumanBuilderAutomation } from '@/lib/builderAutomation';
+import { pruneEndedMajorEngagements } from '@/lib/majorEngagement';
+import type { SiegeTacticId } from '@/lib/siegeTactics';
+import {
+  buildWaveGroupsFromTactic,
+  mergeUnassignedUnitIdsIntoFirstWave,
+  splitOversizedWaves,
+  firstWaveMaxFromWidth,
+  targetWaveCountFromDepth,
+} from '@/lib/siegeTactics';
+import { assignSpatialFormationTargets } from '@/lib/formationPlacement';
 
 // ─── Module-level timers ────────────────────────────────────────────
 
@@ -121,6 +149,13 @@ interface GameState {
   heroes: Hero[];
   /** Named commanders: assign to city defense or a field army (anchor unit). */
   commanders: Commander[];
+  /** Unit stacks (training templates + auto-replenish + rally). */
+  unitStacks: UnitStack[];
+  /** Player-created armies only (units use `armyId`; not auto-listed from map stacks). */
+  operationalArmies: OperationalArmy[];
+  /** When assigning city defense from tactical bar: auto_engage vs stagnant. */
+  tacticalCityDefenseMode: 'auto_engage' | 'stagnant';
+  setTacticalCityDefenseMode: (mode: 'auto_engage' | 'stagnant') => void;
   /** Pre-playing draft (pick five, then roles). Cleared when the match starts. */
   commanderDraftOptions: CommanderDraftOption[];
   commanderDraftSelectedIds: string[];
@@ -141,6 +176,10 @@ interface GameState {
   lastDefenseVolleyFx: DefenseVolleyFx[];
   lastRangedShotFx: RangedShotFx[];
   rangedShooterUnitIds: string[];
+  /** Per-stack morale tracked across combat ticks */
+  combatMoraleState: import('@/lib/combat').MoraleState;
+  /** Recent kill events for UI kill feed */
+  combatKillFeed: import('@/lib/military').CombatKillEvent[];
   /** Purple hotspot between the two main rivals; gold or iron every 2nd cycle if one side has more troops in zone. */
   contestedZoneHexKeys: string[];
 
@@ -190,6 +229,8 @@ interface GameState {
   lastClickTime: number;
   /** When non-null, battle report modal is open for this `tileKey(q,r)`. */
   battleModalHexKey: string | null;
+  /** Per-hex per-player major engagement doctrine (same-hex land battles meeting army threshold). */
+  majorEngagementStrategyByHex: Record<string, Record<string, MajorEngagementDoctrine>>;
   /** After closing city modal, ignore map clicks briefly so the same gesture does not hit the canvas (R3F). */
   mapClickSuppressionUntilMs: number;
   /** Full city / logistics modal — opened from hex panel, not automatically on city click. */
@@ -204,10 +245,30 @@ interface GameState {
 
   /** Tactical panel: key = tileKey(q,r) of stack; null = tactical mode off */
   pendingTacticalOrders: Record<string, TacticalStackOrder> | null;
-  /** Stacks selected in tactical panel (for batch orders from bottom bar) */
+  /** Stacks selected in tactical panel (highlighted hex groups; used when order scope is “selected”) */
   tacticalSelectedStackKeys: string[];
+  /** Who receives orders from the bottom bar: all human hexes, only selected hexes, or one field army’s hexes. */
+  tacticalOrderScope: 'all' | 'selected' | 'army';
+  /** When `tacticalOrderScope` is `army`, which operational army id. */
+  tacticalOrderScopeArmyId: string | null;
+  /** When not `all`, pending orders only include these land unit types (per hex stack). */
+  tacticalIncludedUnitTypes: 'all' | UnitType[];
+  /** Per map stack (`tileKey`): orders apply only to this unit type until toggled off (Field command). */
+  tacticalStackUnitTypeFocus: Record<string, UnitType>;
+  /** Default spatial formation for land tactical moves / intercept (sessionStorage). Attack-city tactic waves use siege helpers separately. */
+  defaultMarchFormation: {
+    enabled: boolean;
+    preset: SiegeTacticId;
+    width: number;
+    depth: number;
+  };
+  setDefaultMarchFormation: (
+    patch: Partial<{ enabled: boolean; preset: SiegeTacticId; width: number; depth: number }>,
+  ) => void;
   /** When set, next map click completes this order type for all these stacks */
   assigningTacticalForSelectedStacks: { orderType: TacticalAssignOrderType; stackKeys: string[] } | null;
+  /** Hex keys being painted for patrol (land); cleared when patrol order completes. */
+  tacticalPatrolPaintHexKeys: string[];
   /** After clicking an enemy city, player configures counts / waves / style in the modal. */
   tacticalAttackCityDraft: {
     stackKeys: string[];
@@ -220,8 +281,8 @@ interface GameState {
   assigningTacticalForStack: string | null;
   /** Type of order when assigning destination (move vs intercept) */
   assigningTacticalOrderType: 'move' | 'intercept' | null;
-  /** Split stack: from hex + count to move; next adjacent hex click completes split */
-  splitStackPending: { fromQ: number; fromR: number; count: number } | null;
+  /** Split stack: from hex + count to move; next adjacent hex click completes split. If unitIds set, those exact units move (count should match). */
+  splitStackPending: { fromQ: number; fromR: number; count: number; unitIds?: string[] } | null;
 
   // Map
   generateWorld: (config?: Partial<MapConfig>) => void;
@@ -275,11 +336,40 @@ interface GameState {
   upgradeUniversity: (cityId: string, academyQ: number, academyR: number) => void;
   setUniversityBuilderTask: (cityId: string, task: BuilderTask) => void;
   adjustWorkers: (cityId: string, buildingQ: number, buildingR: number, delta: number) => void;
-  recruitUnit: (cityId: string, type: UnitType, armsLevel?: 1 | 2 | 3) => void;
+  recruitUnit: (
+    cityId: string,
+    type: UnitType,
+    armsLevel?: 1 | 2 | 3,
+    stackOpts?: { stackMode: 'new'; name?: string } | { stackMode: 'existing'; stackId: string },
+  ) => void;
+  /** Queue one recruit per template row (affordable rows) into the unit stack. */
+  trainAllStackTemplate: (cityId: string, stackId: string) => void;
+  updateStackComposition: (stackId: string, composition: ArmyCompositionEntry[]) => void;
+  setStackAutoReplenish: (stackId: string, enabled: boolean) => void;
+  setStackName: (stackId: string, name: string) => void;
+  createArmy: (name?: string) => void;
+  addStackToArmy: (armyId: string, stackId: string) => void;
+  removeStackFromArmy: (armyId: string, stackId: string) => void;
+  /** Select all map hexes where this army has units (for issuing orders to the whole army). */
+  selectStacksForArmy: (armyId: string) => void;
+  deleteArmy: (armyId: string) => void;
+  /** Set `armyId` on land units in the currently selected map stacks. */
+  attachSelectedStacksToArmy: (armyId: string) => void;
+  /** Set `armyId` on land units at one map hex (same rules as attach selected). */
+  attachHexStackToArmy: (armyId: string, q: number, r: number) => void;
+  /** Clear `armyId` for land units of this army at this hex (map attachment only). */
+  detachHexStackFromArmy: (armyId: string, q: number, r: number) => void;
+  assignCommanderToArmy: (commanderId: string, armyId: string) => void;
+  toggleTacticalPatrolPaintHex: (q: number, r: number) => void;
+  /** Paint mode: add hex to patrol zone without toggling off (for drag-painting). */
+  addTacticalPatrolPaintHex: (q: number, r: number) => void;
+  clearTacticalPatrolPaint: () => void;
+  finishTacticalPatrolFromPaint: () => void;
+  startTacticalPatrolCenterOnly: () => void;
+  repairCityBuilding: (cityId: string, buildingQ: number, buildingR: number) => void;
   recruitShip: (cityId: string, shipyardQ: number, shipyardR: number, shipType: 'scout_ship' | 'warship' | 'transport_ship' | 'fisher_transport' | 'capital_ship') => void;
   boardAdjacentShip: (shipId: string) => void;
   disembarkShip: (shipId: string) => void;
-  recruitHero: (cityId: string) => void;
   recruitCommander: (cityId: string) => void;
   recruitCommanderInstant: () => void;
   assignCommanderToCityDefense: (commanderId: string, cityId: string) => void;
@@ -322,6 +412,7 @@ interface GameState {
   /** Open battle report; pass a hex key to focus that battle, or omit to pick the first human contested hex. */
   openBattleModal: (hexKey?: string) => void;
   closeBattleModal: () => void;
+  setMajorEngagementDoctrine: (hexKey: string, doctrine: MajorEngagementDoctrine) => void;
   openTacticalMode: () => void;
   cancelTacticalMode: () => void;
   setTacticalOrder: (stackKey: string, order: TacticalStackOrder | null) => void;
@@ -329,28 +420,56 @@ interface GameState {
   setTacticalMoveTarget: (toQ: number, toR: number) => void;
   setTacticalSelectedStackKeys: (keys: string[]) => void;
   toggleTacticalStack: (stackKey: string) => void;
+  setTacticalOrderScope: (scope: 'all' | 'selected' | 'army', armyId?: string | null) => void;
+  setTacticalIncludedUnitTypes: (types: 'all' | UnitType[]) => void;
+  toggleTacticalIncludedUnitType: (type: UnitType) => void;
+  /** Toggle per-hex unit-type scope for tactical orders; same type again clears. */
+  toggleTacticalStackUnitTypeFocus: (stackKey: string, unitType: UnitType) => void;
   startTacticalOrderForSelected: (orderType: TacticalAssignOrderType) => void;
   setTacticalMoveTargetForSelected: (toQ: number, toR: number) => void;
   setTacticalIncorporateTargetForSelected: (toQ: number, toR: number) => void;
   setTacticalAttackCityTargetForSelected: (toQ: number, toR: number) => void;
-  commitTacticalAttackCitySetup: (payload: {
-    attackStyle: AttackCityStyle;
-    useWaves: boolean;
-    perStack: Record<string, { wave1: Partial<Record<UnitType, number>>; wave2: Partial<Record<UnitType, number>> }>;
-  }) => void;
+  setTacticalAttackBuildingTargetForSelected: (toQ: number, toR: number) => void;
+  commitTacticalAttackCitySetup: (
+    payload:
+      | {
+          attackStyle: AttackCityStyle;
+          mode: 'tactic';
+          tacticPreset: SiegeTacticId;
+          width: number;
+          depth: number;
+        }
+      | {
+          attackStyle: AttackCityStyle;
+          mode: 'manual';
+          useWaves: boolean;
+          perStack: Record<
+            string,
+            { wave1: Partial<Record<UnitType, number>>; wave2: Partial<Record<UnitType, number>> }
+          >;
+        },
+  ) => void;
   cancelTacticalAttackCityDraft: () => void;
   beginSiegeAssaultOnCity: (cityId: string) => void;
   setTacticalDefendForSelected: (cityId: string) => void;
   setTacticalDefendTargetFromMap: (q: number, r: number) => void;
+  setTacticalCityDefenseTargetFromMap: (q: number, r: number) => void;
+  setTacticalPatrolTargetFromMap: (q: number, r: number) => void;
   clearTacticalOrdersForSelected: () => void;
   confirmTacticalOrders: () => void;
   disbandSelectedUnits: () => void;
   setSiegeAssault: (assault: boolean) => void;
-  startSplitStack: (count: number) => void;
+  activateAbility: (unitType: import('@/types/game').UnitType) => void;
+  startSplitStack: (count: number, fromQ?: number, fromR?: number) => void;
+  /** Move all units of this type to an adjacent hex (next click). Mixed stacks only; single-type stacks move all but one. */
+  startSplitStackByUnitType: (unitType: UnitType, fromQ?: number, fromR?: number) => void;
   cancelSplitStack: () => void;
   splitStackToHex: (toQ: number, toR: number) => void;
   burnCity: (cityId: string) => void;
   captureCity: (cityId: string) => void;
+  /** Garrison bow units shoot enemies in this city's territory within patrol radius (combat tick). */
+  setCityGarrisonPatrol: (cityId: string, enabled: boolean) => void;
+  setCityGarrisonPatrolRadius: (cityId: string, radius: number) => void;
   incorporateVillage: (q: number, r: number) => void;
   sendScout: (q: number, r: number) => void;
   /** Attach a scroll from your inventory to one of your land military units (whole stack benefits). */
@@ -365,7 +484,6 @@ interface GameState {
   getHumanPlayer: () => Player | undefined;
   getCityAt: (q: number, r: number) => City | undefined;
   getUnitsAt: (q: number, r: number) => Unit[];
-  getHeroAt: (q: number, r: number) => Hero | undefined;
   getSelectedCity: () => City | undefined;
   /** City at selected hex (any owner); used for observer mode and city modal. */
   getSelectedCityForDisplay: () => City | undefined;
@@ -384,11 +502,19 @@ interface GameState {
   isHexVisible: (q: number, r: number) => boolean;
   isHexScouted: (q: number, r: number) => boolean;
   getScoutMissionAt: (q: number, r: number) => ScoutMission | undefined;
+  /** @deprecated No connection paths — empire pool only */
   getSupplyConnectionPaths: () => Map<string, { q: number; r: number }[][]>;
-  getSupplyClustersWithPaths: () => import('@/lib/logistics').ClusterWithPaths[];
-  getSupplyClustersWithHealth: () => { clusterKey: string; cluster: import('@/lib/logistics').TradeCluster; paths: { q: number; r: number }[][]; foodSurplus: boolean }[];
+  getSupplyClustersWithPaths: () => {
+    clusterKey: string;
+    cluster: { cityIds: string[]; cities: import('@/types/game').City[] };
+    paths: { q: number; r: number }[][];
+  }[];
+  getSupplyClustersWithHealth: () => { clusterKey: string; cluster: { cityIds: string[]; cities: import('@/types/game').City[] }; paths: { q: number; r: number }[][]; foodSurplus: boolean }[];
+  /** Human supply view: 'empire' when hex is yours, else null */
   getClusterForHex: (q: number, r: number) => string | null;
-  getClusterIncomeStatement: (clusterKey: string) => import('@/lib/gameLoop').ClusterIncomeStatement | null;
+  getEmpireIncomeStatement: () => import('@/lib/gameLoop').EmpireIncomeStatement | null;
+  /** @deprecated Use getEmpireIncomeStatement */
+  getClusterIncomeStatement: (clusterKey: string) => import('@/lib/gameLoop').EmpireIncomeStatement | null;
 }
 
 const HUMAN_ID = 'player_human';
@@ -397,21 +523,39 @@ const AI_ID_2 = 'player_ai_2';
 
 export type GameMode = 'human_vs_ai' | 'human_solo' | 'bot_vs_bot' | 'bot_vs_bot_4' | 'spectate';
 
+/** When set on an order, only these units receive the order on confirm; omitted = whole stack (legacy). */
+type TacticalParticipation = { participatingUnitIds?: string[] };
+
 /** Pending order per stack while tactical mode is open (confirmed in one batch). */
 export type TacticalStackOrder =
-  | { type: 'move'; toQ: number; toR: number }
-  | { type: 'intercept'; toQ: number; toR: number }
-  | { type: 'defend'; cityId: string }
-  | { type: 'incorporate_village'; toQ: number; toR: number }
+  | ({ type: 'move'; toQ: number; toR: number } & TacticalParticipation)
+  | ({ type: 'intercept'; toQ: number; toR: number } & TacticalParticipation)
+  | ({ type: 'defend'; cityId: string } & TacticalParticipation)
+  | ({ type: 'city_defense'; cityId: string; mode: 'auto_engage' | 'stagnant' } & TacticalParticipation)
+  | ({ type: 'patrol'; centerQ: number; centerR: number; radius: number; hexKeys?: string[] } & TacticalParticipation)
+  | ({ type: 'incorporate_village'; toQ: number; toR: number } & TacticalParticipation)
   | {
       type: 'attack_city';
       cityId: string;
       attackStyle: AttackCityStyle;
-      wave1UnitIds: string[];
-      wave2UnitIds: string[];
-    };
+      /** First group marches immediately; each following group waits for the prior at the rally hex. */
+      waveGroups: string[][];
+      tacticPreset?: SiegeTacticId;
+      tacticWidth?: number;
+      tacticDepth?: number;
+    }
+  | ({ type: 'attack_building'; cityId: string; buildingQ: number; buildingR: number } & TacticalParticipation);
 
-export type TacticalAssignOrderType = 'move' | 'intercept' | 'incorporate_village' | 'attack_city' | 'defend_pick';
+export type TacticalAssignOrderType =
+  | 'move'
+  | 'intercept'
+  | 'incorporate_village'
+  | 'attack_city'
+  | 'attack_building_pick'
+  | 'defend_pick'
+  | 'city_defense_pick'
+  | 'patrol_pick'
+  | 'patrol_paint';
 
 type PendingLandRecruit = {
   id: string;
@@ -422,6 +566,8 @@ type PendingLandRecruit = {
   spawnQ: number;
   spawnR: number;
   completesAtCycle: number;
+  stackId?: string;
+  moveToRallyAfterSpawn?: { q: number; r: number };
 };
 
 type PendingShipRecruit = {
@@ -434,14 +580,6 @@ type PendingShipRecruit = {
   completesAtCycle: number;
 };
 
-type PendingHeroRecruit = {
-  id: string;
-  playerId: string;
-  cityId: string;
-  heroKind: 'general' | 'logistician';
-  completesAtCycle: number;
-};
-
 type PendingCommanderRecruit = {
   id: string;
   playerId: string;
@@ -450,7 +588,7 @@ type PendingCommanderRecruit = {
   completesAtCycle: number;
 };
 
-type PendingRecruitItem = PendingLandRecruit | PendingShipRecruit | PendingHeroRecruit | PendingCommanderRecruit;
+type PendingRecruitItem = PendingLandRecruit | PendingShipRecruit | PendingCommanderRecruit;
 
 type PendingIncorporationItem = {
   id: string;
@@ -462,12 +600,8 @@ type PendingIncorporationItem = {
 };
 
 let cityNameIdx = 0;
-let heroNameIdx = 0;
 function nextCityName(): string {
   return CITY_NAMES[cityNameIdx++ % CITY_NAMES.length];
-}
-function nextHeroName(): string {
-  return HERO_NAMES[heroNameIdx++ % HERO_NAMES.length];
 }
 
 function canPayDefenseLevelCost(player: Player, city: City, level: DefenseTowerLevel): boolean {
@@ -479,14 +613,183 @@ function canPayDefenseLevelCost(player: Player, city: City, level: DefenseTowerL
   return true;
 }
 
-function humanStackKeysForTactical(s: { units: Unit[]; tacticalSelectedStackKeys: string[] }): string[] {
-  const humanKeys = new Set<string>();
-  for (const u of s.units) {
-    if (u.ownerId === HUMAN_ID && u.hp > 0) humanKeys.add(tileKey(u.q, u.r));
+function getDefenseProjectBlockedReason(city: City): string | null {
+  const academy = city.buildings.find(b => b.type === 'academy');
+  if (!academy) return 'Need a University in the territory city to run defense projects.';
+  if (getCityUniversityTask(city) !== 'city_defenses') {
+    return `Set ${city.name}'s University task to City defenses to build this project.`;
   }
-  return s.tacticalSelectedStackKeys.length > 0
-    ? s.tacticalSelectedStackKeys.filter(k => humanKeys.has(k))
-    : Array.from(humanKeys);
+  return null;
+}
+
+function humanStackKeysForTactical(s: {
+  units: Unit[];
+  tacticalSelectedStackKeys: string[];
+  tacticalOrderScope: 'all' | 'selected' | 'army';
+  tacticalOrderScopeArmyId: string | null;
+}): string[] {
+  const allHumanKeys = new Set<string>();
+  for (const u of s.units) {
+    if (u.ownerId === HUMAN_ID && u.hp > 0) allHumanKeys.add(tileKey(u.q, u.r));
+  }
+
+  if (s.tacticalOrderScope === 'army' && s.tacticalOrderScopeArmyId) {
+    const aid = s.tacticalOrderScopeArmyId;
+    const keys = new Set<string>();
+    for (const u of s.units) {
+      if (u.ownerId !== HUMAN_ID || u.hp <= 0) continue;
+      if (u.armyId !== aid) continue;
+      if (u.aboardShipId || u.type === 'builder') continue;
+      if (isNavalUnitType(u.type)) continue;
+      keys.add(tileKey(u.q, u.r));
+    }
+    return Array.from(keys);
+  }
+
+  if (s.tacticalOrderScope === 'selected') {
+    if (s.tacticalSelectedStackKeys.length === 0) return [];
+    return s.tacticalSelectedStackKeys.filter(k => allHumanKeys.has(k));
+  }
+
+  return Array.from(allHumanKeys);
+}
+
+function resolveParticipatingUnitIds(
+  stackUnits: Unit[],
+  tacticalIncludedUnitTypes: 'all' | UnitType[],
+): string[] | undefined {
+  if (tacticalIncludedUnitTypes === 'all') return undefined;
+  const ids = unitIdsMatchingTypes(stackUnits, tacticalIncludedUnitTypes);
+  return ids.length > 0 ? ids : undefined;
+}
+
+/** Like `resolveParticipatingUnitIds`, but narrows to one unit type on this hex when focus is set. */
+function resolveParticipatingUnitIdsForTactical(
+  stackUnits: Unit[],
+  stackKey: string,
+  tacticalIncludedUnitTypes: 'all' | UnitType[],
+  tacticalStackUnitTypeFocus: Record<string, UnitType>,
+): string[] | undefined {
+  const focusType = tacticalStackUnitTypeFocus[stackKey];
+  if (focusType === undefined) {
+    return resolveParticipatingUnitIds(stackUnits, tacticalIncludedUnitTypes);
+  }
+  const subset = stackUnits.filter(u => u.type === focusType);
+  if (subset.length === 0) return [];
+  if (tacticalIncludedUnitTypes === 'all') {
+    return subset.map(u => u.id);
+  }
+  const ids = unitIdsMatchingTypes(subset, tacticalIncludedUnitTypes);
+  return ids.length > 0 ? ids : [];
+}
+
+function orderAppliesToUnit(order: TacticalStackOrder, u: Unit): boolean {
+  if (order.type === 'attack_city') {
+    return order.waveGroups.some(g => g.includes(u.id));
+  }
+  const ids = order.participatingUnitIds;
+  if (ids === undefined) return true;
+  return ids.includes(u.id);
+}
+
+function loadDefaultMarchFormation(): {
+  enabled: boolean;
+  preset: SiegeTacticId;
+  width: number;
+  depth: number;
+} {
+  if (typeof window === 'undefined') {
+    return { enabled: true, preset: 'classic_four', width: 3, depth: 3 };
+  }
+  try {
+    const raw = sessionStorage.getItem('fe-default-march-formation');
+    if (!raw) return { enabled: true, preset: 'classic_four', width: 3, depth: 3 };
+    const j = JSON.parse(raw) as Partial<{
+      enabled: boolean;
+      preset: SiegeTacticId;
+      width: number;
+      depth: number;
+    }>;
+    const preset =
+      j.preset && ['classic_four', 'boxed', 'winged'].includes(j.preset) ? j.preset : 'classic_four';
+    return {
+      enabled: j.enabled !== false,
+      preset,
+      width: typeof j.width === 'number' ? Math.max(1, Math.min(5, Math.round(j.width))) : 3,
+      depth: typeof j.depth === 'number' ? Math.max(1, Math.min(5, Math.round(j.depth))) : 3,
+    };
+  } catch {
+    return { enabled: true, preset: 'classic_four', width: 3, depth: 3 };
+  }
+}
+
+function persistDefaultMarchFormation(d: ReturnType<typeof loadDefaultMarchFormation>) {
+  try {
+    sessionStorage.setItem('fe-default-march-formation', JSON.stringify(d));
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * Spatial formation march: units spread to adjacent hexes around the ordered destination,
+ * oriented along the march axis (classic / boxed / wing presets). Returns null to fall back
+ * to a single-hex move (disabled, single unit, or naval).
+ */
+function applyEchelonForLandMove(
+  units: Unit[],
+  fromQ: number,
+  fromR: number,
+  toQ: number,
+  toR: number,
+  marching: Unit[],
+  cities: City[],
+  tiles: Map<string, Tile>,
+  territory: Map<string, TerritoryInfo>,
+  df: { enabled: boolean; preset: SiegeTacticId; width: number; depth: number },
+): Unit[] | null {
+  if (!df.enabled) return null;
+  if (marching.length < 2) return null;
+  if (marching.some(u => isNavalUnitType(u.type))) return null;
+  const marchIds = new Set(marching.map(u => u.id));
+  const landMarch = marching.filter(u => u.hp > 0 && !isNavalUnitType(u.type));
+  if (landMarch.length < 2) return null;
+
+  const { assignments } = assignSpatialFormationTargets(
+    toQ,
+    toR,
+    fromQ,
+    fromR,
+    landMarch,
+    df.preset,
+    df.width,
+    df.depth,
+    tiles,
+    territory,
+    HUMAN_ID,
+  );
+
+  return units.map(u => {
+    if (u.q !== fromQ || u.r !== fromR || u.ownerId !== HUMAN_ID || u.hp <= 0) return u;
+    if (!marchIds.has(u.id)) return u;
+    const pos = assignments.get(u.id);
+    if (!pos) return u;
+    const deployed = withDeployFlags(u, pos.q, pos.r, cities);
+    const next: Unit = {
+      ...deployed,
+      targetQ: pos.q,
+      targetR: pos.r,
+      status: 'moving' as const,
+      assaulting: false,
+      marchInitialHexDistance: marchHexDistanceAtOrder(u, pos.q, pos.r),
+      retaliateUnitId: undefined,
+      retaliateDefenseId: undefined,
+      attackBuildingTarget: undefined,
+    };
+    delete next.marchEchelonHold;
+    delete next.attackWaveHold;
+    return next;
+  });
 }
 
 /** Shared merge for manual incorporate and auto-incorporate on arrival. Returns null if requirements fail. */
@@ -571,7 +874,15 @@ function spawnUnitFromPendingLand(item: PendingLandRecruit, cities: City[]): Uni
   };
   if (item.effectiveArmsLevel === 2 && item.type !== 'defender') u.armsLevel = 2;
   if (item.effectiveArmsLevel === 3 || item.type === 'defender') u.armsLevel = 3;
-  if (!isNavalUnitType(item.type)) {
+  if (item.stackId) u.stackId = item.stackId;
+  if (item.moveToRallyAfterSpawn) {
+    const rq = item.moveToRallyAfterSpawn.q;
+    const rr = item.moveToRallyAfterSpawn.r;
+    u.targetQ = rq;
+    u.targetR = rr;
+    u.status = 'moving';
+    u.marchInitialHexDistance = marchHexDistanceAtOrder(u, rq, rr);
+  } else if (!isNavalUnitType(item.type)) {
     u.garrisonCityId = city.id;
     u.defendCityId = city.id;
   }
@@ -630,7 +941,8 @@ function canLandStackEmbarkFriendlyScoutAt(
 
 export const useGameStore = create<GameState>((set, get) => ({
   tiles: new Map(), config: DEFAULT_MAP_CONFIG, provinceCenters: [], isGenerated: false,
-  phase: 'setup', cycle: 0, gameMode: 'human_vs_ai', players: [], cities: [], units: [], heroes: [], commanders: [],
+  phase: 'setup', cycle: 0, gameMode: 'human_vs_ai', players: [], cities: [], units: [], heroes: [], commanders: [], unitStacks: [], operationalArmies: [],
+  tacticalCityDefenseMode: 'auto_engage',
   commanderDraftOptions: [], commanderDraftSelectedIds: [], commanderDraftAssignment: {},
   constructions: [], roadConstructions: [], scoutTowers: [], defenseInstallations: [], contestedZoneHexKeys: [],
   specialRegions: [], scrollSearchProgress: {}, scrollSearchClaimed: {}, scrollInventory: {}, scrollAttachments: [],
@@ -641,11 +953,14 @@ export const useGameStore = create<GameState>((set, get) => ({
   lastDefenseVolleyFx: [],
   lastRangedShotFx: [],
   rangedShooterUnitIds: [],
+  combatMoraleState: new Map(),
+  combatKillFeed: [],
   activeWeather: null, lastWeatherEndCycle: -10,
   gameEndTime: 0, nextCycleTime: 0, gameTimeRemaining: GAME_DURATION_SEC, cycleTimeRemaining: CYCLE_INTERVAL_SEC,
   simSpeedMultiplier: 1,
   selectedKingdom: DEFAULT_KINGDOM_ID,
   setSelectedKingdom: (k) => set({ selectedKingdom: k }),
+  setTacticalCityDefenseMode: (mode) => set({ tacticalCityDefenseMode: mode }),
   visibleHexes: new Set(), pendingCityHex: null,
   selectedHex: null, uiMode: 'normal', pendingMove: null, pendingDefenseBuild: null, wallSections: [], roadPathSelection: [],
   supplyViewTab: 'normal',
@@ -655,6 +970,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   lastClickHex: null,
   lastClickTime: 0,
   battleModalHexKey: null,
+  majorEngagementStrategyByHex: {},
   mapClickSuppressionUntilMs: 0,
   cityLogisticsOpen: false,
   cityCaptureHold: {},
@@ -662,11 +978,37 @@ export const useGameStore = create<GameState>((set, get) => ({
   pendingIncorporations: [],
   pendingTacticalOrders: null,
   tacticalSelectedStackKeys: [],
+  tacticalOrderScope: 'all',
+  tacticalOrderScopeArmyId: null,
+  tacticalIncludedUnitTypes: 'all',
+  tacticalStackUnitTypeFocus: {},
+  defaultMarchFormation: loadDefaultMarchFormation(),
+  setDefaultMarchFormation: patch => {
+    const cur = get().defaultMarchFormation;
+    const next = {
+      ...cur,
+      ...patch,
+      width:
+        patch.width !== undefined
+          ? Math.max(1, Math.min(5, Math.round(patch.width)))
+          : cur.width,
+      depth:
+        patch.depth !== undefined
+          ? Math.max(1, Math.min(5, Math.round(patch.depth)))
+          : cur.depth,
+    };
+    if (patch.preset !== undefined && !['classic_four', 'boxed', 'winged'].includes(patch.preset)) {
+      next.preset = cur.preset;
+    }
+    persistDefaultMarchFormation(next);
+    set({ defaultMarchFormation: next });
+  },
   assigningTacticalForSelectedStacks: null,
   assigningTacticalForStack: null,
   assigningTacticalOrderType: null,
   tacticalAttackCityDraft: null,
   splitStackPending: null,
+  tacticalPatrolPaintHexKeys: [],
 
   // ─── Map ────────────────────────────────────────────────────
   generateWorld: (ov) => {
@@ -692,7 +1034,6 @@ export const useGameStore = create<GameState>((set, get) => ({
   // ─── Game Flow ──────────────────────────────────────────────
   startPlacement: (opts) => {
     cityNameIdx = 0;
-    heroNameIdx = 0;
     const kingdom = get().selectedKingdom;
     const opponentCount = Math.min(5, Math.max(1, opts?.opponentCount ?? 1));
     const aiKingdoms = pickOpponentKingdoms(kingdom, opponentCount);
@@ -715,7 +1056,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         { id: HUMAN_ID, name: 'You', color: PLAYER_COLORS.human, gold: STARTING_GOLD, taxRate: 0.3, foodPriority: 'civilian', isHuman: true, kingdomId: kingdom },
         ...aiPlayers,
       ],
-      cities: [], units: [], heroes: [], commanders: [],
+      cities: [], units: [], heroes: [], commanders: [], unitStacks: [], operationalArmies: [],
       commanderDraftOptions: [], commanderDraftSelectedIds: [], commanderDraftAssignment: {},
       constructions: [], roadConstructions: [], scoutTowers: [], defenseInstallations: [],       scoutMissions: [], scoutedHexes: new Set(),
       territory: new Map(), cycle: 0, notifications: [], wallSections: [], cityCaptureHold: {}, pendingRecruits: [], pendingIncorporations: [],
@@ -724,6 +1065,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       lastDefenseVolleyFx: [],
       lastRangedShotFx: [],
       rangedShooterUnitIds: [],
+      combatMoraleState: new Map(),
+      combatKillFeed: [],
       contestedZoneHexKeys: [],
       scrollSearchProgress: {},
       scrollSearchClaimed: {},
@@ -732,6 +1075,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       activeWeather: null, lastWeatherEndCycle: -10,
       visibleHexes: new Set(), pendingCityHex: suggested,
       battleModalHexKey: null,
+      majorEngagementStrategyByHex: {},
     });
     if (!suggested) {
       get().addNotification('No scored start for this kingdom — click any valid land hex.', 'warning');
@@ -740,7 +1084,6 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   startSoloPlacement: () => {
     cityNameIdx = 0;
-    heroNameIdx = 0;
     const kingdom = get().selectedKingdom;
     const suggested = findBestStartHex(kingdom, get().tiles, get().config);
     set({
@@ -751,7 +1094,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         /** Inert owner for solo dummy capital — never receives planAiTurn. */
         { id: AI_ID, name: 'Training target', color: PLAYER_COLORS.ai, gold: STARTING_GOLD, taxRate: 0.3, foodPriority: 'military', isHuman: false },
       ],
-      cities: [], units: [], heroes: [], commanders: [],
+      cities: [], units: [], heroes: [], commanders: [], unitStacks: [], operationalArmies: [],
       commanderDraftOptions: [], commanderDraftSelectedIds: [], commanderDraftAssignment: {},
       constructions: [], roadConstructions: [], scoutTowers: [], defenseInstallations: [],       scoutMissions: [], scoutedHexes: new Set(),
       territory: new Map(), cycle: 0, notifications: [], wallSections: [], cityCaptureHold: {}, pendingRecruits: [], pendingIncorporations: [],
@@ -760,6 +1103,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       lastDefenseVolleyFx: [],
       lastRangedShotFx: [],
       rangedShooterUnitIds: [],
+      combatMoraleState: new Map(),
+      combatKillFeed: [],
       contestedZoneHexKeys: [],
       scrollSearchProgress: {},
       scrollSearchClaimed: {},
@@ -768,6 +1113,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       activeWeather: null, lastWeatherEndCycle: -10,
       visibleHexes: new Set(), pendingCityHex: suggested,
       battleModalHexKey: null,
+      majorEngagementStrategyByHex: {},
     });
     if (!suggested) {
       get().addNotification('No scored start for this kingdom — click any valid land hex.', 'warning');
@@ -780,7 +1126,6 @@ export const useGameStore = create<GameState>((set, get) => ({
       get().generateWorld();
     }
     cityNameIdx = 0;
-    heroNameIdx = 0;
     const { tiles, config } = get();
     const w = config.width;
     const h = config.height;
@@ -826,11 +1171,6 @@ export const useGameStore = create<GameState>((set, get) => ({
     const contestedZoneHexKeys = computeContestedZoneHexKeys(tiles, ai1Q, ai1R, ai2Q, ai2R, config);
     const territory = calculateTerritory(cities, tiles);
 
-    const heroes: Hero[] = [
-      createAiHero(city1.q, city1.r, AI_ID),
-      createAiHero(city2.q, city2.r, AI_ID_2),
-    ];
-
     const allTileKeys = new Set<string>();
     tiles.forEach((_, key) => allTileKeys.add(key));
 
@@ -848,8 +1188,10 @@ export const useGameStore = create<GameState>((set, get) => ({
       ],
       cities,
       units: [],
-      heroes,
+      heroes: [],
       commanders: [],
+      unitStacks: [],
+      operationalArmies: [],
       commanderDraftOptions: [],
       commanderDraftSelectedIds: [],
       commanderDraftAssignment: {},
@@ -868,6 +1210,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       lastDefenseVolleyFx: [],
       lastRangedShotFx: [],
       rangedShooterUnitIds: [],
+      combatMoraleState: new Map(),
+      combatKillFeed: [],
       contestedZoneHexKeys,
       specialRegions: s.specialRegions ?? [],
       scrollSearchProgress: {},
@@ -878,6 +1222,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         { id: generateId('n'), turn: 0, message: 'Bot vs Bot — observing both empires.', type: 'success' },
       ],
       battleModalHexKey: null,
+      majorEngagementStrategyByHex: {},
     });
     get().startRealTimeLoop();
     // Run first economy cycle immediately so AIs build (barracks, farms, etc.) from the start
@@ -920,7 +1265,6 @@ export const useGameStore = create<GameState>((set, get) => ({
     }));
 
     cityNameIdx = 0;
-    heroNameIdx = 0;
 
     const cities = placeManyAiCapitalsApart(totalBots, aiIds, tiles, config);
     if (cities.length < 2) {
@@ -936,8 +1280,6 @@ export const useGameStore = create<GameState>((set, get) => ({
     placeAncientCity(tiles, c0.q, c0.r, c1.q, c1.r);
     const contestedZoneHexKeys = computeContestedZoneHexKeys(tiles, c0.q, c0.r, c1.q, c1.r, config);
     const territory = calculateTerritory(cities, tiles);
-
-    const heroes: Hero[] = cities.map(c => createAiHero(c.q, c.r, c.ownerId));
 
     const allTileKeys = new Set<string>();
     tiles.forEach((_, key) => allTileKeys.add(key));
@@ -970,8 +1312,10 @@ export const useGameStore = create<GameState>((set, get) => ({
       players,
       cities,
       units: [],
-      heroes,
+      heroes: [],
       commanders,
+      unitStacks: [],
+      operationalArmies: [],
       commanderDraftOptions: [],
       commanderDraftSelectedIds: [],
       commanderDraftAssignment: {},
@@ -990,6 +1334,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       lastDefenseVolleyFx: [],
       lastRangedShotFx: [],
       rangedShooterUnitIds: [],
+      combatMoraleState: new Map(),
+      combatKillFeed: [],
       contestedZoneHexKeys,
       specialRegions: s.specialRegions ?? [],
       scrollSearchProgress: {},
@@ -1000,6 +1346,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         { id: generateId('n'), turn: 0, message: `Spectating ${totalBots} AI empires.`, type: 'success' },
       ],
       battleModalHexKey: null,
+      majorEngagementStrategyByHex: {},
     });
     get().startRealTimeLoop();
     get().runCycle();
@@ -1122,13 +1469,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     appendStartingBarracksToCity(humanCity, tiles, config.seed ^ (q * 524287) ^ (r * 65521));
     appendStartingAcademyToCity(humanCity, tiles, config.seed ^ (q * 524287) ^ (r * 65521) ^ 0xaced);
 
-    // Human: no starting hero — heroes unlock at HERO_POPULATION_UNLOCK via barracks. AI keeps a hero at each capital.
     const heroes: Hero[] = [];
-    if (!solo) {
-      for (const ac of aiCities) {
-        heroes.push(createAiHero(ac.q, ac.r, ac.ownerId));
-      }
-    }
 
     // Human vs AI: no pre-spawned AI army. AI uses champion params (from ai-params.json) and builds up from its city on the opposite side.
     const initVisible = computeVisibleHexes(HUMAN_ID, cities, [], heroes, tiles, get().scoutTowers ?? [], []);
@@ -1244,6 +1585,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       territory,
       heroes,
       commanders: aiCmds,
+      unitStacks: [],
+      operationalArmies: [],
       commanderDraftOptions: [],
       commanderDraftSelectedIds: [],
       commanderDraftAssignment: {},
@@ -1267,6 +1610,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       visibleHexes: initVisible,
       notifications: startNotifs,
       battleModalHexKey: null,
+      majorEngagementStrategyByHex: {},
       cityLogisticsOpen: false,
     });
 
@@ -1427,10 +1771,23 @@ export const useGameStore = create<GameState>((set, get) => ({
         s.scrollAttachments,
         s.cycle,
         movingCommanders,
+        s.territory,
+        s.defenseInstallations,
       );
       autoEmbarkLandUnitsOntoScoutShipsAtHex(movingUnits, s.tiles);
       releaseAttackWaveHolds(movingUnits, s.cities);
+      releaseMarchEchelonHolds(movingUnits, s.cities);
       syncCommandersToAssignments(movingCommanders, s.cities, movingUnits);
+
+      const majorEngagementEnabled =
+        s.gameMode !== 'bot_vs_bot' && s.gameMode !== 'bot_vs_bot_4' && s.gameMode !== 'spectate';
+      const majorMap = new Map<string, Record<string, MajorEngagementDoctrine>>();
+      for (const [hk, rec] of Object.entries(s.majorEngagementStrategyByHex)) {
+        majorMap.set(hk, { ...rec });
+      }
+      const majorOpts: CombatTickMajorEngagementOptions | undefined = majorEngagementEnabled
+        ? { byHex: majorMap, humanPlayerId: HUMAN_ID, enabled: true }
+        : undefined;
 
       // -- Combat tick (pass movingHeroes so hp mutations apply; then remove killed heroes) --
       const combatResult = combatTick(
@@ -1444,6 +1801,8 @@ export const useGameStore = create<GameState>((set, get) => ({
         s.territory,
         s.scrollAttachments,
         movingCommanders,
+        s.combatMoraleState,
+        majorOpts,
       );
 
       const wallSectionsMut = s.wallSections.map(w => ({ ...w }));
@@ -1461,6 +1820,13 @@ export const useGameStore = create<GameState>((set, get) => ({
 
       // -- Siege tick: trebuchet/ram damage walls (design §17–19) --
       siegeTick(wallSectionsMut, movingUnits);
+
+      const citiesBase = s.cities.map(c => ({
+        ...c,
+        buildings: c.buildings.map(b => ({ ...b })),
+      }));
+      siegeBuildingsTick(citiesBase, movingUnits);
+      landUnitBuildingDamageTick(citiesBase, movingUnits);
 
       const mergedKilledUnitIds = [
         ...new Set([...closingFire.killedUnitIds, ...combatResult.killedUnitIds, ...coastalResult.killedUnitIds]),
@@ -1485,6 +1851,13 @@ export const useGameStore = create<GameState>((set, get) => ({
       const aliveUnits = movingUnits.filter(u => u.hp > 0 && !mergedKilledUnitIds.includes(u.id));
       unassignCommandersWithDeadAnchors(movingCommanders, aliveUnits);
 
+      const majorEngagementStrategyByHexNext = majorEngagementEnabled
+        ? pruneEndedMajorEngagements(
+            Object.fromEntries([...majorMap.entries()].map(([k, v]) => [k, { ...v }])),
+            aliveUnits,
+          )
+        : pruneEndedMajorEngagements({ ...s.majorEngagementStrategyByHex }, aliveUnits);
+
       // Population: when a unit dies, its origin city loses 1 population (design doc §22)
       const killedIds = new Set(mergedKilledUnitIds);
       const popDeductByCityId: Record<string, number> = {};
@@ -1495,8 +1868,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       }
       const updatedCities =
         Object.keys(popDeductByCityId).length === 0
-          ? s.cities
-          : s.cities.map(c => {
+          ? citiesBase
+          : citiesBase.map(c => {
               const deduct = popDeductByCityId[c.id] ?? 0;
               return deduct > 0 ? { ...c, population: Math.max(0, c.population - deduct) } : c;
             });
@@ -1556,7 +1929,7 @@ export const useGameStore = create<GameState>((set, get) => ({
           captureNotifs.push({ id: generateId('n'), turn: s.cycle, message: `${city.name} captured!`, type: 'success' });
         }
       }
-      clearInvalidCommanderAssignments(movingCommanders, citiesFinal);
+      clearInvalidCommanderAssignments(movingCommanders, citiesFinal, s.operationalArmies ?? []);
 
       const territoryAfterCapture = citiesFinal !== updatedCities ? calculateTerritory(citiesFinal, s.tiles) : undefined;
       let phaseAfterCapture: GamePhase = s.phase;
@@ -1644,6 +2017,13 @@ export const useGameStore = create<GameState>((set, get) => ({
         lastDefenseVolleyFx: defenseVolleyCombined,
         lastRangedShotFx: allRangedShotFx,
         rangedShooterUnitIds: [...new Set(allRangedShotFx.map(r => r.attackerId))],
+        combatMoraleState: combatResult.moraleState,
+        combatKillFeed: combatResult.killFeed,
+        majorEngagementStrategyByHex: majorEngagementStrategyByHexNext,
+        battleModalHexKey:
+          combatResult.newMajorEngagementHexKeys.length > 0
+            ? combatResult.newMajorEngagementHexKeys[0]!
+            : s.battleModalHexKey,
       });
 
       // Tactical incorporate: queue one-cycle delayed incorporation when idle on target village
@@ -1682,6 +2062,7 @@ export const useGameStore = create<GameState>((set, get) => ({
           const newUnitsFromField: Unit[] = [];
           const newScoutTowers: ScoutTower[] = [];
           let defenseOut = [...st.defenseInstallations];
+          let wallOut = [...st.wallSections];
 
           for (const site of st.constructions) {
             let availBP = computeConstructionAvailableBp(site, st.territory, st.cities);
@@ -1760,6 +2141,25 @@ export const useGameStore = create<GameState>((set, get) => ({
                   message: `${DEFENSE_TOWER_DISPLAY_NAME[tt]} L${lvl} ready at (${site.q}, ${site.r})!`,
                   type: 'success',
                 });
+              } else if (site.type === 'wall_section') {
+                const existingIdx = wallOut.findIndex(
+                  w => w.ownerId === site.ownerId && w.q === site.q && w.r === site.r,
+                );
+                if (existingIdx < 0) {
+                  wallOut.push({
+                    q: site.q,
+                    r: site.r,
+                    ownerId: site.ownerId,
+                    hp: WALL_SECTION_HP,
+                    maxHp: WALL_SECTION_HP,
+                  });
+                }
+                completedNotifs.push({
+                  id: generateId('n'),
+                  turn: st.cycle,
+                  message: `Wall section completed at (${site.q}, ${site.r})!`,
+                  type: 'success',
+                });
               } else {
                 // Building: add to city and auto-assign workers
                 const city = updatedCities.find(c => c.id === site.cityId);
@@ -1772,7 +2172,7 @@ export const useGameStore = create<GameState>((set, get) => ({
                     const available = city.population - totalEmployed;
                     b.assignedWorkers = Math.min(jobs, Math.max(0, available));
                   }
-                  city.buildings.push(b);
+                  city.buildings.push(ensureCityBuildingHp(b));
                 }
                 completedNotifs.push({
                   id: generateId('n'), turn: st.cycle,
@@ -1795,6 +2195,7 @@ export const useGameStore = create<GameState>((set, get) => ({
             units: newUnitsFromField.length > 0 ? [...st.units, ...newUnitsFromField] : st.units,
             scoutTowers: newScoutTowers.length > 0 ? [...st.scoutTowers, ...newScoutTowers] : st.scoutTowers,
             defenseInstallations: defenseOut,
+            wallSections: wallOut,
             notifications: allNotifs,
           });
         }
@@ -1979,7 +2380,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     let flushUnits = s.units;
     let flushVisible = s.visibleHexes;
     let flushTerritory = s.territory;
-    let flushHeroes = s.heroes;
+    let flushHeroes: Hero[] = [];
     let flushCommanders = s.commanders;
     const flushNotifs: GameNotification[] = [];
 
@@ -2035,41 +2436,6 @@ export const useGameStore = create<GameState>((set, get) => ({
             id: generateId('n'),
             turn: newCycle,
             message: 'Commander training cancelled; gold refunded.',
-            type: 'warning',
-          });
-        }
-      } else if ('heroKind' in pr) {
-        const city = flushCities.find(c => c.id === pr.cityId);
-        if (city && city.ownerId === pr.playerId) {
-          flushHeroes = [
-            ...flushHeroes,
-            {
-              id: generateId('hero'),
-              name: nextHeroName(),
-              type: pr.heroKind,
-              q: city.q,
-              r: city.r,
-              ownerId: pr.playerId,
-              hp: HERO_BASE_HP,
-              maxHp: HERO_BASE_HP,
-            },
-          ];
-          if (pr.playerId === HUMAN_ID) {
-            flushNotifs.push({
-              id: generateId('n'),
-              turn: newCycle,
-              message: `Hero ready (${pr.heroKind}).`,
-              type: 'success',
-            });
-          }
-        } else if (pr.playerId === HUMAN_ID) {
-          flushPlayers = flushPlayers.map(p =>
-            p.id === HUMAN_ID ? { ...p, gold: p.gold + 80 } : p,
-          );
-          flushNotifs.push({
-            id: generateId('n'),
-            turn: newCycle,
-            message: 'Hero training cancelled; gold refunded.',
             type: 'warning',
           });
         }
@@ -2157,6 +2523,36 @@ export const useGameStore = create<GameState>((set, get) => ({
       });
     }
 
+    flushCities = flushCities.map(c => ({
+      ...c,
+      buildings: c.buildings.map(b => ensureCityBuildingHp(b)),
+    }));
+
+    flushUnits = flushUnits.map(u => {
+      if (u.hp <= 0 || u.hp >= u.maxHp || u.aboardShipId || isNavalUnitType(u.type) || u.type === 'builder') {
+        return u;
+      }
+      if (u.status === 'fighting') return u;
+      const add = Math.max(1, Math.floor(u.maxHp * UNIT_HP_REGEN_FRACTION_PER_CYCLE));
+      return { ...u, hp: Math.min(u.maxHp, u.hp + add) };
+    });
+
+    let unitStacksMut = updateArmyRallyFromUnits(s.unitStacks ?? [], flushUnits);
+    const replen = computeArmyReplenishment({
+      unitStacks: unitStacksMut,
+      units: flushUnits,
+      cities: flushCities,
+      players: flushPlayers,
+      cycle: newCycle,
+      pendingRecruits: [...pendingRecruitsAcc, ...s.pendingRecruits.filter(p => p.completesAtCycle !== newCycle)],
+    });
+    flushCities = replen.cities;
+    flushPlayers = replen.players;
+    unitStacksMut = replen.unitStacks;
+    for (const pr of replen.newPending) {
+      pendingRecruitsAcc.push(pr as PendingLandRecruit);
+    }
+
     // ── Weather System ──
     let currentWeather = s.activeWeather;
     let lastWeatherEnd = s.lastWeatherEndCycle;
@@ -2190,7 +2586,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     let notifs = [...flushNotifs, ...weatherNotifs, ...econ.notifications];
 
     // Military upkeep (food + guns consumption, per cluster); reuse clusters from economy
-    const upkeepResult = upkeepTick(units, cities, flushHeroes, newCycle, flushTiles, flushTerritory, econ.clusters);
+    const upkeepResult = upkeepTick(units, cities, flushHeroes, newCycle, flushTiles, flushTerritory);
     notifs.push(...upkeepResult.notifications);
 
     let constructionsForSet = s.constructions;
@@ -2388,11 +2784,16 @@ export const useGameStore = create<GameState>((set, get) => ({
         if (!city || city.ownerId !== aiPlayerId) continue;
         const ringHexes = getHexRing(city.q, city.r, wr.ring);
         const ownerWallKeys = new Set(wallSectionsMut.filter(w => w.ownerId === aiPlayerId).map(w => tileKey(w.q, w.r)));
+        const queuedWallKeys = new Set(
+          constructionsForSet
+            .filter(c => c.ownerId === aiPlayerId && c.type === 'wall_section')
+            .map(c => tileKey(c.q, c.r)),
+        );
         const validHexes: { q: number; r: number }[] = [];
         for (const { q, r } of ringHexes) {
           const tile = tilesMut.get(tileKey(q, r));
           if (!tile || tile.biome === 'water') continue;
-          if (ownerWallKeys.has(tileKey(q, r))) continue;
+          if (ownerWallKeys.has(tileKey(q, r)) || queuedWallKeys.has(tileKey(q, r))) continue;
           validHexes.push({ q, r });
         }
         if (validHexes.length === 0) continue;
@@ -2403,13 +2804,22 @@ export const useGameStore = create<GameState>((set, get) => ({
         if (cityIdx >= 0) {
           cities[cityIdx] = {
             ...cities[cityIdx],
+            universityBuilderTask: 'city_defenses',
             storage: { ...cities[cityIdx].storage, stone: Math.max(0, cityStone - totalCost) },
           };
         }
         for (const { q, r } of validHexes) {
-          wallSectionsMut.push({
-            q, r, ownerId: aiPlayerId, hp: WALL_SECTION_HP, maxHp: WALL_SECTION_HP,
-          });
+          constructionsForSet = [...constructionsForSet, {
+            id: generateId('con'),
+            type: 'wall_section',
+            q,
+            r,
+            cityId: city.id,
+            ownerId: aiPlayerId,
+            bpRequired: WALL_SECTION_BP_COST,
+            bpAccumulated: 0,
+            wallBuildRing: wr.ring,
+          }];
         }
       }
 
@@ -2436,6 +2846,20 @@ export const useGameStore = create<GameState>((set, get) => ({
           ownerId: aiPlayerId,
         });
         pendingScrollRemovals.push(sa.scrollId);
+      }
+
+      // AI stance changes (tactical combat adjustments)
+      for (const sc of aiPlan.stanceChanges ?? []) {
+        const unit = units.find(u => u.id === sc.unitId && u.ownerId === aiPlayerId);
+        if (unit && unit.hp > 0) unit.stance = sc.stance;
+      }
+
+      // AI retreat (when losing badly)
+      for (const rt of aiPlan.retreats ?? []) {
+        const unit = units.find(u => u.id === rt.unitId && u.ownerId === aiPlayerId);
+        if (unit && unit.hp > 0 && !unit.retreatAt) {
+          unit.retreatAt = Date.now() + RETREAT_DELAY_MS;
+        }
       }
 
       // AI university task selection
@@ -2552,6 +2976,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       units: aliveUnits,
       heroes: flushHeroes,
       commanders: flushCommanders,
+      unitStacks: unitStacksMut,
       players: playersForSet,
       territory,
       phase,
@@ -2562,6 +2987,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       lastDefenseVolleyFx: [],
       lastRangedShotFx: [],
       rangedShooterUnitIds: [],
+      combatMoraleState: new Map(),
+      combatKillFeed: [],
       activeWeather: currentWeather,
       lastWeatherEndCycle: lastWeatherEnd,
       scoutMissions,
@@ -2598,12 +3025,24 @@ export const useGameStore = create<GameState>((set, get) => ({
     // Tactical: assigning destination for selected stacks (bottom-bar flow)
     if (s.assigningTacticalForSelectedStacks !== null) {
       const { orderType } = s.assigningTacticalForSelectedStacks;
-      if (orderType === 'defend_pick') {
-        get().setTacticalDefendTargetFromMap(q, r);
+      if (orderType === 'defend_pick' || orderType === 'city_defense_pick') {
+        get().setTacticalCityDefenseTargetFromMap(q, r);
+        return;
+      }
+      if (orderType === 'patrol_paint') {
+        get().toggleTacticalPatrolPaintHex(q, r);
+        return;
+      }
+      if (orderType === 'patrol_pick') {
+        get().setTacticalPatrolTargetFromMap(q, r);
         return;
       }
       if (orderType === 'incorporate_village') {
         get().setTacticalIncorporateTargetForSelected(q, r);
+        return;
+      }
+      if (orderType === 'attack_building_pick') {
+        get().setTacticalAttackBuildingTargetForSelected(q, r);
         return;
       }
       if (orderType === 'attack_city') {
@@ -2642,8 +3081,12 @@ export const useGameStore = create<GameState>((set, get) => ({
     if (s.uiMode === 'build_defense') {
       const pd = s.pendingDefenseBuild;
       if (pd) {
+        const before = s.constructions.length;
         get().startCityDefenseTowerBuild(q, r, pd.towerType, pd.level);
-        set({ uiMode: 'normal', pendingDefenseBuild: null });
+        const after = get().constructions.length;
+        if (after > before) {
+          set({ uiMode: 'normal', pendingDefenseBuild: null });
+        }
       }
       return;
     }
@@ -2749,6 +3192,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         assigningTacticalForSelectedStacks: null,
         assigningTacticalForStack: null,
         assigningTacticalOrderType: null,
+        tacticalPatrolPaintHexKeys: [],
       });
       return;
     }
@@ -2999,7 +3443,10 @@ export const useGameStore = create<GameState>((set, get) => ({
     const siteR = r;
 
     const tile = s.tiles.get(tileKey(siteQ, siteR));
-    if (!tile || tile.biome === 'water' || tile.biome === 'mountain') return;
+    if (!tile || tile.biome === 'water' || tile.biome === 'mountain') {
+      get().addNotification('Defenses can only be built on valid land hexes (not water or mountain).', 'warning');
+      return;
+    }
     if (s.cities.some(c => c.q === siteQ && c.r === siteR)) {
       get().addNotification('Cannot build defenses on the city center hex.', 'warning');
       return;
@@ -3017,6 +3464,11 @@ export const useGameStore = create<GameState>((set, get) => ({
     const payCity = s.cities.find(c => c.id === terr.cityId);
     if (!payCity || payCity.ownerId !== HUMAN_ID) {
       get().addNotification('No city owns this territory tile.', 'warning');
+      return;
+    }
+    const blockedReason = getDefenseProjectBlockedReason(payCity);
+    if (blockedReason) {
+      get().addNotification(blockedReason, 'warning');
       return;
     }
     if (s.cities.some(c => c.buildings.some(b => tileKey(b.q, b.r) === hexKey))) {
@@ -3083,7 +3535,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       constructions: [...s.constructions, site],
     });
     get().addNotification(
-      `${DEFENSE_TOWER_DISPLAY_NAME[towerType]} L${targetLevel} construction started (${bpRequired} BP, University workforce if City defenses task).`,
+      `${DEFENSE_TOWER_DISPLAY_NAME[towerType]} L${targetLevel} project started (${bpRequired} BP).`,
       'info',
     );
   },
@@ -3310,7 +3762,7 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   // ─── Recruit Unit (from Barracks hex — gold cost + pop draft) ─
 
-  recruitUnit: (cityId, type, armsLevel) => {
+  recruitUnit: (cityId, type, armsLevel, stackOpts) => {
     const s = get();
     const player = s.players.find(p => p.isHuman);
     const city = s.cities.find(c => c.id === cityId);
@@ -3422,6 +3874,44 @@ export const useGameStore = create<GameState>((set, get) => ({
       });
     }
 
+    let unitStacksNext = s.unitStacks ?? [];
+    let targetStackId: string | undefined;
+    if (stackOpts?.stackMode === 'new') {
+      const sid = generateId('stack');
+      const compArms: 1 | 2 | 3 = effArms;
+      unitStacksNext = [
+        ...unitStacksNext,
+        {
+          id: sid,
+          ownerId: HUMAN_ID,
+          homeCityId: cityId,
+          name: stackOpts.name?.trim() || `Stack ${unitStacksNext.filter(a => a.ownerId === HUMAN_ID).length + 1}`,
+          composition: [{ unitType: type, armsLevel: compArms, count: 1 }],
+          autoReplenish: false,
+          rallyQ: city.q,
+          rallyR: city.r,
+        },
+      ];
+      targetStackId = sid;
+    } else if (stackOpts?.stackMode === 'existing') {
+      const ar = unitStacksNext.find(a => a.id === stackOpts.stackId && a.ownerId === HUMAN_ID);
+      if (!ar) {
+        get().addNotification('That unit stack no longer exists.', 'warning');
+        return;
+      }
+      unitStacksNext = unitStacksNext.map(a =>
+        a.id === ar.id
+          ? {
+              ...a,
+              composition: mergeCompositionEntry(a.composition, type, effArms, 1),
+              rallyQ: city.q,
+              rallyR: city.r,
+            }
+          : a,
+      );
+      targetStackId = ar.id;
+    }
+
     const prItem: PendingLandRecruit = {
       id: generateId('pr'),
       playerId: HUMAN_ID,
@@ -3431,11 +3921,31 @@ export const useGameStore = create<GameState>((set, get) => ({
       spawnQ,
       spawnR,
       completesAtCycle: s.cycle + 1,
+      ...(targetStackId ? { stackId: targetStackId } : {}),
     };
 
+    const nextPlayers = s.players.map(p => p.id === player.id ? { ...p, gold: p.gold - goldCost } : p);
+    if (gunL2Upkeep > 0) {
+      updatedCities = updatedCities.slice();
+      for (let i = 0; i < updatedCities.length; i++) {
+        if (updatedCities[i].ownerId !== HUMAN_ID) continue;
+        if ((updatedCities[i].storage.gunsL2 ?? 0) >= gunL2Upkeep) {
+          updatedCities[i] = {
+            ...updatedCities[i],
+            storage: {
+              ...updatedCities[i].storage,
+              gunsL2: (updatedCities[i].storage.gunsL2 ?? 0) - gunL2Upkeep,
+            },
+          };
+          break;
+        }
+      }
+    }
+
     set({
-      players: s.players.map(p => p.id === player.id ? { ...p, gold: p.gold - goldCost } : p),
+      players: nextPlayers,
       cities: updatedCities,
+      unitStacks: unitStacksNext,
       pendingRecruits: [...s.pendingRecruits, prItem],
     });
     const tierLabel = wantL3 ? 'L3 ' : wantL2 ? 'L2 ' : '';
@@ -3449,6 +3959,391 @@ export const useGameStore = create<GameState>((set, get) => ({
             ? `${goldCost}g${rwPart}`
             : `${goldCost}g`;
     get().addNotification(`Training ${tierLabel}${UNIT_DISPLAY_NAMES[type]} — ready next cycle. (${costStr})`, 'info');
+  },
+
+  trainAllStackTemplate: (cityId, stackId) => {
+    const stk = get().unitStacks?.find(d => d.id === stackId && d.ownerId === HUMAN_ID);
+    const city = get().cities.find(c => c.id === cityId);
+    if (!stk || !city || city.ownerId !== HUMAN_ID) return;
+    let budget = 40;
+    for (const row of stk.composition) {
+      if (row.count <= 0 || budget <= 0) continue;
+      const have = get().units.filter(
+        u =>
+          u.stackId === stackId &&
+          u.hp > 0 &&
+          u.type === row.unitType &&
+          (u.armsLevel ?? 1) === row.armsLevel,
+      ).length;
+      const need = Math.min(row.count - have, budget);
+      for (let i = 0; i < need; i++) {
+        get().recruitUnit(cityId, row.unitType, row.armsLevel, { stackMode: 'existing', stackId });
+        budget--;
+        if (budget <= 0) return;
+      }
+    }
+  },
+
+  updateStackComposition: (stackId, composition) => {
+    const s = get();
+    set({
+      unitStacks: (s.unitStacks ?? []).map(a =>
+        a.id === stackId && a.ownerId === HUMAN_ID ? { ...a, composition } : a,
+      ),
+    });
+  },
+
+  setStackAutoReplenish: (stackId, enabled) => {
+    const s = get();
+    set({
+      unitStacks: (s.unitStacks ?? []).map(a =>
+        a.id === stackId && a.ownerId === HUMAN_ID ? { ...a, autoReplenish: enabled } : a,
+      ),
+    });
+  },
+
+  setStackName: (stackId, name) => {
+    const s = get();
+    set({
+      unitStacks: (s.unitStacks ?? []).map(a =>
+        a.id === stackId && a.ownerId === HUMAN_ID ? { ...a, name: name.trim() || a.name } : a,
+      ),
+    });
+  },
+
+  createArmy: (name) => {
+    const s = get();
+    const n = name?.trim() || `Field army ${(s.operationalArmies ?? []).filter(f => f.ownerId === HUMAN_ID).length + 1}`;
+    const oa: OperationalArmy = {
+      id: generateId('army'),
+      ownerId: HUMAN_ID,
+      name: n,
+      stance: 'aggressive',
+      stackIds: [],
+    };
+    set({ operationalArmies: [...(s.operationalArmies ?? []), oa] });
+    get().addNotification(`Created ${n}. Add stacks from the army card (map hexes or barracks templates).`, 'info');
+  },
+
+  addStackToArmy: (armyId, stackId) => {
+    const s = get();
+    if (!s.unitStacks?.some(d => d.id === stackId && d.ownerId === HUMAN_ID)) {
+      get().addNotification(
+        'That unit stack does not exist. Train troops at a Barracks using a New or Existing stack, or pick a stack from the list.',
+        'warning',
+      );
+      return;
+    }
+    set({
+      operationalArmies: (s.operationalArmies ?? []).map(f => {
+        if (f.ownerId !== HUMAN_ID) return f;
+        const d0 = f.stackIds ?? [];
+        if (f.id === armyId) {
+          if (d0.includes(stackId)) return f;
+          return { ...f, stackIds: [...d0, stackId] };
+        }
+        return { ...f, stackIds: d0.filter(id => id !== stackId) };
+      }),
+    });
+    const name = s.unitStacks?.find(d => d.id === stackId)?.name ?? 'stack';
+    get().addNotification(`Linked training stack "${name}" to army.`, 'success');
+  },
+
+  removeStackFromArmy: (armyId, stackId) => {
+    const s = get();
+    set({
+      operationalArmies: (s.operationalArmies ?? []).map(f =>
+        f.id === armyId && f.ownerId === HUMAN_ID
+          ? { ...f, stackIds: (f.stackIds ?? []).filter(id => id !== stackId) }
+          : f,
+      ),
+    });
+  },
+
+  selectStacksForArmy: (armyId) => {
+    const s = get();
+    const army = s.operationalArmies?.find(o => o.id === armyId && o.ownerId === HUMAN_ID);
+    if (!army) return;
+    const keys = new Set<string>();
+    for (const u of s.units) {
+      if (u.ownerId !== HUMAN_ID || u.hp <= 0) continue;
+      if (u.armyId !== armyId) continue;
+      keys.add(tileKey(u.q, u.r));
+    }
+    if (keys.size === 0) {
+      get().addNotification('No units in this army on the map yet.', 'warning');
+      return;
+    }
+    set({
+      tacticalSelectedStackKeys: [...keys],
+      tacticalOrderScope: 'army',
+      tacticalOrderScopeArmyId: armyId,
+    });
+    get().addNotification(`Order scope: ${army.name} — ${keys.size} hex group(s).`, 'info');
+  },
+
+  deleteArmy: (armyId) => {
+    const s = get();
+    const scopeFix =
+      s.tacticalOrderScope === 'army' && s.tacticalOrderScopeArmyId === armyId
+        ? { tacticalOrderScope: 'all' as const, tacticalOrderScopeArmyId: null }
+        : {};
+    set({
+      operationalArmies: (s.operationalArmies ?? []).filter(o => !(o.id === armyId && o.ownerId === HUMAN_ID)),
+      units: s.units.map(u =>
+        u.ownerId === HUMAN_ID && u.armyId === armyId ? { ...u, armyId: undefined } : u,
+      ),
+      commanders: s.commanders.map(c => {
+        if (c.ownerId !== HUMAN_ID) return c;
+        if (c.assignment?.kind === 'field_army' && c.assignment.armyId === armyId) {
+          return { ...c, assignment: null };
+        }
+        return c;
+      }),
+      ...scopeFix,
+    });
+  },
+
+  attachSelectedStacksToArmy: (armyId) => {
+    const s = get();
+    const army = s.operationalArmies?.find(o => o.id === armyId && o.ownerId === HUMAN_ID);
+    if (!army) return;
+    const keys = s.tacticalSelectedStackKeys ?? [];
+    if (keys.length === 0) {
+      get().addNotification('Select one or more stacks on the map list, then attach.', 'warning');
+      return;
+    }
+    const unitIds = new Set<string>();
+    for (const key of keys) {
+      for (const u of s.units) {
+        if (u.ownerId !== HUMAN_ID || u.hp <= 0) continue;
+        if (tileKey(u.q, u.r) !== key) continue;
+        if (u.aboardShipId || u.type === 'builder') continue;
+        if (isNavalUnitType(u.type)) continue;
+        unitIds.add(u.id);
+      }
+    }
+    if (unitIds.size === 0) {
+      get().addNotification('No land units in the selected stacks.', 'warning');
+      return;
+    }
+    set({
+      units: s.units.map(u => (unitIds.has(u.id) ? { ...u, armyId } : u)),
+    });
+    get().addNotification(`Attached ${unitIds.size} unit(s) to ${army.name}.`, 'success');
+  },
+
+  attachHexStackToArmy: (armyId, q, r) => {
+    const s = get();
+    const army = s.operationalArmies?.find(o => o.id === armyId && o.ownerId === HUMAN_ID);
+    if (!army) return;
+    const key = tileKey(q, r);
+    const unitIds = new Set<string>();
+    for (const u of s.units) {
+      if (u.ownerId !== HUMAN_ID || u.hp <= 0) continue;
+      if (tileKey(u.q, u.r) !== key) continue;
+      if (u.aboardShipId || u.type === 'builder') continue;
+      if (isNavalUnitType(u.type)) continue;
+      unitIds.add(u.id);
+    }
+    if (unitIds.size === 0) {
+      get().addNotification('No land units at that hex to attach (ships/builders excluded).', 'warning');
+      return;
+    }
+    set({
+      units: s.units.map(u => (unitIds.has(u.id) ? { ...u, armyId } : u)),
+    });
+    get().addNotification(`Attached ${unitIds.size} unit(s) at (${q},${r}) to ${army.name}.`, 'success');
+  },
+
+  detachHexStackFromArmy: (armyId, q, r) => {
+    const s = get();
+    const army = s.operationalArmies?.find(o => o.id === armyId && o.ownerId === HUMAN_ID);
+    if (!army) return;
+    const k = tileKey(q, r);
+    let n = 0;
+    set({
+      units: s.units.map(u => {
+        if (u.ownerId !== HUMAN_ID || u.hp <= 0) return u;
+        if (u.armyId !== armyId) return u;
+        if (tileKey(u.q, u.r) !== k) return u;
+        if (u.aboardShipId || u.type === 'builder' || isNavalUnitType(u.type)) return u;
+        n++;
+        return { ...u, armyId: undefined };
+      }),
+    });
+    if (n > 0) {
+      get().addNotification(`Detached ${n} unit(s) at (${q},${r}) from ${army.name}.`, 'info');
+    }
+  },
+
+  assignCommanderToArmy: (commanderId, armyId) => {
+    const s = get();
+    const cmd = s.commanders.find(c => c.id === commanderId && c.ownerId === HUMAN_ID);
+    const army = s.operationalArmies?.find(o => o.id === armyId && o.ownerId === HUMAN_ID);
+    if (!cmd || !army) return;
+    if ((cmd.commanderKind ?? 'land') === 'naval') {
+      get().addNotification('Assign naval commanders to a fleet from the map stack list.', 'warning');
+      return;
+    }
+    const lead = s.units.find(
+      u =>
+        u.ownerId === HUMAN_ID &&
+        u.armyId === armyId &&
+        u.hp > 0 &&
+        !u.aboardShipId &&
+        !isNavalUnitType(u.type) &&
+        u.type !== 'builder',
+    );
+    if (!lead) {
+      get().addNotification('Attach land units to this army before assigning a commander.', 'warning');
+      return;
+    }
+    set({
+      commanders: s.commanders.map(c => {
+        if (c.id === commanderId && c.ownerId === HUMAN_ID) {
+          return { ...c, assignment: { kind: 'field_army' as const, armyId }, q: lead.q, r: lead.r };
+        }
+        if (c.ownerId === HUMAN_ID && c.assignment?.kind === 'field_army' && c.assignment.armyId === armyId) {
+          return { ...c, assignment: null };
+        }
+        return c;
+      }),
+    });
+    get().addNotification(`${cmd.name} leads ${army.name}.`, 'success');
+  },
+
+  toggleTacticalPatrolPaintHex: (q, r) => {
+    const s = get();
+    const k = tileKey(q, r);
+    const tile = s.tiles.get(k);
+    if (!tile || tile.biome === 'water') return;
+    const setKeys = new Set(s.tacticalPatrolPaintHexKeys ?? []);
+    if (setKeys.has(k)) setKeys.delete(k);
+    else setKeys.add(k);
+    set({ tacticalPatrolPaintHexKeys: [...setKeys] });
+  },
+
+  addTacticalPatrolPaintHex: (q, r) => {
+    const s = get();
+    const k = tileKey(q, r);
+    const tile = s.tiles.get(k);
+    if (!tile || tile.biome === 'water') return;
+    const setKeys = new Set(s.tacticalPatrolPaintHexKeys ?? []);
+    if (setKeys.has(k)) return;
+    setKeys.add(k);
+    set({ tacticalPatrolPaintHexKeys: [...setKeys] });
+  },
+
+  clearTacticalPatrolPaint: () => set({ tacticalPatrolPaintHexKeys: [] }),
+
+  finishTacticalPatrolFromPaint: () => {
+    const s = get();
+    const pending = s.assigningTacticalForSelectedStacks;
+    if (!pending || pending.orderType !== 'patrol_paint' || s.pendingTacticalOrders === null) return;
+    const keys = s.tacticalPatrolPaintHexKeys ?? [];
+    if (keys.length === 0) {
+      get().addNotification('Select at least one land hex for patrol, or use Center patrol.', 'warning');
+      return;
+    }
+    let sq = 0;
+    let sr = 0;
+    for (const k of keys) {
+      const [q, r] = parseTileKey(k);
+      sq += q;
+      sr += r;
+    }
+    const n = keys.length;
+    const centerQ = Math.round(sq / n);
+    const centerR = Math.round(sr / n);
+    const next = { ...s.pendingTacticalOrders };
+    let placed = 0;
+    for (const stackKey of pending.stackKeys) {
+      const [fromQ, fromR] = stackKey.split(',').map(Number);
+      const stackUnits = s.units.filter(
+        u => u.q === fromQ && u.r === fromR && u.ownerId === HUMAN_ID && u.hp > 0 && !u.aboardShipId,
+      );
+      const pids = resolveParticipatingUnitIdsForTactical(
+        stackUnits,
+        stackKey,
+        s.tacticalIncludedUnitTypes,
+        s.tacticalStackUnitTypeFocus,
+      );
+      if (pids !== undefined && pids.length === 0) continue;
+      next[stackKey] =
+        pids && pids.length > 0
+          ? {
+              type: 'patrol',
+              centerQ,
+              centerR,
+              radius: PATROL_DEFAULT_RADIUS,
+              hexKeys: keys,
+              participatingUnitIds: pids,
+            }
+          : {
+              type: 'patrol',
+              centerQ,
+              centerR,
+              radius: PATROL_DEFAULT_RADIUS,
+              hexKeys: keys,
+            };
+      placed++;
+    }
+    if (placed === 0) {
+      get().addNotification('No units match the current type filter on those stacks.', 'warning');
+      return;
+    }
+    set({
+      pendingTacticalOrders: next,
+      assigningTacticalForSelectedStacks: null,
+      tacticalPatrolPaintHexKeys: [],
+    });
+    get().addNotification('Patrol zone set — Confirm orders.', 'info');
+  },
+
+  startTacticalPatrolCenterOnly: () => {
+    const s = get();
+    if (s.pendingTacticalOrders === null) return;
+    const stackKeys = humanStackKeysForTactical(s);
+    if (stackKeys.length === 0) return;
+    set({
+      assigningTacticalForSelectedStacks: { orderType: 'patrol_pick', stackKeys },
+      tacticalPatrolPaintHexKeys: [],
+      assigningTacticalForStack: null,
+      assigningTacticalOrderType: null,
+    });
+  },
+
+  repairCityBuilding: (cityId, buildingQ, buildingR) => {
+    const s = get();
+    const city = s.cities.find(c => c.id === cityId && c.ownerId === HUMAN_ID);
+    const player = s.players.find(p => p.isHuman);
+    if (!city || !player) return;
+    const b = city.buildings.find(x => x.q === buildingQ && x.r === buildingR);
+    if (!b || b.buildingState !== 'ruins') return;
+    const baseCost = BUILDING_COSTS[b.type];
+    const gold = Math.ceil(baseCost * RUINS_REPAIR_GOLD_RATIO);
+    if (player.gold < gold) {
+      get().addNotification(`Need ${gold} gold to repair ruins.`, 'warning');
+      return;
+    }
+    const maxHp = b.maxHp ?? defaultCityBuildingMaxHp(b.type, b.level ?? 1);
+    set({
+      players: s.players.map(p => (p.id === HUMAN_ID ? { ...p, gold: p.gold - gold } : p)),
+      cities: s.cities.map(c =>
+        c.id !== cityId
+          ? c
+          : {
+              ...c,
+              buildings: c.buildings.map(bb =>
+                bb.q === buildingQ && bb.r === buildingR
+                  ? { ...bb, buildingState: 'normal' as const, hp: maxHp, maxHp }
+                  : bb,
+              ),
+            },
+      ),
+    });
+    get().addNotification('Building repaired.', 'success');
   },
 
   recruitShip: (cityId, shipyardQ, shipyardR, shipType) => {
@@ -3586,61 +4481,6 @@ export const useGameStore = create<GameState>((set, get) => ({
       }),
     });
     get().addNotification('Troops disembarked.', 'success');
-  },
-
-  // ─── Recruit Hero ──────────────────────────────────────────
-
-  recruitHero: (cityId) => {
-    const s = get();
-    const player = s.players.find(p => p.id === HUMAN_ID);
-    const city = s.cities.find(c => c.id === cityId);
-    if (!player || !city) return;
-
-    const empirePop = s.cities.filter(c => c.ownerId === HUMAN_ID).reduce((sum, c) => sum + c.population, 0);
-    if (empirePop < HERO_POPULATION_UNLOCK) {
-      get().addNotification(
-        `Heroes unlock at ${HERO_POPULATION_UNLOCK} empire population (currently ${empirePop}).`,
-        'warning',
-      );
-      return;
-    }
-
-    // Heroes use barracks slots only (commanders are separate).
-    const playerBarracks = s.cities
-      .filter(c => c.ownerId === HUMAN_ID)
-      .reduce((sum, c) => sum + c.buildings.filter(b => b.type === 'barracks').length, 0);
-    const pendingHeroSlots = s.pendingRecruits.filter(
-      pr => 'heroKind' in pr && pr.playerId === HUMAN_ID,
-    ).length;
-    const playerHeroes = s.heroes.filter(h => h.ownerId === HUMAN_ID).length;
-    if (playerHeroes + pendingHeroSlots >= playerBarracks) {
-      get().addNotification('Need more Barracks for another hero!', 'warning');
-      return;
-    }
-
-    const heroCost = 80;
-    if (player.gold < heroCost) {
-      get().addNotification(`Need ${heroCost} gold for a hero!`, 'warning');
-      return;
-    }
-
-    const heroTypes: Array<'general' | 'logistician'> = ['general', 'logistician'];
-    const pick = heroTypes[(playerHeroes + pendingHeroSlots) % heroTypes.length];
-
-    set({
-      players: s.players.map(p => (p.id === HUMAN_ID ? { ...p, gold: p.gold - heroCost } : { ...p })),
-      pendingRecruits: [
-        ...s.pendingRecruits,
-        {
-          id: generateId('pr'),
-          playerId: HUMAN_ID,
-          cityId,
-          heroKind: pick,
-          completesAtCycle: s.cycle + 1,
-        },
-      ],
-    });
-    get().addNotification(`Hero training (${pick}) — ready next economy cycle.`, 'info');
   },
 
   recruitCommander: (cityId) => {
@@ -3835,38 +4675,64 @@ export const useGameStore = create<GameState>((set, get) => ({
     const s = get();
     const city = s.cities.find(c => c.id === cityId);
     if (!city || city.ownerId !== HUMAN_ID) return;
-    const ringHexes = getHexRing(city.q, city.r, ring);
+    const ringTarget: 1 | 2 = ring >= 2 ? 2 : 1;
+    const blockedReason = getDefenseProjectBlockedReason(city);
+    if (blockedReason) {
+      get().addNotification(blockedReason, 'warning');
+      return;
+    }
+    const ringHexes = getHexRing(city.q, city.r, ringTarget);
+    const existingWallKeys = new Set(
+      s.wallSections
+        .filter(w => w.ownerId === HUMAN_ID)
+        .map(w => tileKey(w.q, w.r)),
+    );
+    const queuedWallKeys = new Set(
+      s.constructions
+        .filter(c => c.ownerId === HUMAN_ID && c.type === 'wall_section')
+        .map(c => tileKey(c.q, c.r)),
+    );
     const validHexes: { q: number; r: number }[] = [];
     for (const { q, r } of ringHexes) {
       const tile = s.tiles.get(tileKey(q, r));
       if (!tile || tile.biome === 'water') continue;
-      if (s.wallSections.some(w => tileKey(w.q, w.r) === tileKey(q, r) && w.ownerId === HUMAN_ID)) continue;
+      const key = tileKey(q, r);
+      if (existingWallKeys.has(key) || queuedWallKeys.has(key)) continue;
       validHexes.push({ q, r });
     }
     if (validHexes.length === 0) {
-      get().addNotification(`No valid hexes for wall ring ${ring} around ${city.name}.`, 'warning');
+      get().addNotification(`No open wall projects for ring ${ringTarget} around ${city.name}.`, 'warning');
       return;
     }
     const totalCost = validHexes.length * WALL_SECTION_STONE_COST;
-    const humanCities = s.cities.filter(c => c.ownerId === HUMAN_ID);
-    const totalStone = humanCities.reduce((sum, c) => sum + (c.storage.stone ?? 0), 0);
-    if (totalStone < totalCost) {
-      get().addNotification(`Need ${totalCost - totalStone} more stone (${totalCost} for ${validHexes.length} sections).`, 'warning');
+    const cityStone = city.storage.stone ?? 0;
+    if (cityStone < totalCost) {
+      get().addNotification(`Need ${totalCost - cityStone} more stone in ${city.name} (${totalCost} total).`, 'warning');
       return;
     }
-    const newSections: WallSection[] = validHexes.map(({ q, r }) => ({
-      q, r, ownerId: HUMAN_ID, hp: WALL_SECTION_HP, maxHp: WALL_SECTION_HP,
+    const newSites: ConstructionSite[] = validHexes.map(({ q, r }) => ({
+      id: generateId('con'),
+      type: 'wall_section',
+      q,
+      r,
+      cityId: city.id,
+      ownerId: HUMAN_ID,
+      bpRequired: WALL_SECTION_BP_COST,
+      bpAccumulated: 0,
+      wallBuildRing: ringTarget,
     }));
-    let toDeduct = totalCost;
-    const updatedCities = s.cities.map(c => {
-      if (c.ownerId !== HUMAN_ID || toDeduct <= 0) return c;
-      const have = c.storage.stone ?? 0;
-      const take = Math.min(have, toDeduct);
-      toDeduct -= take;
-      return { ...c, storage: { ...c.storage, stone: Math.max(0, have - take) } };
+    set({
+      cities: s.cities.map(c =>
+        c.id === city.id
+          ? { ...c, storage: { ...c.storage, stone: Math.max(0, (c.storage.stone ?? 0) - totalCost) } }
+          : c,
+      ),
+      constructions: [...s.constructions, ...newSites],
     });
-    set({ wallSections: [...s.wallSections, ...newSections], cities: updatedCities });
-    get().addNotification(`Built wall ring ${ring} around ${city.name} (${newSections.length} sections).`, 'success');
+    get().addNotification(
+      `Queued wall ring ${ringTarget} around ${city.name} (${newSites.length} sections, ${newSites.length * WALL_SECTION_BP_COST} BP).`,
+      'success',
+    );
   },
 
   builderSelectDeposit: (q, r, type) => {
@@ -3998,8 +4864,24 @@ export const useGameStore = create<GameState>((set, get) => ({
       u => u.q === fromQ && u.r === fromR && u.ownerId === HUMAN_ID && u.hp > 0 && !u.aboardShipId,
     );
     if (stack.length === 0) return;
-    const naval = stack.some(u => isNavalUnitType(u.type));
-    if (naval && !stack.every(u => isNavalUnitType(u.type))) {
+    const stackKey = tileKey(fromQ, fromR);
+    const pids =
+      s.pendingTacticalOrders !== null
+        ? resolveParticipatingUnitIdsForTactical(
+            stack,
+            stackKey,
+            s.tacticalIncludedUnitTypes,
+            s.tacticalStackUnitTypeFocus,
+          )
+        : resolveParticipatingUnitIds(stack, s.tacticalIncludedUnitTypes);
+    if (pids !== undefined && pids.length === 0) {
+      get().addNotification('No units match the current type filter on this stack.', 'warning');
+      return;
+    }
+    const marching = pids ? stack.filter(u => pids.includes(u.id)) : stack;
+    if (marching.length === 0) return;
+    const naval = marching.some(u => isNavalUnitType(u.type));
+    if (naval && !marching.every(u => isNavalUnitType(u.type))) {
       get().addNotification('Cannot mix ships and land units in one move order.', 'warning'); return;
     }
     const destTile = s.tiles.get(tileKey(toQ, toR));
@@ -4012,7 +4894,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         get().addNotification('Ships can only move on water.', 'warning'); return;
       }
     } else if (destTile.biome === 'water') {
-      if (!canLandStackEmbarkFriendlyScoutAt(s.tiles, s.units, toQ, toR, stack, HUMAN_ID)) {
+      if (!canLandStackEmbarkFriendlyScoutAt(s.tiles, s.units, toQ, toR, marching, HUMAN_ID)) {
         get().addNotification('Land units cannot enter water (need a friendly scout ship with room at destination).', 'warning'); return;
       }
     }
@@ -4042,6 +4924,23 @@ export const useGameStore = create<GameState>((set, get) => ({
       set({ uiMode: 'normal', selectedHex: null }); return;
     }
 
+    const stackKey = tileKey(fromQ, fromR);
+    const pids =
+      s.pendingTacticalOrders !== null
+        ? resolveParticipatingUnitIdsForTactical(
+            readyUnits,
+            stackKey,
+            s.tacticalIncludedUnitTypes,
+            s.tacticalStackUnitTypeFocus,
+          )
+        : resolveParticipatingUnitIds(readyUnits, s.tacticalIncludedUnitTypes);
+    if (pids !== undefined && pids.length === 0) {
+      get().addNotification('No units match the current type filter on this stack.', 'warning');
+      set({ uiMode: 'normal', selectedHex: null });
+      return;
+    }
+    const marching = pids ? readyUnits.filter(u => pids.includes(u.id)) : readyUnits;
+
     const dist = hexDistance(fromQ, fromR, toQ, toR);
     if (dist === 0) { set({ uiMode: 'normal', selectedHex: null }); return; }
     const maxLeg = maxMoveOrderDistanceForDestination(toQ, toR, s.territory, HUMAN_ID);
@@ -4051,8 +4950,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       return;
     }
 
-    const naval = readyUnits.some(u => isNavalUnitType(u.type));
-    if (naval && !readyUnits.every(u => isNavalUnitType(u.type))) {
+    const naval = marching.some(u => isNavalUnitType(u.type));
+    if (naval && !marching.every(u => isNavalUnitType(u.type))) {
       get().addNotification('Cannot mix ships and land units.', 'warning');
       set({ uiMode: 'normal', selectedHex: null }); return;
     }
@@ -4068,36 +4967,46 @@ export const useGameStore = create<GameState>((set, get) => ({
         set({ uiMode: 'normal', selectedHex: null }); return;
       }
     } else if (destTile.biome === 'water') {
-      if (!canLandStackEmbarkFriendlyScoutAt(s.tiles, s.units, toQ, toR, readyUnits, HUMAN_ID)) {
+      if (!canLandStackEmbarkFriendlyScoutAt(s.tiles, s.units, toQ, toR, marching, HUMAN_ID)) {
         get().addNotification('Land units cannot enter water (need a friendly scout ship with room at destination).', 'warning');
         set({ uiMode: 'normal', selectedHex: null }); return;
       }
     }
 
-    // Set target for all selected units — movement tick will advance them
-    const newUnits = s.units.map(u => {
-      if (u.q === fromQ && u.r === fromR && u.ownerId === HUMAN_ID && u.hp > 0 && !u.aboardShipId) {
+    const echelon = applyEchelonForLandMove(
+      s.units,
+      fromQ,
+      fromR,
+      toQ,
+      toR,
+      marching,
+      s.cities,
+      s.tiles,
+      s.territory,
+      s.defaultMarchFormation,
+    );
+    let newUnits: Unit[];
+    if (echelon !== null) {
+      newUnits = echelon;
+    } else {
+      newUnits = s.units.map(u => {
+        if (u.q !== fromQ || u.r !== fromR || u.ownerId !== HUMAN_ID || u.hp <= 0 || u.aboardShipId) return u;
+        if (pids && !pids.includes(u.id)) return u;
         const deployed = withDeployFlags(u, toQ, toR, s.cities);
-        return {
+        const next: Unit = {
           ...deployed,
           targetQ: toQ,
           targetR: toR,
           status: 'moving' as const,
           marchInitialHexDistance: marchHexDistanceAtOrder(u, toQ, toR),
         };
-      }
-      return u;
-    });
+        delete next.marchEchelonHold;
+        delete next.attackWaveHold;
+        return next;
+      });
+    }
 
-    // Also move heroes at the same hex
-    const newHeroes = s.heroes.map(h => {
-      if (h.q === fromQ && h.r === fromR && h.ownerId === HUMAN_ID) {
-        return { ...h }; // Heroes follow their army via a separate mechanism
-      }
-      return h;
-    });
-
-    set({ units: newUnits, heroes: newHeroes, selectedHex: null, uiMode: 'normal' });
+    set({ units: newUnits, selectedHex: null, uiMode: 'normal' });
     get().addNotification(`Army moving to (${toQ}, ${toR})`, 'info');
   },
 
@@ -4112,7 +5021,35 @@ export const useGameStore = create<GameState>((set, get) => ({
         u.q === q && u.r === r && u.ownerId === HUMAN_ID ? { ...u, stance } : u
       ),
     });
-    get().addNotification(`Stance set to ${stance}`, 'info');
+    get().addNotification(`Stance set to ${stance.replace('_', ' ')}`, 'info');
+  },
+
+  activateAbility: (unitType) => {
+    const s = get();
+    if (!s.selectedHex) return;
+    const { q, r } = s.selectedHex;
+    const now = Date.now();
+    const abilityId = getAbilityForUnit(unitType);
+    if (!abilityId) return;
+    const def = ABILITY_DEFS[abilityId];
+    set({
+      units: s.units.map(u => {
+        if (u.q !== q || u.r !== r || u.ownerId !== HUMAN_ID || u.type !== unitType) return u;
+        if (u.abilityCooldownUntil && now < u.abilityCooldownUntil) return u;
+        if (def.toggle) {
+          const newActive = !u.abilityActive;
+          return { ...u, abilityActive: newActive };
+        }
+        return {
+          ...u,
+          abilityActive: true,
+          abilityActiveUntil: now + def.durationMs,
+          abilityCooldownUntil: now + def.durationMs + def.cooldownMs,
+          chargeReady: abilityId === 'charge' ? true : u.chargeReady,
+        };
+      }),
+    });
+    get().addNotification(`${def.label} activated!`, 'info');
   },
 
   startDefendMode: () => set({ uiMode: 'defend' }),
@@ -4188,10 +5125,26 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   closeBattleModal: () => set({ battleModalHexKey: null }),
 
+  setMajorEngagementDoctrine: (hexKey, doctrine) => {
+    const s = get();
+    const cur = s.majorEngagementStrategyByHex[hexKey];
+    if (!cur) return;
+    set({
+      majorEngagementStrategyByHex: {
+        ...s.majorEngagementStrategyByHex,
+        [hexKey]: { ...cur, [HUMAN_ID]: doctrine },
+      },
+    });
+  },
+
   openTacticalMode: () => {
     set({
       pendingTacticalOrders: {},
       tacticalSelectedStackKeys: [],
+      tacticalOrderScope: 'all',
+      tacticalOrderScopeArmyId: null,
+      tacticalIncludedUnitTypes: 'all',
+      tacticalStackUnitTypeFocus: {},
       assigningTacticalForSelectedStacks: null,
       assigningTacticalForStack: null,
       assigningTacticalOrderType: null,
@@ -4203,6 +5156,10 @@ export const useGameStore = create<GameState>((set, get) => ({
     set({
       pendingTacticalOrders: null,
       tacticalSelectedStackKeys: [],
+      tacticalOrderScope: 'all',
+      tacticalOrderScopeArmyId: null,
+      tacticalIncludedUnitTypes: 'all',
+      tacticalStackUnitTypeFocus: {},
       assigningTacticalForSelectedStacks: null,
       assigningTacticalForStack: null,
       assigningTacticalOrderType: null,
@@ -4235,15 +5192,75 @@ export const useGameStore = create<GameState>((set, get) => ({
     set({ tacticalSelectedStackKeys: next });
   },
 
+  setTacticalOrderScope: (scope, armyId) => {
+    set({
+      tacticalOrderScope: scope,
+      tacticalOrderScopeArmyId: scope === 'army' ? (armyId ?? null) : null,
+    });
+  },
+
+  setTacticalIncludedUnitTypes: (types) => {
+    set({ tacticalIncludedUnitTypes: types });
+  },
+
+  toggleTacticalIncludedUnitType: (type) => {
+    const s = get();
+    if (s.tacticalIncludedUnitTypes === 'all') {
+      const next = TACTICAL_FILTER_LAND_TYPES.filter(t => t !== type);
+      if (next.length === 0) {
+        get().addNotification('At least one unit type must remain selected.', 'warning');
+        return;
+      }
+      set({ tacticalIncludedUnitTypes: next });
+      return;
+    }
+    const cur = s.tacticalIncludedUnitTypes;
+    const has = cur.includes(type);
+    const next = has ? cur.filter(t => t !== type) : [...cur, type];
+    if (next.length === 0) {
+      get().addNotification('At least one unit type must remain selected.', 'warning');
+      return;
+    }
+    if (next.length === TACTICAL_FILTER_LAND_TYPES.length) {
+      set({ tacticalIncludedUnitTypes: 'all' });
+    } else {
+      set({ tacticalIncludedUnitTypes: next });
+    }
+  },
+
+  toggleTacticalStackUnitTypeFocus: (stackKey, unitType) => {
+    const s = get();
+    const cur = s.tacticalStackUnitTypeFocus[stackKey];
+    if (cur === unitType) {
+      const next = { ...s.tacticalStackUnitTypeFocus };
+      delete next[stackKey];
+      set({ tacticalStackUnitTypeFocus: next });
+      return;
+    }
+    set({ tacticalStackUnitTypeFocus: { ...s.tacticalStackUnitTypeFocus, [stackKey]: unitType } });
+  },
+
   startTacticalOrderForSelected: (orderType) => {
     const s = get();
     if (s.pendingTacticalOrders === null) return;
     const stackKeys = humanStackKeysForTactical(s);
     if (stackKeys.length === 0) {
-      get().addNotification('Select at least one army in the list, or use orders to assign to all.', 'warning');
+      if (s.tacticalOrderScope === 'selected') {
+        get().addNotification('Order scope is “selected hex groups” — click hex groups in the list to include them.', 'warning');
+      } else if (s.tacticalOrderScope === 'army') {
+        get().addNotification('That field army has no land troops on the map yet — attach troops or change scope.', 'warning');
+      } else {
+        get().addNotification('No human forces on the map to order.', 'warning');
+      }
       return;
     }
-    set({ assigningTacticalForSelectedStacks: { orderType, stackKeys }, assigningTacticalForStack: null, assigningTacticalOrderType: null });
+    const ot = orderType === 'patrol_pick' ? 'patrol_paint' : orderType;
+    set({
+      assigningTacticalForSelectedStacks: { orderType: ot, stackKeys },
+      assigningTacticalForStack: null,
+      assigningTacticalOrderType: null,
+      tacticalPatrolPaintHexKeys: ot === 'patrol_paint' ? [] : (s.tacticalPatrolPaintHexKeys ?? []),
+    });
   },
 
   setTacticalMoveTargetForSelected: (toQ, toR) => {
@@ -4257,6 +5274,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     const maxLeg = maxMoveOrderDistanceForDestination(toQ, toR, s.territory, HUMAN_ID);
     const next = { ...s.pendingTacticalOrders };
     let any = false;
+    let appliedStacks = 0;
     for (const stackKey of stackKeys) {
       const [fromQ, fromR] = stackKey.split(',').map(Number);
       const dist = hexDistance(fromQ, fromR, toQ, toR);
@@ -4264,13 +5282,25 @@ export const useGameStore = create<GameState>((set, get) => ({
       const stackUnits = s.units.filter(
         u => u.q === fromQ && u.r === fromR && u.ownerId === HUMAN_ID && u.hp > 0 && !u.aboardShipId,
       );
+      const pids = resolveParticipatingUnitIdsForTactical(
+        stackUnits,
+        stackKey,
+        s.tacticalIncludedUnitTypes,
+        s.tacticalStackUnitTypeFocus,
+      );
+      if (pids !== undefined && pids.length === 0) continue;
+      const marching = pids ? stackUnits.filter(u => pids.includes(u.id)) : stackUnits;
       if (tile.biome === 'water') {
-        if (!canLandStackEmbarkFriendlyScoutAt(s.tiles, s.units, toQ, toR, stackUnits, HUMAN_ID)) continue;
+        if (!canLandStackEmbarkFriendlyScoutAt(s.tiles, s.units, toQ, toR, marching, HUMAN_ID)) continue;
       } else {
-        if (stackUnits.some(u => isNavalUnitType(u.type))) continue;
+        if (marching.some(u => isNavalUnitType(u.type))) continue;
       }
-      next[stackKey] = { type: orderType, toQ, toR };
+      next[stackKey] =
+        pids && pids.length > 0
+          ? { type: orderType, toQ, toR, participatingUnitIds: pids }
+          : { type: orderType, toQ, toR };
       any = true;
+      appliedStacks++;
     }
     if (!any) {
       get().addNotification(
@@ -4282,7 +5312,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       return;
     }
     set({ pendingTacticalOrders: next, assigningTacticalForSelectedStacks: null });
-    get().addNotification(`${stackKeys.length} stack(s) → (${toQ}, ${toR}). Confirm when ready.`, 'info');
+    get().addNotification(`${appliedStacks} stack(s) → (${toQ}, ${toR}). Confirm when ready.`, 'info');
   },
 
   setTacticalIncorporateTargetForSelected: (toQ, toR) => {
@@ -4309,10 +5339,22 @@ export const useGameStore = create<GameState>((set, get) => ({
     for (const stackKey of stackKeys) {
       const [fromQ, fromR] = stackKey.split(',').map(Number);
       const dist = hexDistance(fromQ, fromR, toQ, toR);
-      if (dist <= maxLeg && dist > 0) {
-        next[stackKey] = { type: 'incorporate_village', toQ, toR };
-        any = true;
-      }
+      if (dist > maxLeg || dist <= 0) continue;
+      const stackUnits = s.units.filter(
+        u => u.q === fromQ && u.r === fromR && u.ownerId === HUMAN_ID && u.hp > 0 && !u.aboardShipId,
+      );
+      const pids = resolveParticipatingUnitIdsForTactical(
+        stackUnits,
+        stackKey,
+        s.tacticalIncludedUnitTypes,
+        s.tacticalStackUnitTypeFocus,
+      );
+      if (pids !== undefined && pids.length === 0) continue;
+      next[stackKey] =
+        pids && pids.length > 0
+          ? { type: 'incorporate_village', toQ, toR, participatingUnitIds: pids }
+          : { type: 'incorporate_village', toQ, toR };
+      any = true;
     }
     if (!any) {
       get().addNotification(`No stack in range (max ${maxLeg} hexes for this destination).`, 'warning');
@@ -4359,6 +5401,61 @@ export const useGameStore = create<GameState>((set, get) => ({
     get().addNotification(`Configure attack on ${city.name}…`, 'info');
   },
 
+  setTacticalAttackBuildingTargetForSelected: (toQ, toR) => {
+    const s = get();
+    const pending = s.assigningTacticalForSelectedStacks;
+    if (!pending || pending.orderType !== 'attack_building_pick' || s.pendingTacticalOrders === null) return;
+    let cityId: string | null = null;
+    for (const city of s.cities) {
+      if (city.ownerId === HUMAN_ID) continue;
+      const b = city.buildings.find(x => x.q === toQ && x.r === toR);
+      if (b && isCityBuildingOperational(ensureCityBuildingHp(b))) {
+        cityId = city.id;
+        break;
+      }
+    }
+    if (!cityId) {
+      get().addNotification('Click an enemy city building (not the city center unless it is the only tile).', 'warning');
+      return;
+    }
+    const maxLeg = maxMoveOrderDistanceForDestination(toQ, toR, s.territory, HUMAN_ID);
+    const { stackKeys } = pending;
+    const next = { ...s.pendingTacticalOrders };
+    let any = false;
+    for (const stackKey of stackKeys) {
+      const [fromQ, fromR] = stackKey.split(',').map(Number);
+      const dist = hexDistance(fromQ, fromR, toQ, toR);
+      if (dist > maxLeg || dist <= 0) continue;
+      const stackUnits = s.units.filter(
+        u => u.q === fromQ && u.r === fromR && u.ownerId === HUMAN_ID && u.hp > 0 && !u.aboardShipId,
+      );
+      const pids = resolveParticipatingUnitIdsForTactical(
+        stackUnits,
+        stackKey,
+        s.tacticalIncludedUnitTypes,
+        s.tacticalStackUnitTypeFocus,
+      );
+      if (pids !== undefined && pids.length === 0) continue;
+      next[stackKey] =
+        pids && pids.length > 0
+          ? {
+              type: 'attack_building',
+              cityId,
+              buildingQ: toQ,
+              buildingR: toR,
+              participatingUnitIds: pids,
+            }
+          : { type: 'attack_building', cityId, buildingQ: toQ, buildingR: toR };
+      any = true;
+    }
+    if (!any) {
+      get().addNotification(`No stack in range (max ${maxLeg} hexes for this destination).`, 'warning');
+      return;
+    }
+    set({ pendingTacticalOrders: next, assigningTacticalForSelectedStacks: null });
+    get().addNotification('Raid building orders set — Confirm orders.', 'info');
+  },
+
   commitTacticalAttackCitySetup: (payload) => {
     const s = get();
     const draft = s.tacticalAttackCityDraft;
@@ -4375,39 +5472,76 @@ export const useGameStore = create<GameState>((set, get) => ({
       const dist = hexDistance(fromQ, fromR, city.q, city.r);
       const maxLeg = maxMoveOrderDistanceForDestination(city.q, city.r, s.territory, HUMAN_ID);
       if (dist > maxLeg || dist === 0) continue;
-      const form = payload.perStack[stackKey];
-      if (!form) continue;
       const stackUnits = s.units.filter(
-        u => u.q === fromQ && u.r === fromR && u.ownerId === HUMAN_ID && u.hp > 0,
+        u => u.q === fromQ && u.r === fromR && u.ownerId === HUMAN_ID && u.hp > 0 && !u.aboardShipId,
       );
-      let w1ids: string[];
-      let w2ids: string[];
-      if (payload.useWaves) {
-        w1ids = selectUnitIdsByTypeCounts(stackUnits, form.wave1);
-        const used = new Set(w1ids);
-        w2ids = selectUnitIdsByTypeCounts(stackUnits, form.wave2, used);
-        if (w1ids.length === 0 && w2ids.length === 0) continue;
-        if (w2ids.length > 0 && w1ids.length === 0) {
-          get().addNotification('Wave 1 cannot be empty if wave 2 has units.', 'warning');
-          return;
-        }
+      const pids = resolveParticipatingUnitIdsForTactical(
+        stackUnits,
+        stackKey,
+        s.tacticalIncludedUnitTypes,
+        s.tacticalStackUnitTypeFocus,
+      );
+      if (pids !== undefined && pids.length === 0) continue;
+      const marchingUnits = pids ? stackUnits.filter(u => pids.includes(u.id)) : stackUnits;
+      let waveGroups: string[][];
+      let tacticPreset: SiegeTacticId | undefined;
+      let tacticWidth: number | undefined;
+      let tacticDepth: number | undefined;
+
+      if (payload.mode === 'tactic') {
+        waveGroups = buildWaveGroupsFromTactic(
+          marchingUnits,
+          payload.tacticPreset,
+          payload.width,
+          payload.depth,
+        );
+        if (waveGroups.length === 0) continue;
+        tacticPreset = payload.tacticPreset;
+        tacticWidth = payload.width;
+        tacticDepth = payload.depth;
       } else {
-        w1ids = selectUnitIdsByTypeCounts(stackUnits, form.wave1);
-        w2ids = [];
-        if (w1ids.length === 0) continue;
+        const form = payload.perStack[stackKey];
+        if (!form) continue;
+        let w1ids: string[];
+        let w2ids: string[];
+        if (payload.useWaves) {
+          w1ids = selectUnitIdsByTypeCounts(marchingUnits, form.wave1);
+          const used = new Set(w1ids);
+          w2ids = selectUnitIdsByTypeCounts(marchingUnits, form.wave2, used);
+          if (w1ids.length === 0 && w2ids.length === 0) continue;
+          if (w2ids.length > 0 && w1ids.length === 0) {
+            get().addNotification('Wave 1 cannot be empty if wave 2 has units.', 'warning');
+            return;
+          }
+        } else {
+          w1ids = selectUnitIdsByTypeCounts(marchingUnits, form.wave1);
+          w2ids = [];
+          if (w1ids.length === 0) continue;
+        }
+        waveGroups =
+          payload.useWaves && w2ids.length > 0 ? [w1ids, w2ids] : [w1ids].filter(w => w.length > 0);
       }
+
       next[stackKey] = {
         type: 'attack_city',
         cityId: draft.cityId,
         attackStyle: payload.attackStyle,
-        wave1UnitIds: w1ids,
-        wave2UnitIds: w2ids,
+        waveGroups,
+        ...(tacticPreset !== undefined ? { tacticPreset, tacticWidth, tacticDepth } : {}),
       };
       placed++;
     }
     if (placed === 0) {
       get().addNotification('No valid stacks or units for this attack.', 'warning');
       return;
+    }
+    if (payload.mode === 'tactic') {
+      get().setDefaultMarchFormation({
+        enabled: true,
+        preset: payload.tacticPreset,
+        width: payload.width,
+        depth: payload.depth,
+      });
     }
     set({ pendingTacticalOrders: next, tacticalAttackCityDraft: null });
     get().addNotification(`Attack plan set for ${city.name} — Confirm orders.`, 'info');
@@ -4446,31 +5580,89 @@ export const useGameStore = create<GameState>((set, get) => ({
     if (stackKeys.length === 0) return;
     const city = s.cities.find(c => c.id === cityId && c.ownerId === HUMAN_ID);
     if (!city) return;
+    const mode = s.tacticalCityDefenseMode ?? 'auto_engage';
     const next = { ...s.pendingTacticalOrders };
     let placed = 0;
     for (const k of stackKeys) {
       const [fromQ, fromR] = k.split(',').map(Number);
       const dist = hexDistance(fromQ, fromR, city.q, city.r);
-      if (dist > 0 && isWithinPlayerMoveOrderRange(fromQ, fromR, city.q, city.r, s.territory, HUMAN_ID)) {
-        next[k] = { type: 'defend', cityId };
-        placed++;
-      }
+      if (dist <= 0 || !isWithinPlayerMoveOrderRange(fromQ, fromR, city.q, city.r, s.territory, HUMAN_ID)) continue;
+      const stackUnits = s.units.filter(
+        u => u.q === fromQ && u.r === fromR && u.ownerId === HUMAN_ID && u.hp > 0 && !u.aboardShipId,
+      );
+      const pids = resolveParticipatingUnitIdsForTactical(
+        stackUnits,
+        k,
+        s.tacticalIncludedUnitTypes,
+        s.tacticalStackUnitTypeFocus,
+      );
+      if (pids !== undefined && pids.length === 0) continue;
+      next[k] =
+        pids && pids.length > 0
+          ? { type: 'city_defense', cityId, mode, participatingUnitIds: pids }
+          : { type: 'city_defense', cityId, mode };
+      placed++;
     }
     if (placed === 0) {
       get().addNotification('No selected stack is in range of that city.', 'warning');
       return;
     }
     set({ pendingTacticalOrders: next });
-    get().addNotification(`${placed} stack(s) set to defend. Confirm when ready.`, 'info');
+    get().addNotification(`${placed} stack(s) city defense (${mode.replace('_', ' ')}). Confirm when ready.`, 'info');
   },
 
   setTacticalDefendTargetFromMap: (q, r) => {
+    get().setTacticalCityDefenseTargetFromMap(q, r);
+  },
+
+  setTacticalCityDefenseTargetFromMap: (q, r) => {
     const s = get();
     const pending = s.assigningTacticalForSelectedStacks;
-    if (!pending || pending.orderType !== 'defend_pick' || s.pendingTacticalOrders === null) return;
+    if (!pending || s.pendingTacticalOrders === null) return;
+    if (pending.orderType !== 'defend_pick' && pending.orderType !== 'city_defense_pick') return;
     const city = s.cities.find(c => c.q === q && c.r === r && c.ownerId === HUMAN_ID);
     if (!city) {
-      get().addNotification('Click your city center hex to defend.', 'warning');
+      get().addNotification('Click your city center hex for city defense.', 'warning');
+      return;
+    }
+    const mode = s.tacticalCityDefenseMode ?? 'auto_engage';
+    const { stackKeys } = pending;
+    const next = { ...s.pendingTacticalOrders };
+    let any = false;
+    for (const stackKey of stackKeys) {
+      const [fromQ, fromR] = stackKey.split(',').map(Number);
+      if (!isWithinPlayerMoveOrderRange(fromQ, fromR, city.q, city.r, s.territory, HUMAN_ID)) continue;
+      const stackUnits = s.units.filter(
+        u => u.q === fromQ && u.r === fromR && u.ownerId === HUMAN_ID && u.hp > 0 && !u.aboardShipId,
+      );
+      const pids = resolveParticipatingUnitIdsForTactical(
+        stackUnits,
+        stackKey,
+        s.tacticalIncludedUnitTypes,
+        s.tacticalStackUnitTypeFocus,
+      );
+      if (pids !== undefined && pids.length === 0) continue;
+      next[stackKey] =
+        pids && pids.length > 0
+          ? { type: 'city_defense', cityId: city.id, mode, participatingUnitIds: pids }
+          : { type: 'city_defense', cityId: city.id, mode };
+      any = true;
+    }
+    if (!any) {
+      get().addNotification('No stack is in range of that city for this move leg.', 'warning');
+      return;
+    }
+    set({ pendingTacticalOrders: next, assigningTacticalForSelectedStacks: null });
+    get().addNotification(`City defense ${city.name} — Confirm orders.`, 'info');
+  },
+
+  setTacticalPatrolTargetFromMap: (q, r) => {
+    const s = get();
+    const pending = s.assigningTacticalForSelectedStacks;
+    if (!pending || pending.orderType !== 'patrol_pick' || s.pendingTacticalOrders === null) return;
+    const tile = s.tiles.get(tileKey(q, r));
+    if (!tile || tile.biome === 'water') {
+      get().addNotification('Patrol center must be on land.', 'warning');
       return;
     }
     const { stackKeys } = pending;
@@ -4478,26 +5670,44 @@ export const useGameStore = create<GameState>((set, get) => ({
     let any = false;
     for (const stackKey of stackKeys) {
       const [fromQ, fromR] = stackKey.split(',').map(Number);
-      if (isWithinPlayerMoveOrderRange(fromQ, fromR, city.q, city.r, s.territory, HUMAN_ID)) {
-        next[stackKey] = { type: 'defend', cityId: city.id };
-        any = true;
-      }
+      if (!isWithinPlayerMoveOrderRange(fromQ, fromR, q, r, s.territory, HUMAN_ID)) continue;
+      const stackUnits = s.units.filter(
+        u => u.q === fromQ && u.r === fromR && u.ownerId === HUMAN_ID && u.hp > 0 && !u.aboardShipId,
+      );
+      const pids = resolveParticipatingUnitIdsForTactical(
+        stackUnits,
+        stackKey,
+        s.tacticalIncludedUnitTypes,
+        s.tacticalStackUnitTypeFocus,
+      );
+      if (pids !== undefined && pids.length === 0) continue;
+      next[stackKey] =
+        pids && pids.length > 0
+          ? {
+              type: 'patrol',
+              centerQ: q,
+              centerR: r,
+              radius: PATROL_DEFAULT_RADIUS,
+              participatingUnitIds: pids,
+            }
+          : { type: 'patrol', centerQ: q, centerR: r, radius: PATROL_DEFAULT_RADIUS };
+      any = true;
     }
     if (!any) {
-      get().addNotification('No stack is in range of that city for this move leg.', 'warning');
+      get().addNotification('No stack in range of that patrol center.', 'warning');
       return;
     }
     set({ pendingTacticalOrders: next, assigningTacticalForSelectedStacks: null });
-    get().addNotification(`Defend ${city.name} — Confirm orders.`, 'info');
+    get().addNotification(`Patrol (${q},${r}) r${PATROL_DEFAULT_RADIUS} — Confirm orders.`, 'info');
   },
 
   clearTacticalOrdersForSelected: () => {
     const s = get();
     if (s.pendingTacticalOrders === null) return;
-    const humanKeys = new Set(s.tacticalSelectedStackKeys);
-    if (humanKeys.size === 0) return;
+    const keys = new Set(humanStackKeysForTactical(s));
+    if (keys.size === 0) return;
     const next = { ...s.pendingTacticalOrders };
-    for (const k of humanKeys) delete next[k];
+    for (const k of keys) delete next[k];
     set({ pendingTacticalOrders: next });
   },
 
@@ -4517,13 +5727,25 @@ export const useGameStore = create<GameState>((set, get) => ({
     const stack = s.units.filter(
       u => u.q === fromQ && u.r === fromR && u.ownerId === HUMAN_ID && u.hp > 0 && !u.aboardShipId,
     );
+    const pids = resolveParticipatingUnitIdsForTactical(
+      stack,
+      stackKey,
+      s.tacticalIncludedUnitTypes,
+      s.tacticalStackUnitTypeFocus,
+    );
+    if (pids !== undefined && pids.length === 0) {
+      get().addNotification('No units match the current type filter on this stack.', 'warning');
+      set({ assigningTacticalForStack: null, assigningTacticalOrderType: null });
+      return;
+    }
+    const marching = pids ? stack.filter(u => pids.includes(u.id)) : stack;
     const destTile = s.tiles.get(tileKey(toQ, toR));
     if (!destTile) {
       set({ assigningTacticalForStack: null, assigningTacticalOrderType: null });
       return;
     }
-    const naval = stack.some(u => isNavalUnitType(u.type));
-    if (naval && !stack.every(u => isNavalUnitType(u.type))) {
+    const naval = marching.some(u => isNavalUnitType(u.type));
+    if (naval && !marching.every(u => isNavalUnitType(u.type))) {
       set({ assigningTacticalForStack: null, assigningTacticalOrderType: null });
       return;
     }
@@ -4534,13 +5756,17 @@ export const useGameStore = create<GameState>((set, get) => ({
         return;
       }
     } else if (destTile.biome === 'water') {
-      if (!canLandStackEmbarkFriendlyScoutAt(s.tiles, s.units, toQ, toR, stack, HUMAN_ID)) {
+      if (!canLandStackEmbarkFriendlyScoutAt(s.tiles, s.units, toQ, toR, marching, HUMAN_ID)) {
         get().addNotification('Need a friendly scout ship with cargo at that water hex.', 'warning');
         set({ assigningTacticalForStack: null, assigningTacticalOrderType: null });
         return;
       }
     }
-    const next = { ...s.pendingTacticalOrders, [stackKey]: { type: orderType, toQ, toR } };
+    const moveOrder =
+      pids && pids.length > 0
+        ? { type: orderType, toQ, toR, participatingUnitIds: pids }
+        : { type: orderType, toQ, toR };
+    const next = { ...s.pendingTacticalOrders, [stackKey]: moveOrder };
     set({ pendingTacticalOrders: next, assigningTacticalForStack: null, assigningTacticalOrderType: null });
   },
 
@@ -4563,10 +5789,12 @@ export const useGameStore = create<GameState>((set, get) => ({
         if (dDef === 0 || !isWithinPlayerMoveOrderRange(fromQ, fromR, city.q, city.r, s.territory, HUMAN_ID)) continue;
         units = units.map(u => {
           if (u.q !== fromQ || u.r !== fromR || u.ownerId !== HUMAN_ID || u.hp <= 0) return u;
+          if (!orderAppliesToUnit(order, u)) return u;
           const deployed = withDeployFlags(u, city.q, city.r, s.cities);
           return {
             ...deployed,
             defendCityId: city.id,
+            cityDefenseMode: 'auto_engage' as const,
             targetQ: city.q,
             targetR: city.r,
             status: 'moving' as const,
@@ -4574,6 +5802,71 @@ export const useGameStore = create<GameState>((set, get) => ({
           };
         });
         notifs.push(`Stack at (${fromQ},${fromR}) defending ${city.name}`);
+      } else if (order.type === 'city_defense' && order.cityId) {
+        const city = s.cities.find(c => c.id === order.cityId && c.ownerId === HUMAN_ID);
+        if (!city) continue;
+        const dDef = hexDistance(fromQ, fromR, city.q, city.r);
+        if (dDef === 0 || !isWithinPlayerMoveOrderRange(fromQ, fromR, city.q, city.r, s.territory, HUMAN_ID)) continue;
+        const mode = order.mode ?? 'auto_engage';
+        units = units.map(u => {
+          if (u.q !== fromQ || u.r !== fromR || u.ownerId !== HUMAN_ID || u.hp <= 0) return u;
+          if (!isLandMilitaryUnit(u)) return u;
+          if (!orderAppliesToUnit(order, u)) return u;
+          const deployed = withDeployFlags(u, city.q, city.r, s.cities);
+          const next: Unit = {
+            ...deployed,
+            defendCityId: city.id,
+            cityDefenseMode: mode,
+            patrolCenterQ: undefined,
+            patrolCenterR: undefined,
+            patrolRadius: undefined,
+            targetQ: city.q,
+            targetR: city.r,
+            status: 'moving' as const,
+            marchInitialHexDistance: marchHexDistanceAtOrder(u, city.q, city.r),
+          };
+          if (mode === 'stagnant') next.garrisonCityId = city.id;
+          else delete next.garrisonCityId;
+          return next;
+        });
+        notifs.push(`Stack at (${fromQ},${fromR}) city defense ${mode} → ${city.name}`);
+      } else if (order.type === 'patrol') {
+        const radius = order.radius ?? PATROL_DEFAULT_RADIUS;
+        const hexKeys = order.hexKeys;
+        units = units.map(u => {
+          if (u.q !== fromQ || u.r !== fromR || u.ownerId !== HUMAN_ID || u.hp <= 0) return u;
+          if (!isLandMilitaryUnit(u)) return u;
+          if (!orderAppliesToUnit(order, u)) return u;
+          const x: Unit = {
+            ...u,
+            defendCityId: undefined,
+            garrisonCityId: undefined,
+            cityDefenseMode: undefined,
+            patrolCenterQ: order.centerQ,
+            patrolCenterR: order.centerR,
+            patrolRadius: radius,
+            patrolHexKeys: hexKeys && hexKeys.length > 0 ? [...hexKeys] : undefined,
+            status: 'idle' as const,
+            targetQ: undefined,
+            targetR: undefined,
+          };
+          delete x.marchInitialHexDistance;
+          delete x.moveLegMs;
+          delete x.marchEchelonHold;
+          delete x.attackWaveHold;
+          delete x.retaliateUnitId;
+          delete x.retaliateDefenseId;
+          delete x.attackBuildingTarget;
+          delete x.siegingCityId;
+          delete x.assaulting;
+          if (x.incorporateVillageAt) delete x.incorporateVillageAt;
+          return x;
+        });
+        notifs.push(
+          hexKeys && hexKeys.length > 0
+            ? `Stack at (${fromQ},${fromR}) patrol (${hexKeys.length} hexes)`
+            : `Stack at (${fromQ},${fromR}) patrol r${radius}`,
+        );
       } else if (order.type === 'incorporate_village' && order.toQ !== undefined && order.toR !== undefined) {
         const toQ = order.toQ;
         const toR = order.toR;
@@ -4585,6 +5878,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         units = units.map(u => {
           if (u.q !== fromQ || u.r !== fromR || u.ownerId !== HUMAN_ID || u.hp <= 0) return u;
           if (!isLandMilitaryUnit(u)) return u;
+          if (!orderAppliesToUnit(order, u)) return u;
           const deployed = withDeployFlags(u, toQ, toR, s.cities);
           return {
             ...deployed,
@@ -4604,10 +5898,18 @@ export const useGameStore = create<GameState>((set, get) => ({
         const toR = city.r;
         const dist = hexDistance(fromQ, fromR, toQ, toR);
         if (dist === 0 || !isWithinPlayerMoveOrderRange(fromQ, fromR, toQ, toR, s.territory, HUMAN_ID)) continue;
-        const w1 = new Set(order.wave1UnitIds ?? []);
-        const w2 = new Set(order.wave2UnitIds ?? []);
-        const participate = new Set([...w1, ...w2]);
+        const groups = order.waveGroups.filter(g => g.length > 0);
+        if (groups.length === 0) continue;
+        const participate = new Set(groups.flat());
         const march = getAttackMarchParams(order.attackStyle, city, fromQ, fromR, s.tiles);
+
+        function waveIndexForUnit(uid: string): number {
+          for (let i = 0; i < groups.length; i++) {
+            if (groups[i].includes(uid)) return i;
+          }
+          return -1;
+        }
+
         units = units.map(u => {
           if (u.q !== fromQ || u.r !== fromR || u.ownerId !== HUMAN_ID || u.hp <= 0) return u;
           if (u.type === 'builder' || u.aboardShipId || isNavalUnitType(u.type)) return u;
@@ -4619,16 +5921,19 @@ export const useGameStore = create<GameState>((set, get) => ({
             delete cleared.attackWaveHold;
             return cleared;
           }
-          if (w2.has(u.id)) {
+          const wi = waveIndexForUnit(u.id);
+          if (wi < 0) return u;
+          if (wi > 0) {
+            const waitFor = groups[wi - 1] ?? [];
             const deployed = withDeployFlags(u, march.targetQ, march.targetR, s.cities);
-            const next: Unit = {
+            const nextU: Unit = {
               ...deployed,
               status: 'idle' as const,
               targetQ: undefined,
               targetR: undefined,
               assaulting: false,
               attackWaveHold: {
-                waitForUnitIds: [...w1],
+                waitForUnitIds: [...waitFor],
                 cityId: city.id,
                 rallyQ: march.rallyQ,
                 rallyR: march.rallyR,
@@ -4637,9 +5942,12 @@ export const useGameStore = create<GameState>((set, get) => ({
                 attackStyle: order.attackStyle,
               },
             };
-            delete next.siegingCityId;
-            if (next.incorporateVillageAt) delete next.incorporateVillageAt;
-            return next;
+            delete nextU.siegingCityId;
+            if (nextU.incorporateVillageAt) delete nextU.incorporateVillageAt;
+            delete nextU.retaliateUnitId;
+            delete nextU.retaliateDefenseId;
+            delete nextU.attackBuildingTarget;
+            return nextU;
           }
           const deployed = withDeployFlags(u, march.targetQ, march.targetR, s.cities);
           const next: Unit = {
@@ -4653,25 +5961,31 @@ export const useGameStore = create<GameState>((set, get) => ({
           if (march.siegingCityId) next.siegingCityId = march.siegingCityId;
           else delete next.siegingCityId;
           if (next.incorporateVillageAt) delete next.incorporateVillageAt;
+          delete next.retaliateUnitId;
+          delete next.retaliateDefenseId;
+          delete next.attackBuildingTarget;
           return next;
         });
         notifs.push(`Stack at (${fromQ},${fromR}) → attack ${city.name}`);
-      } else if ((order.type === 'move' || order.type === 'intercept') && order.toQ !== undefined && order.toR !== undefined) {
-        const toQ = order.toQ;
-        const toR = order.toR;
-        const tile = s.tiles.get(tileKey(toQ, toR));
-        if (!tile) continue;
+      } else if (order.type === 'attack_building' && order.cityId) {
+        const city = s.cities.find(c => c.id === order.cityId);
+        if (!city || city.ownerId === HUMAN_ID) continue;
+        const building = city.buildings.find(b => b.q === order.buildingQ && b.r === order.buildingR);
+        if (!building || !isCityBuildingOperational(ensureCityBuildingHp(building))) continue;
+        const toQ = order.buildingQ;
+        const toR = order.buildingR;
         const dist = hexDistance(fromQ, fromR, toQ, toR);
         if (dist === 0 || !isWithinPlayerMoveOrderRange(fromQ, fromR, toQ, toR, s.territory, HUMAN_ID)) continue;
-        const marchStack = stackUnits.filter(u => !u.aboardShipId);
-        if (tile.biome === 'water') {
-          if (!canLandStackEmbarkFriendlyScoutAt(s.tiles, units, toQ, toR, marchStack, HUMAN_ID)) continue;
-        } else if (marchStack.some(u => isNavalUnitType(u.type))) continue;
         units = units.map(u => {
           if (u.q !== fromQ || u.r !== fromR || u.ownerId !== HUMAN_ID || u.hp <= 0) return u;
+          if (!isLandMilitaryUnit(u)) return u;
+          if (!orderAppliesToUnit(order, u)) return u;
           const deployed = withDeployFlags(u, toQ, toR, s.cities);
           return {
             ...deployed,
+            attackBuildingTarget: { cityId: city.id, q: toQ, r: toR },
+            retaliateUnitId: undefined,
+            retaliateDefenseId: undefined,
             targetQ: toQ,
             targetR: toR,
             status: 'moving' as const,
@@ -4679,6 +5993,56 @@ export const useGameStore = create<GameState>((set, get) => ({
             marchInitialHexDistance: marchHexDistanceAtOrder(u, toQ, toR),
           };
         });
+        notifs.push(`Stack at (${fromQ},${fromR}) → raid building at (${toQ},${toR})`);
+      } else if ((order.type === 'move' || order.type === 'intercept') && order.toQ !== undefined && order.toR !== undefined) {
+        const toQ = order.toQ;
+        const toR = order.toR;
+        const tile = s.tiles.get(tileKey(toQ, toR));
+        if (!tile) continue;
+        const dist = hexDistance(fromQ, fromR, toQ, toR);
+        if (dist === 0 || !isWithinPlayerMoveOrderRange(fromQ, fromR, toQ, toR, s.territory, HUMAN_ID)) continue;
+        const marchStack = stackUnits.filter(
+          u => !u.aboardShipId && orderAppliesToUnit(order, u),
+        );
+        if (marchStack.length === 0) continue;
+        if (tile.biome === 'water') {
+          if (!canLandStackEmbarkFriendlyScoutAt(s.tiles, units, toQ, toR, marchStack, HUMAN_ID)) continue;
+        } else if (marchStack.some(u => isNavalUnitType(u.type))) continue;
+        const echelon = applyEchelonForLandMove(
+          units,
+          fromQ,
+          fromR,
+          toQ,
+          toR,
+          marchStack,
+          s.cities,
+          s.tiles,
+          s.territory,
+          s.defaultMarchFormation,
+        );
+        if (echelon !== null) {
+          units = echelon;
+        } else {
+          units = units.map(u => {
+            if (u.q !== fromQ || u.r !== fromR || u.ownerId !== HUMAN_ID || u.hp <= 0) return u;
+            if (!orderAppliesToUnit(order, u)) return u;
+            const deployed = withDeployFlags(u, toQ, toR, s.cities);
+            const next: Unit = {
+              ...deployed,
+              targetQ: toQ,
+              targetR: toR,
+              status: 'moving' as const,
+              assaulting: false,
+              marchInitialHexDistance: marchHexDistanceAtOrder(u, toQ, toR),
+              retaliateUnitId: undefined,
+              retaliateDefenseId: undefined,
+              attackBuildingTarget: undefined,
+            };
+            delete next.marchEchelonHold;
+            delete next.attackWaveHold;
+            return next;
+          });
+        }
         notifs.push(`Stack at (${fromQ},${fromR}) → (${toQ},${toR})`);
       }
     }
@@ -4686,12 +6050,22 @@ export const useGameStore = create<GameState>((set, get) => ({
       units,
       pendingTacticalOrders: null,
       tacticalSelectedStackKeys: [],
+      tacticalOrderScope: 'all',
+      tacticalOrderScopeArmyId: null,
+      tacticalStackUnitTypeFocus: {},
       assigningTacticalForSelectedStacks: null,
       assigningTacticalForStack: null,
       assigningTacticalOrderType: null,
       tacticalAttackCityDraft: null,
     });
-    if (notifs.length > 0) get().addNotification(`Orders: ${notifs.join('; ')}`, 'info');
+    if (notifs.length > 0) {
+      get().addNotification(`Orders: ${notifs.join('; ')}`, 'info');
+    } else if (Object.keys(orders).some(k => orders[k as keyof typeof orders])) {
+      get().addNotification(
+        'No orders applied — check range, terrain, or that your stacks are still on those hexes.',
+        'warning',
+      );
+    }
   },
 
   disbandSelectedUnits: () => {
@@ -4714,10 +6088,11 @@ export const useGameStore = create<GameState>((set, get) => ({
     get().addNotification(`Disbanded ${toRemove.length} unit(s); population returned.`, 'info');
   },
 
-  startSplitStack: (count) => {
+  startSplitStack: (count, explicitQ?, explicitR?) => {
     const s = get();
-    if (!s.selectedHex) return;
-    const { q: fromQ, r: fromR } = s.selectedHex;
+    const fromQ = explicitQ ?? s.selectedHex?.q;
+    const fromR = explicitR ?? s.selectedHex?.r;
+    if (fromQ === undefined || fromR === undefined) return;
     const stack = s.units.filter(u => u.q === fromQ && u.r === fromR && u.ownerId === HUMAN_ID && u.hp > 0);
     const n = Math.max(1, Math.min(count, stack.length - 1));
     if (n >= stack.length) {
@@ -4728,6 +6103,30 @@ export const useGameStore = create<GameState>((set, get) => ({
     get().addNotification(`Splitting ${n} unit(s). Click an adjacent hex to place them.`, 'info');
   },
 
+  startSplitStackByUnitType: (unitType, explicitQ?, explicitR?) => {
+    const s = get();
+    const fromQ = explicitQ ?? s.selectedHex?.q;
+    const fromR = explicitR ?? s.selectedHex?.r;
+    if (fromQ === undefined || fromR === undefined) return;
+    const stack = s.units.filter(u => u.q === fromQ && u.r === fromR && u.ownerId === HUMAN_ID && u.hp > 0);
+    const ofType = stack.filter(u => u.type === unitType);
+    if (ofType.length === 0) {
+      get().addNotification('No units of that type in this stack.', 'warning');
+      return;
+    }
+    let unitIds = ofType.map(u => u.id);
+    if (unitIds.length === stack.length) {
+      unitIds = unitIds.slice(0, -1);
+    }
+    if (unitIds.length === 0) {
+      get().addNotification('Cannot split — at least one unit must stay on this hex.', 'warning');
+      return;
+    }
+    const n = unitIds.length;
+    set({ splitStackPending: { fromQ, fromR, count: n, unitIds } });
+    get().addNotification(`Splitting ${n} ${unitType.replace(/_/g, ' ')}(s). Click an adjacent hex to place them.`, 'info');
+  },
+
   cancelSplitStack: () => {
     set({ splitStackPending: null });
   },
@@ -4736,21 +6135,46 @@ export const useGameStore = create<GameState>((set, get) => ({
     const s = get();
     const pending = s.splitStackPending;
     if (!pending) return;
-    const { fromQ, fromR, count } = pending;
+    const { fromQ, fromR, count, unitIds: pendingIds } = pending;
     const stack = s.units.filter(u => u.q === fromQ && u.r === fromR && u.ownerId === HUMAN_ID && u.hp > 0);
-    const toMove = stack.slice(0, count);
-    const ids = new Set(toMove.map(u => u.id));
+    const stackIds = new Set(stack.map(u => u.id));
+    let ids: Set<string>;
+    if (pendingIds && pendingIds.length > 0) {
+      const valid = pendingIds.filter(id => stackIds.has(id));
+      if (valid.length === 0) {
+        set({ splitStackPending: null });
+        return;
+      }
+      ids = new Set(valid);
+    } else {
+      const toMove = stack.slice(0, count);
+      ids = new Set(toMove.map(u => u.id));
+    }
+    if (stack.length - ids.size < 1) {
+      get().addNotification('Split must leave at least one unit in the stack.', 'warning');
+      return;
+    }
+    const n = ids.size;
     const newUnits = s.units.map(u => {
       if (!ids.has(u.id)) return u;
       const moved: Unit = { ...u, q: toQ, r: toR, targetQ: undefined, targetR: undefined, status: 'idle' as const };
       delete moved.marchInitialHexDistance;
       delete moved.moveLegMs;
       return isLandMilitaryUnit(moved)
-        ? { ...moved, garrisonCityId: undefined, defendCityId: undefined }
+        ? {
+            ...moved,
+            garrisonCityId: undefined,
+            defendCityId: undefined,
+            cityDefenseMode: undefined,
+            patrolCenterQ: undefined,
+            patrolCenterR: undefined,
+            patrolRadius: undefined,
+            patrolHexKeys: undefined,
+          }
         : moved;
     });
     set({ units: newUnits, splitStackPending: null });
-    get().addNotification(`Split ${count} unit(s) to (${toQ}, ${toR}).`, 'info');
+    get().addNotification(`Split ${n} unit(s) to (${toQ}, ${toR}).`, 'info');
   },
 
   setSiegeAssault: (assault) => {
@@ -4780,6 +6204,31 @@ export const useGameStore = create<GameState>((set, get) => ({
       cities: s.cities.map(c => c.id !== cityId ? c : { ...c, population: Math.max(1, Math.floor(c.population / 2)) }),
     });
     get().addNotification(`${city.name} burned! Population halved.`, 'danger');
+  },
+
+  setCityGarrisonPatrol: (cityId, enabled) => {
+    const s = get();
+    set({
+      cities: s.cities.map(c =>
+        c.id === cityId && c.ownerId === HUMAN_ID ? { ...c, garrisonPatrol: enabled } : c,
+      ),
+    });
+    get().addNotification(
+      enabled
+        ? 'Garrison patrol on: ranged garrison will fire at enemies in this city’s territory within the patrol radius.'
+        : 'Garrison patrol off.',
+      'info',
+    );
+  },
+
+  setCityGarrisonPatrolRadius: (cityId, radius) => {
+    const s = get();
+    const r = Math.min(GARRISON_PATROL_RADIUS_MAX, Math.max(GARRISON_PATROL_RADIUS_MIN, Math.round(radius)));
+    set({
+      cities: s.cities.map(c =>
+        c.id === cityId && c.ownerId === HUMAN_ID ? { ...c, garrisonPatrolRadius: r } : c,
+      ),
+    });
   },
 
   captureCity: (cityId) => {
@@ -4967,7 +6416,6 @@ export const useGameStore = create<GameState>((set, get) => ({
   getHumanPlayer: () => get().players.find(p => p.id === HUMAN_ID),
   getCityAt: (q, r) => get().cities.find(c => c.q === q && c.r === r),
   getUnitsAt: (q, r) => get().units.filter(u => u.q === q && u.r === r && !u.aboardShipId),
-  getHeroAt: (q, r) => get().heroes.find(h => h.q === q && h.r === r),
   getSelectedCity: () => {
     const s = get();
     return s.selectedHex ? s.cities.find(c => c.q === s.selectedHex!.q && c.r === s.selectedHex!.r && c.ownerId === HUMAN_ID) : undefined;
@@ -5056,50 +6504,40 @@ export const useGameStore = create<GameState>((set, get) => ({
   isHexVisible: (q, r) => get().visibleHexes.has(tileKey(q, r)),
   isHexScouted: (q, r) => get().scoutedHexes.has(tileKey(q, r)),
   getScoutMissionAt: (q, r) => get().scoutMissions.find(m => m.targetQ === q && m.targetR === r),
-  getSupplyConnectionPaths: () => {
-    const s = get();
-    const clusters = computeTradeClusters(s.cities, s.tiles, s.units, s.territory);
-    return computeConnectionPaths(clusters, s.tiles, s.units);
-  },
+  getSupplyConnectionPaths: () => new Map<string, { q: number; r: number }[][]>(),
   getSupplyClustersWithPaths: () => {
     const s = get();
-    const clusters = computeTradeClusters(s.cities, s.tiles, s.units, s.territory);
-    const withClusters = computeConnectionPathsWithClusters(clusters, s.tiles, s.units);
-    return withClusters.get(HUMAN_ID) ?? [];
+    const humanCities = s.cities.filter(c => c.ownerId === HUMAN_ID);
+    if (humanCities.length === 0) return [];
+    return [
+      {
+        clusterKey: 'empire',
+        cluster: { cityIds: humanCities.map(c => c.id), cities: humanCities },
+        paths: [] as { q: number; r: number }[][],
+      },
+    ];
   },
   getSupplyClustersWithHealth: () => {
     const s = get();
     const entries = s.getSupplyClustersWithPaths();
-    return entries.map(e => {
-      const stmt = s.getClusterIncomeStatement(e.clusterKey);
-      return { ...e, foodSurplus: stmt?.foodSurplus ?? true };
-    });
+    const stmt = s.getEmpireIncomeStatement();
+    return entries.map(e => ({ ...e, foodSurplus: stmt?.foodSurplus ?? true }));
   },
   getClusterForHex: (q, r) => {
     const s = get();
-    const entries = s.getSupplyClustersWithPaths();
-    const city = s.cities.find(c => c.q === q && c.r === r && c.ownerId === HUMAN_ID);
-    if (city) {
-      const found = entries.find(e => e.cluster.cityIds.includes(city.id));
-      return found?.clusterKey ?? null;
-    }
-    for (const { clusterKey, paths } of entries) {
-      for (const path of paths) {
-        if (path.some(h => h.q === q && h.r === r)) return clusterKey;
-      }
-    }
-    return null;
+    if (!s.isInPlayerTerritory(q, r)) return null;
+    const humanCities = s.cities.filter(c => c.ownerId === HUMAN_ID);
+    if (humanCities.length === 0) return null;
+    return 'empire';
   },
-  getClusterIncomeStatement: (clusterKey) => {
+  getEmpireIncomeStatement: () => {
     const s = get();
-    const entries = s.getSupplyClustersWithPaths();
-    const entry = entries.find(e => e.clusterKey === clusterKey);
-    if (!entry) return null;
+    const humanCities = s.cities.filter(c => c.ownerId === HUMAN_ID);
+    if (humanCities.length === 0) return null;
     const harvestMult = getWeatherHarvestMultiplier(s.activeWeather);
-    return computeClusterIncomeStatement(
-      entry.cluster, s.cities, s.units, s.tiles, s.territory, s.heroes, HUMAN_ID, harvestMult
-    );
+    return computeEmpireIncomeStatement(s.cities, s.units, s.tiles, s.territory, s.heroes, HUMAN_ID, harvestMult);
   },
+  getClusterIncomeStatement: (_clusterKey) => get().getEmpireIncomeStatement(),
 
   // ─── Vision ──────────────────────────────────────────────
   recomputeVision: () => {

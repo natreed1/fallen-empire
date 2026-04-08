@@ -12,6 +12,8 @@ import {
   CityBuilding, ScoutMission, WallSection, ScoutTower, WeatherEvent,
   ConstructionSite, BuildingType,
   Commander, ScrollItem, ScrollAttachment, COMMANDER_STARTING_PICK,
+  DefenseInstallation, UnitStack, OperationalArmy,
+  ensureCityBuildingHp, UNIT_HP_REGEN_FRACTION_PER_CYCLE, isNavalUnitType,
   STARTING_GOLD, VILLAGE_CITY_TEMPLATE, CITY_CENTER_STORAGE,
   BUILDING_COSTS, BUILDING_IRON_COSTS, BUILDING_BP_COST, BUILDING_JOBS, getBuildingJobs,
   BP_RATE_BASE,
@@ -22,24 +24,29 @@ import {
   DEFENDER_IRON_COST,
   FRONTIER_CYCLES, CITY_NAMES, PLAYER_COLORS,
   CITY_CAPTURE_HOLD_MS,
-  WALL_SECTION_STONE_COST, WALL_SECTION_HP, getHexRing,
-  isNavalUnitType,
+  WALL_SECTION_STONE_COST, WALL_SECTION_HP, WALL_SECTION_BP_COST, getHexRing,
 } from '../types/game';
 import { generateMap, placeAncientCity } from '../lib/mapGenerator';
 import { calculateTerritory } from '../lib/territory';
 import { processEconomyTurn } from '../lib/gameLoop';
-import { planAiTurn, placeAiStartingCityAt, createAiHero, AiParams, DEFAULT_AI_PARAMS, estimateAiFoodSurplus } from '../lib/ai';
+import { planAiTurn, placeAiStartingCityAt, AiParams, DEFAULT_AI_PARAMS, estimateAiFoodSurplus } from '../lib/ai';
 import { appendStartingBarracksToCity, appendStartingAcademyToCity } from '../lib/kingdomSpawn';
 import {
   movementTick,
   combatTick,
+  coastalBombardmentTick,
   upkeepTick,
   siegeTick,
+  siegeBuildingsTick,
+  landUnitBuildingDamageTick,
+  autoEmbarkLandUnitsOntoScoutShipsAtHex,
   type SupplyCacheEntry,
   landMilitaryContestsCityCapture,
   enemyIntactWallOnCityHex,
 } from '../lib/military';
-import { releaseAttackWaveHolds } from '../lib/siege';
+import { updateArmyRallyFromUnits, computeArmyReplenishment } from '../lib/armyReplenishment';
+import type { MoraleState } from '../lib/combat';
+import { releaseAttackWaveHolds, releaseMarchEchelonHolds } from '../lib/siege';
 import { applyDeployFlagsForMoveMutable, marchHexDistanceAtOrder } from '../lib/garrison';
 import { rollForWeatherEvent, tickWeatherEvent, getWeatherHarvestMultiplier } from '../lib/weather';
 import { computeConstructionAvailableBp } from '../lib/builders';
@@ -74,7 +81,7 @@ export type SimState = {
   cityCaptureHold: Record<string, { attackerId: string; startedAt: number }>;
   /** Simulated time in ms; advances 30s per cycle for capture hold & scout completion */
   simTimeMs: number;
-  /** Cache: unitId -> { clusterKey, q, r }; recomputed only when unit moves or cities change. */
+  /** Cache: unitId -> { inSupply, q, r }; recomputed only when unit moves or cities change. */
   supplyCache?: Map<string, SupplyCacheEntry>;
   /** Contested zone hex keys (purple band between two capitals). */
   contestedZoneHexKeys: string[];
@@ -88,10 +95,17 @@ export type SimState = {
   scrollInventory: Record<string, ScrollItem[]>;
   /** Active scroll attachments to carrier units. */
   scrollAttachments: ScrollAttachment[];
+  /** Coastal towers / field defense (headless uses empty; parity with live combat volleys). */
+  defenseInstallations: DefenseInstallation[];
+  /** Unit stacks — training templates (bot sim typically empty). */
+  unitStacks: UnitStack[];
+  /** Field armies (player-created; not auto map stacks). */
+  operationalArmies: OperationalArmy[];
+  /** Persistent morale stacks from land combat (same as live game). */
+  combatMoraleState: MoraleState;
 };
 
 let _cityNameIdx = 0;
-let _heroNameIdx = 0;
 function nextCityName(): string {
   return CITY_NAMES[_cityNameIdx++ % CITY_NAMES.length];
 }
@@ -104,7 +118,6 @@ export function initBotVsBotGame(
   mapConfigOverride?: Partial<MapConfig>,
 ): SimState {
   _cityNameIdx = 0;
-  _heroNameIdx = 0;
   const config: MapConfig = { ...DEFAULT_MAP_CONFIG, ...mapConfigOverride, seed };
   const { tiles: tilesArray } = generateMap(config);
   const tiles = new Map<string, Tile>();
@@ -149,10 +162,7 @@ export function initBotVsBotGame(
     { id: AI_ID_2, name: 'South', color: PLAYER_COLORS.ai2, gold: STARTING_GOLD, taxRate: 0.3, foodPriority: 'military', isHuman: false },
   ];
 
-  const heroes: Hero[] = [
-    createAiHero(city1.q, city1.r, AI_ID),
-    createAiHero(city2.q, city2.r, AI_ID_2),
-  ];
+  const heroes: Hero[] = [];
 
   const contestedZoneHexKeys = computeContestedZoneHexKeys(tiles, ai1Q, ai1R, ai2Q, ai2R, config);
 
@@ -199,6 +209,10 @@ export function initBotVsBotGame(
     scrollSearchClaimed: {},
     scrollInventory,
     scrollAttachments: [],
+    defenseInstallations: [],
+    unitStacks: [],
+    operationalArmies: [],
+    combatMoraleState: new Map(),
   };
 }
 
@@ -461,6 +475,33 @@ export function stepSimulation(
   const newCycle = state.cycle + 1;
   const newSimTimeMs = state.simTimeMs + 30_000;
 
+  // ── Building HP migration + passive HP regen + army rally/replenish (matches runCycle pre-economy) ──
+  let citiesPrep = state.cities.map(c => ({
+    ...c,
+    buildings: c.buildings.map(b => ensureCityBuildingHp(b)),
+  }));
+  let unitsPrep = state.units.map(u => {
+    if (u.hp <= 0 || u.hp >= u.maxHp || u.aboardShipId || isNavalUnitType(u.type) || u.type === 'builder') {
+      return u;
+    }
+    if (u.status === 'fighting') return u;
+    const add = Math.max(1, Math.floor(u.maxHp * UNIT_HP_REGEN_FRACTION_PER_CYCLE));
+    return { ...u, hp: Math.min(u.maxHp, u.hp + add) };
+  });
+  let playersPrep = state.players.map(p => ({ ...p }));
+  let unitStacksState = updateArmyRallyFromUnits(state.unitStacks ?? [], unitsPrep);
+  const replen = computeArmyReplenishment({
+    unitStacks: unitStacksState,
+    units: unitsPrep,
+    cities: citiesPrep,
+    players: playersPrep,
+    cycle: newCycle,
+    pendingRecruits: [],
+  });
+  citiesPrep = replen.cities;
+  playersPrep = replen.players;
+  unitStacksState = replen.unitStacks;
+
   // ── Weather ──
   let currentWeather = state.activeWeather;
   let lastWeatherEnd = state.lastWeatherEndCycle;
@@ -477,7 +518,7 @@ export function stepSimulation(
 
   // ── Economy ──
   const econ = processEconomyTurn(
-    state.cities, state.units, state.players,
+    citiesPrep, unitsPrep, playersPrep,
     state.tiles, state.territory, newCycle, harvestMultiplier,
   );
   let cities = econ.cities;
@@ -540,12 +581,9 @@ export function stepSimulation(
     }
   }
 
-  // ── Upkeep (reuse clusters from economy; supply cache avoids recomputing per-unit supply when position unchanged) ──
+  // ── Upkeep (empire-pooled supply; cache avoids recomputing per-unit supply when position unchanged) ──
   const supplyCache = state.supplyCache ?? new Map<string, SupplyCacheEntry>();
-  const upkeepResult = upkeepTick(
-    units, cities, state.heroes, newCycle, state.tiles, state.territory,
-    econ.clusters, supplyCache,
-  );
+  const upkeepResult = upkeepTick(units, cities, state.heroes, newCycle, state.tiles, state.territory, supplyCache);
   units = units.filter(u => u.hp > 0);
 
   const countStatus = (list: Unit[]) => {
@@ -873,18 +911,23 @@ export function stepSimulation(
       }
     }
 
-    // AI wall ring builds: deduct stone from city, add sections for valid ring hexes that don't already have owner's wall
+    // AI wall ring builds: queue wall section projects (same pipeline as towers/other construction).
     const buildWallRings = (aiPlan as { buildWallRings?: { cityId: string; ring: 1 | 2 }[] }).buildWallRings ?? [];
     for (const wr of buildWallRings) {
       const city = cityById.get(wr.cityId);
       if (!city || city.ownerId !== aiPlayerId) continue;
       const ringHexes = getHexRing(city.q, city.r, wr.ring);
       const ownerWallKeys = new Set(wallSectionsAfterAi.filter(w => w.ownerId === aiPlayerId).map(w => tileKey(w.q, w.r)));
+      const queuedWallKeys = new Set(
+        constructions
+          .filter(c => c.ownerId === aiPlayerId && c.type === 'wall_section')
+          .map(c => tileKey(c.q, c.r)),
+      );
       const validHexes: { q: number; r: number }[] = [];
       for (const { q, r } of ringHexes) {
         const tile = tilesMut.get(tileKey(q, r));
         if (!tile || tile.biome === 'water') continue;
-        if (ownerWallKeys.has(tileKey(q, r))) continue;
+        if (ownerWallKeys.has(tileKey(q, r)) || queuedWallKeys.has(tileKey(q, r))) continue;
         validHexes.push({ q, r });
       }
       if (validHexes.length === 0) continue;
@@ -895,12 +938,21 @@ export function stepSimulation(
       if (cityIdx >= 0) {
         cities[cityIdx] = {
           ...cities[cityIdx],
+          universityBuilderTask: 'city_defenses',
           storage: { ...cities[cityIdx].storage, stone: Math.max(0, cityStone - totalCost) },
         };
       }
       for (const { q, r } of validHexes) {
-        wallSectionsAfterAi.push({
-          q, r, ownerId: aiPlayerId, hp: WALL_SECTION_HP, maxHp: WALL_SECTION_HP,
+        constructions.push({
+          id: generateId('con'),
+          type: 'wall_section',
+          q,
+          r,
+          cityId: city.id,
+          ownerId: aiPlayerId,
+          bpRequired: WALL_SECTION_BP_COST,
+          bpAccumulated: 0,
+          wallBuildRing: wr.ring,
         });
       }
     }
@@ -916,7 +968,7 @@ export function stepSimulation(
       const cmd = commandersMut.find(c => c.id === ca.commanderId && c.ownerId === aiPlayerId);
       if (cmd) {
         cmd.assignment = ca.assignment;
-        if (diagnostics && ca.assignment.kind === 'field') {
+        if (diagnostics && ca.assignment.kind !== 'city_defense') {
           if (aiPlayerId === AI_ID) diagnostics.commanderFieldAssignmentsAi1 = (diagnostics.commanderFieldAssignmentsAi1 ?? 0) + 1;
           else diagnostics.commanderFieldAssignmentsAi2 = (diagnostics.commanderFieldAssignmentsAi2 ?? 0) + 1;
         }
@@ -968,6 +1020,19 @@ export function stepSimulation(
 
       if (newAccum >= site.bpRequired) {
         if (site.type === 'trebuchet' || site.type === 'scout_tower' || site.type === 'city_defense') continue; // not used by AI in this path
+        if (site.type === 'wall_section') {
+          const exists = wallSectionsAfterAi.some(w => w.ownerId === site.ownerId && w.q === site.q && w.r === site.r);
+          if (!exists) {
+            wallSectionsAfterAi.push({
+              q: site.q,
+              r: site.r,
+              ownerId: site.ownerId,
+              hp: WALL_SECTION_HP,
+              maxHp: WALL_SECTION_HP,
+            });
+          }
+          continue;
+        }
         const city = updatedCities.find((c) => c.id === site.cityId);
         if (city) {
           const b: CityBuilding = { type: site.type as BuildingType, q: site.q, r: site.r };
@@ -1017,26 +1082,81 @@ export function stepSimulation(
   }
   // Territory computed once at end of step (after capture hold) to avoid duplicate work
 
-  // ── One movement + combat + siege tick (use sim time so headless runs advance correctly) ──
+  // ── One movement + combat + coastal + siege tick (aligned with useGameStore RT loop) ──
   const movingUnits = units.map(u => ({ ...u }));
-  const movingHeroes = state.heroes.map(h => ({ ...h }));
-  // Same-cycle tile edits (e.g. village incorporation) must apply before movement/combat.
-  movementTick(movingUnits, movingHeroes, tilesMut, wallSectionsAfterAi, citiesToSet, newSimTimeMs, state.players);
+  const movingHeroes: Hero[] = [];
+  const movingCommanders = commandersMut.map(c => ({ ...c }));
+  const territoryForMovement = calculateTerritory(citiesToSet, tilesMut);
+  const closingFire = movementTick(
+    movingUnits,
+    movingHeroes,
+    tilesMut,
+    wallSectionsAfterAi,
+    citiesToSet,
+    newSimTimeMs,
+    state.players,
+    scrollAttachments,
+    newCycle,
+    movingCommanders,
+    territoryForMovement,
+    state.defenseInstallations,
+  );
+  autoEmbarkLandUnitsOntoScoutShipsAtHex(movingUnits, tilesMut);
   releaseAttackWaveHolds(movingUnits, citiesToSet);
-  const combatResult = combatTick(movingUnits, movingHeroes, newCycle, citiesToSet, tilesMut, newSimTimeMs);
+  releaseMarchEchelonHolds(movingUnits, citiesToSet);
+  syncCommandersToAssignments(movingCommanders, citiesToSet, movingUnits);
+
+  const territoryForCombat = calculateTerritory(citiesToSet, tilesMut);
+  const combatResult = combatTick(
+    movingUnits,
+    movingHeroes,
+    newCycle,
+    citiesToSet,
+    tilesMut,
+    newSimTimeMs,
+    state.defenseInstallations,
+    territoryForCombat,
+    scrollAttachments,
+    movingCommanders,
+    state.combatMoraleState,
+    undefined,
+  );
+
   const wallSectionsMut = wallSectionsAfterAi.map(w => ({ ...w }));
+  const coastalResult = coastalBombardmentTick(
+    movingUnits,
+    movingHeroes,
+    wallSectionsMut,
+    newCycle,
+    citiesToSet,
+    tilesMut,
+    newSimTimeMs,
+    scrollAttachments,
+    movingCommanders,
+  );
+
   siegeTick(wallSectionsMut, movingUnits);
+  const citiesSiege = citiesToSet.map(c => ({ ...c, buildings: c.buildings.map(b => ({ ...b })) }));
+  siegeBuildingsTick(citiesSiege, movingUnits);
+  landUnitBuildingDamageTick(citiesSiege, movingUnits);
+  citiesToSet = citiesSiege;
 
-  aliveUnits = movingUnits.filter(u => u.hp > 0 && !combatResult.killedUnitIds.includes(u.id));
+  const mergedKilledUnitIds = [
+    ...new Set([...closingFire.killedUnitIds, ...combatResult.killedUnitIds, ...coastalResult.killedUnitIds]),
+  ];
+  const mergedKilledHeroIds = [
+    ...new Set([...(combatResult.killedHeroIds ?? []), ...(coastalResult.killedHeroIds ?? [])]),
+  ];
 
-  // ── Commander sync: update positions, clear dead anchors, clear invalid city assignments ──
-  let commandersNext = commandersMut;
+  aliveUnits = movingUnits.filter(u => u.hp > 0 && !mergedKilledUnitIds.includes(u.id));
+
+  let commandersNext = movingCommanders;
   unassignCommandersWithDeadAnchors(commandersNext, aliveUnits);
-  clearInvalidCommanderAssignments(commandersNext, citiesToSet);
+  clearInvalidCommanderAssignments(commandersNext, citiesToSet, state.operationalArmies ?? []);
   syncCommandersToAssignments(commandersNext, citiesToSet, aliveUnits);
 
   // ── Return scrolls from dead carriers to inventory ──
-  const killedIds = new Set(combatResult.killedUnitIds);
+  const killedIds = new Set(mergedKilledUnitIds);
   const scrollReturn = returnScrollsForDeadCarriers(killedIds, scrollAttachments, scrollInventory);
   scrollAttachments = scrollReturn.attachments;
   scrollInventory = scrollReturn.scrollInventory;
@@ -1102,10 +1222,10 @@ export function stepSimulation(
   for (const c of citiesToSet) newCityOwnerById.set(c.id, c.ownerId);
 
   if (diagnostics) {
-    const killsThisStep = combatResult.killedUnitIds.length;
+    const killsThisStep = mergedKilledUnitIds.length;
     diagnostics.totalKills += killsThisStep;
     const unitById = new Map(units.map(u => [u.id, u]));
-    for (const uid of combatResult.killedUnitIds) {
+    for (const uid of mergedKilledUnitIds) {
       const u = unitById.get(uid);
       if (u?.ownerId === AI_ID) diagnostics.killsByAi2 = (diagnostics.killsByAi2 ?? 0) + 1;
       else if (u?.ownerId === AI_ID_2) diagnostics.killsByAi1 = (diagnostics.killsByAi1 ?? 0) + 1;
@@ -1159,7 +1279,7 @@ export function stepSimulation(
     constructions,
     cityCaptureHold: captureHoldNext,
     simTimeMs: newSimTimeMs,
-    heroes: movingHeroes.filter(h => !(combatResult.killedHeroIds ?? []).includes(h.id)),
+    heroes: [],
     supplyCache: supplyCacheNext,
     contestedZoneHexKeys: state.contestedZoneHexKeys,
     commanders: commandersNext,
@@ -1167,5 +1287,9 @@ export function stepSimulation(
     scrollSearchClaimed,
     scrollInventory,
     scrollAttachments,
+    defenseInstallations: state.defenseInstallations,
+    unitStacks: unitStacksState,
+    operationalArmies: state.operationalArmies ?? [],
+    combatMoraleState: combatResult.moraleState,
   };
 }

@@ -1,13 +1,23 @@
 'use client';
 
 import { useState, useEffect, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { useGameStore } from '@/store/useGameStore';
-import { computeTradeClusters, getCapitalCluster, getSupplyingClusterKey } from '@/lib/logistics';
+import { countVillagesInPlayerTerritory, isUnitInSupplyVicinityOfPlayerCities } from '@/lib/empireEconomy';
 import { computeCityProductionRate, computeSawmillBuildingPreview } from '@/lib/gameLoop';
 import { getWeatherHarvestMultiplier } from '@/lib/weather';
-import { BUILDING_COSTS, BUILDING_PRODUCTION, BUILDING_BP_COST, BUILDING_JOBS, CITY_BUILDING_POWER, BUILDER_POWER, BP_RATE_BASE, TERRAIN_FOOD_YIELD, UNIT_COSTS, UNIT_L2_COSTS, UNIT_L3_COSTS, UNIT_BASE_STATS, UNIT_DISPLAY_NAMES, HERO_BUFFS, COMMANDER_TRAIT_INFO, COMMANDER_RECRUIT_GOLD, HERO_POPULATION_UNLOCK, VILLAGE_INCORPORATE_COST, MARKET_GOLD_PER_CYCLE, SCOUT_MISSION_COST, WEATHER_DISPLAY, BARACKS_UPGRADE_COST, BARACKS_L3_UPGRADE_COST, FACTORY_UPGRADE_COST, FARM_UPGRADE_COST, FARM_L2_FOOD_PER_CYCLE, WALL_SECTION_STONE_COST, WORKERS_PER_LEVEL, MIN_STAFFING_RATIO, ROAD_BP_COST, TREBUCHET_FIELD_BP_COST, TREBUCHET_FIELD_GOLD_COST, TREBUCHET_REFINED_WOOD_COST, SCOUT_TOWER_BP_COST, SCOUT_TOWER_GOLD_COST, SAWMILL_WOOD_PER_REFINED, getBuildingJobs, getUnitStats, BuildingType, UnitType, ArmyStance, Biome, hexDistance, tileKey, POP_BIRTH_RATE, POP_NATURAL_DEATHS, POP_CARRYING_CAPACITY_PER_FOOD, POP_EXPECTED_K_ALPHA, STARVATION_DEATHS, SHIP_RECRUIT_COSTS, isNavalUnitType, getShipMaxCargo, hexTouchesBiome, AttackCityStyle, DefenseTowerType, DefenseTowerLevel, DEFENSE_TOWER_LEVEL_COSTS, DEFENSE_TOWER_MAX_PER_CITY, DEFENSE_TOWER_DISPLAY_NAME, getDefenseTowerBpCost, City, CONTESTED_ZONE_GOLD_REWARD, CONTESTED_ZONE_IRON_REWARD, KingdomId, KINGDOM_IDS, KINGDOM_DISPLAY_NAMES, KINGDOM_SETUP_ICONS, SCROLL_SEARCH_CYCLES_REQUIRED, SCROLL_DISPLAY_NAME, SPECIAL_REGION_DISPLAY_NAME, scrollKindForTerrain, SCROLL_COMBAT_BONUS, SCROLL_DEFENSE_BONUS, SCROLL_MOVEMENT_BONUS, SCROLL_ARMY_SLOT_ORDER, SCROLL_SLOT_LABEL, MAP_SIZE_PRESETS, type MapSizePreset, type MapTerrainPreset, type ScrollKind, type Commander, UNIVERSITY_UPGRADE_COSTS, BUILDER_TASK_LABELS, type BuilderTask, DEFAULT_BUILDER_TASK } from '@/types/game';
+import { BUILDING_COSTS, BUILDING_PRODUCTION, BUILDING_BP_COST, BUILDING_JOBS, CITY_BUILDING_POWER, BUILDER_POWER, BP_RATE_BASE, TERRAIN_FOOD_YIELD, UNIT_COSTS, UNIT_L2_COSTS, UNIT_L3_COSTS, UNIT_BASE_STATS, UNIT_DISPLAY_NAMES, COMMANDER_TRAIT_INFO, COMMANDER_RECRUIT_GOLD, VILLAGE_INCORPORATE_COST, MARKET_GOLD_PER_CYCLE, MARKET_GOLD_PER_VILLAGE, SCOUT_MISSION_COST, WEATHER_DISPLAY, BARACKS_UPGRADE_COST, BARACKS_L3_UPGRADE_COST, FACTORY_UPGRADE_COST, FARM_UPGRADE_COST, FARM_L2_FOOD_PER_CYCLE, WALL_SECTION_STONE_COST, WORKERS_PER_LEVEL, MIN_STAFFING_RATIO, TREBUCHET_FIELD_BP_COST, TREBUCHET_FIELD_GOLD_COST, TREBUCHET_REFINED_WOOD_COST, SAWMILL_WOOD_PER_REFINED, getBuildingJobs, getUnitStats, BuildingType, UnitType, ArmyStance, Biome, hexDistance, getHexRing, tileKey, POP_BIRTH_RATE, POP_NATURAL_DEATHS, POP_CARRYING_CAPACITY_PER_FOOD, POP_EXPECTED_K_ALPHA, STARVATION_DEATHS, SHIP_RECRUIT_COSTS, isNavalUnitType, getShipMaxCargo, hexTouchesBiome, AttackCityStyle, DefenseTowerType, DefenseTowerLevel, DEFENSE_TOWER_LEVEL_COSTS, DEFENSE_TOWER_MAX_PER_CITY, DEFENSE_TOWER_DISPLAY_NAME, getDefenseTowerBpCost, City, CONTESTED_ZONE_GOLD_REWARD, CONTESTED_ZONE_IRON_REWARD, KingdomId, KINGDOM_IDS, KINGDOM_DISPLAY_NAMES, KINGDOM_SETUP_ICONS, SCROLL_SEARCH_CYCLES_REQUIRED, SCROLL_DISPLAY_NAME, SPECIAL_REGION_DISPLAY_NAME, scrollKindForTerrain, SCROLL_COMBAT_BONUS, SCROLL_DEFENSE_BONUS, SCROLL_MOVEMENT_BONUS, SCROLL_ARMY_SLOT_ORDER, SCROLL_SLOT_LABEL, MAP_SIZE_PRESETS, type MapSizePreset, type MapTerrainPreset, type ScrollKind, type Commander, UNIVERSITY_UPGRADE_COSTS, BUILDER_TASK_LABELS, type BuilderTask, DEFAULT_BUILDER_TASK, ABILITY_DEFS,   getAbilityForUnit, MAJOR_ENGAGEMENT_ARMY_FRACTION, type MajorEngagementDoctrine, TERRITORY_RADIUS, GARRISON_PATROL_RADIUS_MIN, GARRISON_PATROL_RADIUS_MAX, defaultCityBuildingMaxHp, RUINS_REPAIR_GOLD_RATIO, isCityBuildingOperational } from '@/types/game';
+import {
+  MAJOR_ENGAGEMENT_DOCTRINE_LABELS,
+  MAJOR_ENGAGEMENT_DOCTRINE_HELP,
+  globalLandArmyPower,
+  engagedLandPower,
+  inferEnemyTacticLabel,
+} from '@/lib/majorEngagement';
 import { computeConstructionAvailableBp, computeRoadAvailableBp, getUniversityBuilderSlots } from '@/lib/builders';
-import { countLandMilitaryByType } from '@/lib/siege';
+import { countLandMilitaryByType, TACTICAL_FILTER_LAND_TYPES, unitIdsMatchingTypes } from '@/lib/siege';
+import type { SiegeTacticId } from '@/lib/siegeTactics';
+import { SIEGE_TACTIC_META, buildWaveGroupsFromTactic } from '@/lib/siegeTactics';
 import { findCityForRefinedWoodSpend } from '@/lib/territory';
 import Image from 'next/image';
 import Link from 'next/link';
@@ -588,6 +598,45 @@ function CityModal() {
   );
 }
 
+function GarrisonPatrolControls({ city }: { city: City }) {
+  const setCityGarrisonPatrol = useGameStore(s => s.setCityGarrisonPatrol);
+  const setCityGarrisonPatrolRadius = useGameStore(s => s.setCityGarrisonPatrolRadius);
+  const enabled = city.garrisonPatrol ?? false;
+  const radius = city.garrisonPatrolRadius ?? TERRITORY_RADIUS;
+
+  return (
+    <div className="mt-3 pt-3 border-t border-empire-stone/20">
+      <p className="text-empire-gold/80 text-xs font-semibold uppercase tracking-wide mb-1">Garrison patrol</p>
+      <p className="text-[10px] text-empire-parchment/55 mb-2 leading-snug">
+        Ranged units in garrison (archers / horse archers) shoot enemies standing on this city&apos;s territory, up to the patrol depth from the city center. Return fire when you are shot at works even if stance is passive or skirmish.
+      </p>
+      <label className="flex items-center gap-2 cursor-pointer text-[11px] text-empire-parchment/90 mb-2">
+        <input
+          type="checkbox"
+          checked={enabled}
+          onChange={e => setCityGarrisonPatrol(city.id, e.target.checked)}
+          className="accent-empire-gold"
+        />
+        Patrol territory (auto-fire)
+      </label>
+      <div>
+        <label className="text-[10px] text-empire-parchment/50 block mb-1">
+          Patrol depth: {radius} hex{radius !== 1 ? 'es' : ''} from city center
+        </label>
+        <input
+          type="range"
+          min={GARRISON_PATROL_RADIUS_MIN}
+          max={GARRISON_PATROL_RADIUS_MAX}
+          step={1}
+          value={radius}
+          onChange={e => setCityGarrisonPatrolRadius(city.id, Number(e.target.value))}
+          className="w-full h-1 bg-empire-stone/30 rounded-lg appearance-none cursor-pointer accent-empire-gold"
+        />
+      </div>
+    </div>
+  );
+}
+
 function CityDefenseCommanderPicker({ city }: { city: import('@/types/game').City }) {
   const commanders = useGameStore(s => s.commanders);
   const assignCommanderToCityDefense = useGameStore(s => s.assignCommanderToCityDefense);
@@ -675,6 +724,7 @@ function CityModalContent({ city, onClose, isObserver = false }: { city: import(
   const [showPopulationMechanics, setShowPopulationMechanics] = useState(false);
   const setFoodPriority = useGameStore(s => s.setFoodPriority);
   const setTaxRate = useGameStore(s => s.setTaxRate);
+  const repairCityBuilding = useGameStore(s => s.repairCityBuilding);
   const players = useGameStore(s => s.players);
   const cities = useGameStore(s => s.cities);
   const tiles = useGameStore(s => s.tiles);
@@ -684,24 +734,20 @@ function CityModalContent({ city, onClose, isObserver = false }: { city: import(
   const human = players.find(p => p.isHuman);
   const harvestMult = getWeatherHarvestMultiplier(activeWeather);
   const localProd = computeCityProductionRate(city, tiles, territory, harvestMult);
-  const clusters = computeTradeClusters(cities, tiles, units, territory);
-  const ownerForCluster = isObserver ? players.find(p => p.id === city.ownerId) : human;
-  const playerClusters = ownerForCluster ? clusters.get(ownerForCluster.id) ?? [] : [];
-  const cluster = playerClusters.find(c => c.cityIds.includes(city.id));
-  const clusterTotal = cluster
-    ? cluster.cities.reduce(
-        (acc, c) => {
-          const p = computeCityProductionRate(c, tiles, territory, harvestMult);
-          return { food: acc.food + p.food, guns: acc.guns + p.guns };
-        },
-        { food: 0, guns: 0 },
-      )
-    : localProd;
+  const ownerPlayer = isObserver ? players.find(p => p.id === city.ownerId) : human;
+  const empireCities = ownerPlayer ? cities.filter(c => c.ownerId === ownerPlayer.id) : [];
+  const empireTotal = empireCities.reduce(
+    (acc, c) => {
+      const p = computeCityProductionRate(c, tiles, territory, harvestMult);
+      return { food: acc.food + p.food, guns: acc.guns + p.guns };
+    },
+    { food: 0, guns: 0 },
+  );
   const fromNetwork = {
-    food: Math.max(0, clusterTotal.food - localProd.food),
-    guns: Math.max(0, clusterTotal.guns - localProd.guns),
+    food: Math.max(0, empireTotal.food - localProd.food),
+    guns: Math.max(0, empireTotal.guns - localProd.guns),
   };
-  const isIsolated = cluster ? cluster.cities.length === 1 : true;
+  const isIsolated = empireCities.length <= 1;
 
   let totalJobs = 0;
   let employed = 0;
@@ -821,10 +867,34 @@ function CityModalContent({ city, onClose, isObserver = false }: { city: import(
             const jobs = getBuildingJobs(b);
             const assigned = (b as import('@/types/game').CityBuilding).assignedWorkers ?? 0;
             const label = b.type === 'city_center' ? 'City Center' : b.type.charAt(0).toUpperCase() + b.type.slice(1);
+            const maxHp = b.maxHp ?? defaultCityBuildingMaxHp(b.type, b.level ?? 1);
+            const hp = b.hp ?? maxHp;
+            const ruined = b.buildingState === 'ruins' || !isCityBuildingOperational(b);
+            const repairGold = Math.ceil(BUILDING_COSTS[b.type] * RUINS_REPAIR_GOLD_RATIO);
+            const canRepair = human && city.ownerId === human.id && (human.gold ?? 0) >= repairGold;
             return (
-              <div key={i} className="flex justify-between text-empire-parchment/80">
-                <span>{label}</span>
-                <span>{assigned}/{jobs} workers</span>
+              <div key={i} className="flex flex-col gap-0.5 text-empire-parchment/80">
+                <div className="flex justify-between">
+                  <span>{label}{ruined ? ' (ruins)' : ''}</span>
+                  <span>{assigned}/{jobs} workers</span>
+                </div>
+                {b.type !== 'city_center' && (
+                  <div className="flex justify-between items-center text-[10px] text-empire-parchment/50">
+                    <span>
+                      HP {hp}/{maxHp}
+                    </span>
+                    {ruined && !isObserver && (
+                      <button
+                        type="button"
+                        disabled={!canRepair}
+                        onClick={() => repairCityBuilding(city.id, b.q, b.r)}
+                        className="px-1.5 py-0.5 rounded border border-amber-500/40 text-amber-200/90 disabled:opacity-40"
+                      >
+                        Repair {repairGold}g
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
             );
           })}
@@ -837,6 +907,7 @@ function CityModalContent({ city, onClose, isObserver = false }: { city: import(
             Recruit commanders ({COMMANDER_RECRUIT_GOLD}g) from a Barracks or the Army panel. Assign one to boost troops fighting on this city&apos;s tile.
           </p>
           <CityDefenseCommanderPicker city={city} />
+          <GarrisonPatrolControls city={city} />
         </div>
       )}
       {!isObserver && (
@@ -1058,15 +1129,20 @@ function CombatBanner() {
   );
 }
 
+const HUMAN_PLAYER_ID = 'player_human';
+
 function BattleReportModal() {
   const battleModalHexKey = useGameStore(s => s.battleModalHexKey);
   const closeBattleModal = useGameStore(s => s.closeBattleModal);
   const openBattleModal = useGameStore(s => s.openBattleModal);
   const units = useGameStore(s => s.units);
-  const heroes = useGameStore(s => s.heroes);
   const players = useGameStore(s => s.players);
   const setRetreatStack = useGameStore(s => s.setRetreatStack);
   const gameMode = useGameStore(s => s.gameMode);
+  const moraleState = useGameStore(s => s.combatMoraleState);
+  const killFeed = useGameStore(s => s.combatKillFeed);
+  const majorEngagementStrategyByHex = useGameStore(s => s.majorEngagementStrategyByHex);
+  const setMajorEngagementDoctrine = useGameStore(s => s.setMajorEngagementDoctrine);
 
   const battleKeys = useMemo(() => humanBattleHexKeys(units), [units]);
 
@@ -1088,9 +1164,6 @@ function BattleReportModal() {
     list.reduce((acc, u) => acc + Math.max(0, u.hp), 0);
   const sumMax = (list: typeof atHex) =>
     list.reduce((acc, u) => acc + (u.maxHp ?? getUnitStats(u).maxHp), 0);
-
-  const heroYou = heroes.find(h => h.q === q && h.r === r && h.ownerId.includes('human'));
-  const heroEnemy = heroes.find(h => h.q === q && h.r === r && !h.ownerId.includes('human'));
 
   const nameFor = (ownerId: string) => players.find(p => p.id === ownerId)?.name ?? ownerId;
 
@@ -1157,22 +1230,128 @@ function BattleReportModal() {
             <p className="text-empire-parchment/80">
               {yours.length} unit{yours.length !== 1 ? 's' : ''} · {Math.round(sumHp(yours))} / {Math.round(sumMax(yours))} HP
             </p>
-            {heroYou && (
-              <p className="text-empire-parchment/60 mt-1">Hero: {Math.round(heroYou.hp ?? 0)} / {heroYou.maxHp ?? '—'} HP</p>
-            )}
           </div>
           <div className="rounded-lg border border-rose-800/40 bg-rose-950/20 px-3 py-2">
             <p className="text-rose-400/90 font-semibold mb-1">Enemy</p>
             <p className="text-empire-parchment/80">
               {enemies.length} unit{enemies.length !== 1 ? 's' : ''} · {Math.round(sumHp(enemies))} / {Math.round(sumMax(enemies))} HP
             </p>
-            {heroEnemy && (
-              <p className="text-empire-parchment/60 mt-1">
-                {nameFor(heroEnemy.ownerId)} hero: {Math.round(heroEnemy.hp ?? 0)} / {heroEnemy.maxHp ?? '—'} HP
-              </p>
-            )}
           </div>
         </div>
+
+        {majorEngagementStrategyByHex[battleModalHexKey] && (() => {
+          const enemyOwner = enemies[0]?.ownerId;
+          const yourOwner = yours[0]?.ownerId;
+          const row = majorEngagementStrategyByHex[battleModalHexKey]!;
+          const humanDoc = row[HUMAN_PLAYER_ID] ?? 'balanced';
+          const enemyDoc = enemyOwner ? row[enemyOwner] : undefined;
+          const pctYou =
+            enemyOwner && globalLandArmyPower(enemyOwner, units) > 0
+              ? Math.round(
+                  (100 * engagedLandPower(yours)) / globalLandArmyPower(enemyOwner, units),
+                )
+              : 0;
+          const pctEnemy =
+            yourOwner && globalLandArmyPower(yourOwner, units) > 0
+              ? Math.round(
+                  (100 * engagedLandPower(enemies)) / globalLandArmyPower(yourOwner, units),
+                )
+              : 0;
+          const doctrineIds = Object.keys(MAJOR_ENGAGEMENT_DOCTRINE_LABELS) as MajorEngagementDoctrine[];
+          return (
+            <div className="mb-4 p-3 rounded-lg border border-amber-500/35 bg-amber-950/20">
+              <p className="text-amber-300 text-xs font-bold tracking-wide mb-1">Major engagement</p>
+              <p className="text-empire-parchment/55 text-[10px] mb-2">
+                Each side meets the {Math.round(MAJOR_ENGAGEMENT_ARMY_FRACTION * 100)}% threshold vs the enemy&apos;s global land army (max HP). Enemy read:{' '}
+                <span className="text-empire-parchment/85 font-medium">{inferEnemyTacticLabel(enemies)}</span>
+              </p>
+              <p className="text-empire-parchment/45 text-[10px] mb-2 tabular-nums">
+                Engaged vs global — You: {pctYou}% · Enemy: {pctEnemy}%
+              </p>
+              {enemyDoc != null && enemyOwner && (
+                <p className="text-empire-parchment/60 text-[10px] mb-2">
+                  Enemy doctrine:{' '}
+                  <span className="text-rose-300/90">{MAJOR_ENGAGEMENT_DOCTRINE_LABELS[enemyDoc]}</span>
+                </p>
+              )}
+              <p className="text-[10px] text-empire-parchment/55 mb-1.5 font-semibold uppercase tracking-wide">Your doctrine</p>
+              <div className="flex flex-col gap-1.5 max-h-40 overflow-y-auto pr-1">
+                {doctrineIds.map(d => (
+                  <label
+                    key={d}
+                    className="flex items-start gap-2 text-[11px] cursor-pointer rounded border border-transparent hover:border-empire-stone/25 px-1 py-0.5"
+                  >
+                    <input
+                      type="radio"
+                      name={`major-doctrine-${battleModalHexKey}`}
+                      checked={humanDoc === d}
+                      onChange={() => setMajorEngagementDoctrine(battleModalHexKey, d)}
+                      className="mt-0.5"
+                    />
+                    <span>
+                      <span className="text-empire-parchment/90">{MAJOR_ENGAGEMENT_DOCTRINE_LABELS[d]}</span>
+                      <span className="block text-empire-parchment/45 text-[10px] leading-snug">
+                        {MAJOR_ENGAGEMENT_DOCTRINE_HELP[d]}
+                      </span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* Morale bars */}
+        {(() => {
+          const yourOwner = yours[0]?.ownerId;
+          const enemyOwner = enemies[0]?.ownerId;
+          const yourMorale = yourOwner ? (moraleState.get(`${battleModalHexKey}:${yourOwner}`)?.morale ?? 100) : 100;
+          const enMorale = enemyOwner ? (moraleState.get(`${battleModalHexKey}:${enemyOwner}`)?.morale ?? 100) : 100;
+          return (
+            <div className="grid grid-cols-2 gap-3 mb-3">
+              <div>
+                <div className="flex items-center justify-between text-[10px] mb-0.5">
+                  <span className="text-emerald-400/70">Morale</span>
+                  <span className={`${yourMorale < 30 ? 'text-amber-400' : yourMorale < 15 ? 'text-red-400' : 'text-emerald-400/70'}`}>{Math.round(yourMorale)}</span>
+                </div>
+                <div className="h-1.5 bg-empire-stone/25 rounded-full overflow-hidden">
+                  <div className={`h-full rounded-full ${yourMorale > 30 ? 'bg-emerald-500' : yourMorale > 15 ? 'bg-amber-500' : 'bg-red-500'}`} style={{ width: `${yourMorale}%` }} />
+                </div>
+              </div>
+              <div>
+                <div className="flex items-center justify-between text-[10px] mb-0.5">
+                  <span className="text-rose-400/70">Morale</span>
+                  <span className={`${enMorale < 30 ? 'text-amber-400' : enMorale < 15 ? 'text-red-400' : 'text-rose-400/70'}`}>{Math.round(enMorale)}</span>
+                </div>
+                <div className="h-1.5 bg-empire-stone/25 rounded-full overflow-hidden">
+                  <div className={`h-full rounded-full ${enMorale > 30 ? 'bg-rose-500' : enMorale > 15 ? 'bg-amber-500' : 'bg-red-500'}`} style={{ width: `${enMorale}%` }} />
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* Kill feed for this hex */}
+        {(() => {
+          const hexKills = killFeed.filter(k => k.hexKey === battleModalHexKey);
+          if (hexKills.length === 0) return null;
+          return (
+            <div className="mb-3 p-2 rounded border border-empire-stone/20 bg-empire-stone/5 max-h-24 overflow-y-auto">
+              <p className="text-[9px] text-empire-parchment/40 mb-1 uppercase tracking-wider">Kill feed</p>
+              {hexKills.slice(-8).map((k, i) => (
+                <div key={i} className="text-[10px] text-empire-parchment/70 leading-tight">
+                  <span className={k.killerOwner.includes('human') ? 'text-emerald-400' : 'text-rose-400'}>
+                    {UNIT_DISPLAY_NAMES[k.killerType as UnitType] ?? k.killerType}
+                  </span>
+                  {' \u2192 '}
+                  <span className={k.victimOwner.includes('human') ? 'text-emerald-400' : 'text-rose-400'}>
+                    {UNIT_DISPLAY_NAMES[k.victimType as UnitType] ?? k.victimType}
+                  </span>
+                </div>
+              ))}
+            </div>
+          );
+        })()}
 
         <div className="flex-1 overflow-y-auto min-h-0 space-y-4 pr-1">
           <div>
@@ -1341,7 +1520,6 @@ function TopBar() {
   const cities = useGameStore(s => s.cities);
   const units = useGameStore(s => s.units);
   const territory = useGameStore(s => s.territory);
-  const heroes = useGameStore(s => s.heroes);
   const gameTimeRemaining = useGameStore(s => s.gameTimeRemaining);
   const cycleTimeRemaining = useGameStore(s => s.cycleTimeRemaining);
   const uiMode = useGameStore(s => s.uiMode);
@@ -1363,20 +1541,11 @@ function TopBar() {
     : human ?? null;
   const humanCities = cities.filter(c => c.ownerId === (displayPlayer?.id ?? human?.id));
 
-  const clusters = computeTradeClusters(cities, tiles, units, territory);
-  const humanClusters = displayPlayer ? clusters.get(displayPlayer.id) ?? [] : [];
-  // Show resources from ALL display player cities — isolated cities' production was hidden when using capital cluster only
   const citiesForResources = humanCities;
-  const networkCount = humanClusters.filter(c => c.cities.length > 1).length;
-  const isolatedCount = humanClusters.filter(c => c.cities.length === 1).length;
-  const hasMultipleCities = humanCities.length >= 2;
-  const logisticsLabel = humanClusters.length === 0
-    ? '—'
-    : !hasMultipleCities
-      ? `${humanCities.length} city${humanCities.length !== 1 ? 's' : ''}`
-      : isolatedCount > 0
-        ? `${networkCount || 0} network${networkCount !== 1 ? 's' : ''}, ${isolatedCount} isolated`
-        : `${humanClusters.length} network${humanClusters.length !== 1 ? 's' : ''}`;
+  const logisticsLabel =
+    humanCities.length === 0
+      ? '—'
+      : `${humanCities.length} cit${humanCities.length !== 1 ? 'ies' : 'y'} · pooled economy`;
 
   const totalPop = humanCities.reduce((s, c) => s + c.population, 0);
   const totalGrain = citiesForResources.reduce((s, c) => s + c.storage.food, 0);
@@ -1391,6 +1560,12 @@ function TopBar() {
   const totalUnits = units.filter(u => u.ownerId === (displayPlayer?.id ?? human?.id) && u.hp > 0).length;
 
   const harvestMult = getWeatherHarvestMultiplier(activeWeather);
+  const empireVillageCount = countVillagesInPlayerTerritory(
+    displayPlayer?.id ?? human?.id ?? '',
+    cities,
+    territory,
+    tiles,
+  );
   let grainPerCycle = 0;
   let armsPerCycle = 0;
   let stonePerCycle = 0;
@@ -1408,41 +1583,32 @@ function TopBar() {
     refinedWoodPerCycle += prod.refinedWood;
     const taxRate = (displayPlayer ?? human)?.taxRate ?? 0.3;
     const baseTax = Math.floor(city.population * taxRate);
-    const marketCount = city.buildings.filter(b => b.type === 'market').length;
     const moraleMod = city.morale / 100;
-    const marketGold = Math.floor(marketCount * MARKET_GOLD_PER_CYCLE * moraleMod);
+    let marketGold = 0;
+    for (const b of city.buildings) {
+      if (b.type !== 'market') continue;
+      const jobs = BUILDING_JOBS.market;
+      const assigned = (b as import('@/types/game').CityBuilding).assignedWorkers ?? 0;
+      const staffRatio = jobs > 0 ? Math.min(1, assigned / jobs) : 0;
+      marketGold += Math.floor(MARKET_GOLD_PER_VILLAGE * empireVillageCount * moraleMod * staffRatio);
+    }
     goldPerCycle += baseTax + marketGold;
   }
 
-  // Civilian consumption: 0.5 food per pop per cluster (consumptionPhase)
-  const civilianFoodDemand = Math.ceil(totalPop * 0.5);
-  // Military upkeep: food + guns per supplied cluster (upkeepTick)
+  // Civilian consumption: 0.25 food per pop per cycle (consumptionPhase)
+  const civilianFoodDemand = Math.ceil(totalPop * 0.25);
+  // Military upkeep: food + guns for units in supply range of any city (empire pool)
   let militaryFoodDemand = 0;
   let militaryGunDemand = 0;
   const displayPlayerId = displayPlayer?.id ?? human?.id ?? '';
   const humanUnits = units.filter(u => u.ownerId === displayPlayerId && u.hp > 0);
-  const unitsByCluster = new Map<string | null, typeof humanUnits>();
   for (const u of humanUnits) {
-    const key = getSupplyingClusterKey(u, humanClusters, tiles, units, displayPlayerId);
-    if (!unitsByCluster.has(key ?? null)) unitsByCluster.set(key ?? null, []);
-    unitsByCluster.get(key ?? null)!.push(u);
+    if (!isUnitInSupplyVicinityOfPlayerCities(u, humanCities)) continue;
+    const stats = getUnitStats(u);
+    militaryFoodDemand += stats.foodUpkeep;
+    militaryGunDemand += stats.gunUpkeep ?? 0;
   }
-  for (const [clusterKey, clusterUnits] of unitsByCluster) {
-    if (clusterKey === null) continue; // unsupplied: no upkeep deducted
-    let foodD = 0, gunD = 0;
-    for (const u of clusterUnits) {
-      const stats = getUnitStats(u);
-      const heroAtUnit = heroes.find(
-        h => h.q === u.q && h.r === u.r && h.ownerId === u.ownerId && h.type === 'logistician',
-      );
-      const foodUp = heroAtUnit ? Math.ceil((stats.foodUpkeep * 0.5)) : stats.foodUpkeep;
-      foodD += foodUp;
-      gunD += (stats.gunUpkeep ?? 0);
-    }
-    militaryFoodDemand += foodD;
-    militaryGunDemand += gunD;
-  }
-  // L2 factories: 1 iron per city with L2 factory per cycle (clusterResourcePhase)
+  // L2 factories: 1 iron per city with L2 factory per cycle (playerResourcePhase)
   const l2FactoryCityCount = humanCities.filter(c =>
     c.buildings.some(b => b.type === 'factory' && ((b as import('@/types/game').CityBuilding).level ?? 1) >= 2),
   ).length;
@@ -1486,8 +1652,17 @@ function TopBar() {
         <div className="w-px h-5 bg-empire-stone/30" />
 
         <div className="flex items-center gap-1.5">
-          <span className="text-empire-parchment/50 text-[10px]">Networks</span>
-          <span className={`text-xs font-medium ${hasMultipleCities && isolatedCount > 0 ? 'text-amber-400' : 'text-green-400/90'}`}>
+          <span className="text-empire-parchment/50 text-[10px]">Empire</span>
+          <span
+            className={`text-xs font-medium ${
+              humanCities.length === 0
+                ? 'text-empire-parchment/40'
+                : grainNetPerCycle < 0
+                  ? 'text-amber-400'
+                  : 'text-green-400/90'
+            }`}
+            title="Civilian grain and military upkeep draw from all your cities (supplied units only for army upkeep preview)."
+          >
             {logisticsLabel}
           </span>
         </div>
@@ -1653,13 +1828,228 @@ function Stat({ label, value, color = 'text-empire-parchment' }: { label: string
 
 type StackWaveForm = { w1: Partial<Record<UnitType, number>>; w2: Partial<Record<UnitType, number>> };
 
+const SIEGE_TACTIC_IDS: SiegeTacticId[] = ['classic_four', 'boxed', 'winged'];
+
+function formatAttackCityWaveSummary(order: { waveGroups: string[][] }): string {
+  const g = order.waveGroups.filter(w => w.length > 0);
+  if (g.length === 0) return '';
+  if (g.length === 1) return ` (${g[0]!.length}u)`;
+  return ` (${g.map((w, i) => `W${i + 1}:${w.length}`).join(' ')})`;
+}
+
+function filterStackForTacticalAttack(
+  stackUnits: import('@/types/game').Unit[],
+  tacticalIncludedUnitTypes: 'all' | UnitType[],
+): import('@/types/game').Unit[] {
+  if (tacticalIncludedUnitTypes === 'all') return stackUnits;
+  const ids = new Set(unitIdsMatchingTypes(stackUnits, tacticalIncludedUnitTypes));
+  return stackUnits.filter(u => ids.has(u.id));
+}
+
+const TACTIC_PREVIEW_KNIGHT_SRC = '/sprites/units/crusader_knight.png';
+
+/** Small knight sprite used as “mock soldier” in formation thumbnails. */
+function TacticKnightFigure({ dimmed }: { dimmed?: boolean }) {
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={TACTIC_PREVIEW_KNIGHT_SRC}
+      alt=""
+      width={18}
+      height={18}
+      draggable={false}
+      className={`w-[18px] h-[18px] object-contain shrink-0 select-none [image-rendering:pixelated] drop-shadow-[0_1px_0_rgba(0,0,0,0.75)] ${dimmed ? 'opacity-45' : ''}`}
+    />
+  );
+}
+
+/** Formation layout thumbnails using knight PNGs (same art as in-game crusader). */
+function TacticStyleDiagram({ id }: { id: SiegeTacticId }) {
+  if (id === 'classic_four') {
+    return (
+      <div className="flex flex-col gap-0.5 items-center justify-center h-[4.25rem] w-full">
+        <div className="flex gap-0.5 justify-center">
+          <TacticKnightFigure />
+          <TacticKnightFigure />
+        </div>
+        <div className="flex gap-0.5 justify-center">
+          <TacticKnightFigure />
+          <TacticKnightFigure />
+          <TacticKnightFigure />
+        </div>
+        <div className="flex gap-0.5 justify-center">
+          <TacticKnightFigure />
+          <TacticKnightFigure />
+        </div>
+        <div className="flex gap-0.5 justify-center">
+          <TacticKnightFigure />
+        </div>
+      </div>
+    );
+  }
+  if (id === 'boxed') {
+    return (
+      <div className="grid grid-cols-3 gap-0.5 place-items-center h-[4.25rem] w-[4.5rem] mx-auto p-1 border border-amber-600/40 rounded bg-stone-950">
+        <TacticKnightFigure />
+        <TacticKnightFigure />
+        <TacticKnightFigure />
+        <TacticKnightFigure />
+        <TacticKnightFigure dimmed />
+        <TacticKnightFigure />
+        <TacticKnightFigure />
+        <TacticKnightFigure />
+        <TacticKnightFigure />
+      </div>
+    );
+  }
+  return (
+    <div className="flex gap-1 items-center justify-center h-[4.25rem] w-full">
+      <div className="flex flex-col gap-0.5">
+        <TacticKnightFigure />
+        <TacticKnightFigure />
+      </div>
+      <div className="flex flex-col gap-0.5">
+        <TacticKnightFigure />
+        <TacticKnightFigure />
+        <TacticKnightFigure />
+      </div>
+      <div className="flex flex-col gap-0.5">
+        <TacticKnightFigure />
+        <TacticKnightFigure />
+      </div>
+    </div>
+  );
+}
+
+function MarchTacticsModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const defaultMarchFormation = useGameStore(s => s.defaultMarchFormation);
+  const setDefaultMarchFormation = useGameStore(s => s.setDefaultMarchFormation);
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  if (!open || !mounted || typeof document === 'undefined') return null;
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[2147483646] isolate flex items-center justify-center pointer-events-auto bg-black/50 p-3 sm:p-4"
+      onClick={onClose}
+      role="presentation"
+    >
+      <div
+        className="bg-empire-dark border border-empire-gold/45 rounded-xl shadow-2xl w-[min(100%,44rem)] max-w-[44rem] min-h-[min(88vh,52rem)] max-h-[94vh] overflow-y-auto overflow-x-auto p-4 sm:p-5 space-y-4 relative z-10 flex flex-col"
+        onClick={e => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="march-tactics-title"
+      >
+        <div className="flex justify-between items-start gap-2 shrink-0">
+          <div>
+            <h3 id="march-tactics-title" className="text-empire-gold font-bold text-sm tracking-wide">
+              March tactics & formation
+            </h3>
+            <p className="text-empire-parchment/55 text-[11px] mt-1 leading-snug">
+              Land moves and tactical move/intercept spread units onto hexes around the destination (oriented along your approach). City assault setup still uses wave presets separately. Saved for this session.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-empire-parchment/50 hover:text-empire-parchment text-xl leading-none px-1 shrink-0"
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </div>
+
+        <label className="flex items-center gap-2 text-[11px] text-empire-parchment/80 cursor-pointer shrink-0">
+          <input
+            type="checkbox"
+            checked={defaultMarchFormation.enabled}
+            onChange={e => setDefaultMarchFormation({ enabled: e.target.checked })}
+            className="rounded border-empire-stone/40"
+          />
+          Spread into formation on arrival
+        </label>
+
+        <div className="grid grid-cols-3 gap-2 sm:gap-3 flex-1 min-h-0 min-w-0 w-full">
+          {SIEGE_TACTIC_IDS.map(presetId => (
+            <button
+              key={presetId}
+              type="button"
+              onClick={() => setDefaultMarchFormation({ preset: presetId })}
+              className={`text-left rounded-lg border p-2 min-w-0 flex flex-col transition-colors ${
+                defaultMarchFormation.preset === presetId
+                  ? 'border-empire-gold/55 bg-empire-gold/10 ring-1 ring-empire-gold/30'
+                  : 'border-empire-stone/35 bg-stone-900 hover:border-empire-stone/50'
+              }`}
+            >
+              <div className="h-[6.25rem] sm:h-[7rem] flex items-center justify-center bg-stone-950 rounded-md mb-1.5 overflow-hidden border border-empire-stone/25 shrink-0">
+                <div className="scale-[1.02] sm:scale-[1.08] origin-center">
+                  <TacticStyleDiagram id={presetId} />
+                </div>
+              </div>
+              <div className="text-[9px] sm:text-[10px] font-semibold text-empire-parchment/95 leading-tight">
+                {SIEGE_TACTIC_META[presetId].label}
+              </div>
+              <p className="text-[7px] sm:text-[8px] text-empire-parchment/45 leading-snug mt-0.5 line-clamp-3">
+                {SIEGE_TACTIC_META[presetId].short}
+              </p>
+            </button>
+          ))}
+        </div>
+
+        <div className="flex gap-2 items-center text-[10px] text-empire-parchment/75 shrink-0">
+          <span className="whitespace-nowrap w-12">Width</span>
+          <input
+            type="range"
+            min={1}
+            max={5}
+            value={defaultMarchFormation.width}
+            onChange={e => setDefaultMarchFormation({ width: Number(e.target.value) })}
+            className="flex-1 min-w-0 accent-amber-500 relative z-0"
+          />
+          <span className="text-empire-gold/90 w-4 text-center">{defaultMarchFormation.width}</span>
+        </div>
+        <div className="flex gap-2 items-center text-[10px] text-empire-parchment/75 shrink-0">
+          <span className="whitespace-nowrap w-12">Depth</span>
+          <input
+            type="range"
+            min={1}
+            max={5}
+            value={defaultMarchFormation.depth}
+            onChange={e => setDefaultMarchFormation({ depth: Number(e.target.value) })}
+            className="flex-1 min-w-0 accent-amber-500 relative z-0"
+          />
+          <span className="text-empire-gold/90 w-4 text-center">{defaultMarchFormation.depth}</span>
+        </div>
+
+        <button
+          type="button"
+          onClick={onClose}
+          className="w-full px-3 py-2 text-xs font-bold rounded border border-empire-gold/45 bg-empire-gold/15 text-empire-gold hover:bg-empire-gold/25 shrink-0 mt-auto"
+        >
+          Done
+        </button>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
 function AttackCitySetupModal() {
   const draft = useGameStore(s => s.tacticalAttackCityDraft);
   const cancel = useGameStore(s => s.cancelTacticalAttackCityDraft);
   const commit = useGameStore(s => s.commitTacticalAttackCitySetup);
   const units = useGameStore(s => s.units); // re-render stacks when units change
+  const tacticalIncludedUnitTypes = useGameStore(s => s.tacticalIncludedUnitTypes);
 
   const [attackStyle, setAttackStyle] = useState<AttackCityStyle>('siege');
+  const [setupMode, setSetupMode] = useState<'tactic' | 'manual'>('tactic');
+  const [tacticPreset, setTacticPreset] = useState<SiegeTacticId>('classic_four');
+  const [tacticWidth, setTacticWidth] = useState(3);
+  const [tacticDepth, setTacticDepth] = useState(3);
   const [useWaves, setUseWaves] = useState(false);
   const [forms, setForms] = useState<Record<string, StackWaveForm>>({});
 
@@ -1673,13 +2063,18 @@ function AttackCitySetupModal() {
     for (const sk of d.stackKeys) {
       const [q, r] = sk.split(',').map(Number);
       const stackUnits = uNow.filter(
-        x => x.q === q && x.r === r && x.ownerId === 'player_human' && x.hp > 0,
+        x => x.q === q && x.r === r && x.ownerId === 'player_human' && x.hp > 0 && !x.aboardShipId,
       );
       const maxByType = countLandMilitaryByType(stackUnits);
       init[sk] = { w1: { ...maxByType }, w2: {} };
     }
     setForms(init);
     setAttackStyle('siege');
+    setSetupMode('tactic');
+    const df = useGameStore.getState().defaultMarchFormation;
+    setTacticPreset(df.preset);
+    setTacticWidth(df.width);
+    setTacticDepth(df.depth);
     setUseWaves(false);
   }, [draftKey]);
 
@@ -1696,6 +2091,16 @@ function AttackCitySetupModal() {
   };
 
   const onApply = () => {
+    if (setupMode === 'tactic') {
+      commit({
+        mode: 'tactic',
+        attackStyle,
+        tacticPreset,
+        width: tacticWidth,
+        depth: tacticDepth,
+      });
+      return;
+    }
     const perStack: Record<string, { wave1: Partial<Record<UnitType, number>>; wave2: Partial<Record<UnitType, number>> }> = {};
     for (const sk of draft.stackKeys) {
       const f = forms[sk];
@@ -1706,7 +2111,7 @@ function AttackCitySetupModal() {
         perStack[sk] = { wave1: { ...f.w1 }, wave2: {} };
       }
     }
-    commit({ attackStyle, useWaves, perStack });
+    commit({ mode: 'manual', attackStyle, useWaves, perStack });
   };
 
   return (
@@ -1716,7 +2121,7 @@ function AttackCitySetupModal() {
           <div>
             <h3 className="text-empire-gold font-bold text-sm tracking-wide">Attack {draft.cityName}</h3>
             <p className="text-empire-parchment/60 text-xs mt-1">
-              Choose how many of each unit type join, optional waves, and attack style.
+              Pick a formation preset or set counts by type; width and depth shape how many waves march and how large the leading groups are.
             </p>
           </div>
           <button
@@ -1756,76 +2161,212 @@ function AttackCitySetupModal() {
           </div>
         </div>
 
-        <label className="flex items-center gap-2 text-xs text-empire-parchment/90 cursor-pointer select-none">
-          <input type="checkbox" checked={useWaves} onChange={e => setUseWaves(e.target.checked)} className="rounded border-empire-stone/50" />
-          <span>Send in waves (wave 2 waits until wave 1 reaches the rally point)</span>
-        </label>
+        <div className="space-y-2">
+          <span className="text-[10px] text-empire-parchment/40 uppercase">Composition</span>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => setSetupMode('tactic')}
+              className={`flex-1 px-2 py-1.5 text-[11px] rounded border ${
+                setupMode === 'tactic'
+                  ? 'border-empire-gold/60 bg-empire-gold/15 text-empire-gold'
+                  : 'border-empire-stone/40 text-empire-parchment/70 hover:bg-empire-stone/10'
+              }`}
+            >
+              Tactic presets
+            </button>
+            <button
+              type="button"
+              onClick={() => setSetupMode('manual')}
+              className={`flex-1 px-2 py-1.5 text-[11px] rounded border ${
+                setupMode === 'manual'
+                  ? 'border-empire-gold/60 bg-empire-gold/15 text-empire-gold'
+                  : 'border-empire-stone/40 text-empire-parchment/70 hover:bg-empire-stone/10'
+              }`}
+            >
+              Manual by type
+            </button>
+          </div>
+        </div>
 
-        {draft.stackKeys.map(sk => {
-          const [q, r] = sk.split(',').map(Number);
-          const f = forms[sk];
-          const stackUnits = units.filter(
-            u => u.q === q && u.r === r && u.ownerId === 'player_human' && u.hp > 0,
-          );
-          const maxByType = countLandMilitaryByType(stackUnits);
-          const types = Object.keys(maxByType) as UnitType[];
-          if (types.length === 0) {
-            return (
-              <div key={sk} className="text-xs text-amber-400 border border-amber-500/30 rounded p-2">
-                Stack ({q},{r}) has no land combat units for this attack.
-              </div>
-            );
-          }
-          return (
-            <div key={sk} className="border border-empire-stone/30 rounded-lg p-2 space-y-2">
-              <div className="text-xs text-empire-gold font-medium">Stack at ({q}, {r})</div>
-              <div className="space-y-1">
-                {types.map(t => {
-                  const max = maxByType[t] ?? 0;
-                  const v1 = Math.min(max, f?.w1[t] ?? 0);
-                  const v2 = useWaves ? Math.min(max - v1, f?.w2[t] ?? 0) : 0;
+        {setupMode === 'tactic' && (
+          <>
+            <div className="space-y-2">
+              <span className="text-[10px] text-empire-parchment/40 uppercase">Formation</span>
+              <div className="space-y-2">
+                {SIEGE_TACTIC_IDS.map(id => {
+                  const meta = SIEGE_TACTIC_META[id];
                   return (
-                    <div key={t} className="flex flex-wrap items-center gap-2 text-[11px]">
-                      <span className="text-empire-parchment/80 w-24 shrink-0">{UNIT_DISPLAY_NAMES[t] ?? t}</span>
-                      <span className="text-empire-parchment/40">max {max}</span>
-                      {!useWaves ? (
-                        <input
-                          type="number"
-                          min={0}
-                          max={max}
-                          value={v1}
-                          onChange={e => setCount(sk, 'w1', t, e.target.value)}
-                          className="w-16 px-1 py-0.5 rounded bg-empire-stone/20 border border-empire-stone/40 text-empire-parchment"
-                        />
-                      ) : (
-                        <>
-                          <span className="text-empire-parchment/50">W1</span>
-                          <input
-                            type="number"
-                            min={0}
-                            max={max}
-                            value={v1}
-                            onChange={e => setCount(sk, 'w1', t, e.target.value)}
-                            className="w-14 px-1 py-0.5 rounded bg-empire-stone/20 border border-empire-stone/40 text-empire-parchment"
-                          />
-                          <span className="text-empire-parchment/50">W2</span>
-                          <input
-                            type="number"
-                            min={0}
-                            max={Math.max(0, max - v1)}
-                            value={v2}
-                            onChange={e => setCount(sk, 'w2', t, e.target.value)}
-                            className="w-14 px-1 py-0.5 rounded bg-empire-stone/20 border border-empire-stone/40 text-empire-parchment"
-                          />
-                        </>
-                      )}
-                    </div>
+                    <label
+                      key={id}
+                      className={`flex items-start gap-2 text-xs cursor-pointer rounded border p-2 ${
+                        tacticPreset === id ? 'border-empire-gold/50 bg-empire-gold/10' : 'border-empire-stone/30'
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="ac-tactic"
+                        checked={tacticPreset === id}
+                        onChange={() => setTacticPreset(id)}
+                        className="mt-0.5"
+                      />
+                      <span>
+                        <span className="text-empire-parchment font-medium">{meta.label}</span>
+                        <span className="text-empire-parchment/55 block text-[11px] leading-snug">{meta.short}</span>
+                      </span>
+                    </label>
                   );
                 })}
               </div>
             </div>
-          );
-        })}
+            <div className="space-y-3 border border-empire-stone/25 rounded-lg p-2">
+              <div>
+                <div className="flex justify-between text-[11px] text-empire-parchment/80 mb-1">
+                  <span>Front width</span>
+                  <span className="text-empire-gold/90">{tacticWidth}</span>
+                </div>
+                <input
+                  type="range"
+                  min={1}
+                  max={5}
+                  step={1}
+                  value={tacticWidth}
+                  onChange={e => setTacticWidth(Number(e.target.value))}
+                  className="w-full accent-amber-600"
+                />
+                <p className="text-[10px] text-empire-parchment/45 mt-0.5">Higher = larger groups in the first wave before splitting into follow-up marches.</p>
+              </div>
+              <div>
+                <div className="flex justify-between text-[11px] text-empire-parchment/80 mb-1">
+                  <span>Echelon depth</span>
+                  <span className="text-empire-gold/90">{tacticDepth}</span>
+                </div>
+                <input
+                  type="range"
+                  min={1}
+                  max={5}
+                  step={1}
+                  value={tacticDepth}
+                  onChange={e => setTacticDepth(Number(e.target.value))}
+                  className="w-full accent-amber-600"
+                />
+                <p className="text-[10px] text-empire-parchment/45 mt-0.5">Higher = more separate waves (cavalry → line → rear).</p>
+              </div>
+            </div>
+            <div className="space-y-2">
+              <span className="text-[10px] text-empire-parchment/40 uppercase">Preview (per stack)</span>
+              {draft.stackKeys.map(sk => {
+                const [q, r] = sk.split(',').map(Number);
+                const stackUnits = units.filter(
+                  u => u.q === q && u.r === r && u.ownerId === 'player_human' && u.hp > 0 && !u.aboardShipId,
+                );
+                const marching = filterStackForTacticalAttack(stackUnits, tacticalIncludedUnitTypes);
+                const groups = buildWaveGroupsFromTactic(marching, tacticPreset, tacticWidth, tacticDepth);
+                if (marching.length === 0) {
+                  return (
+                    <div key={sk} className="text-[11px] text-amber-400/90 border border-amber-500/25 rounded px-2 py-1">
+                      ({q},{r}) — no units match the current type filter.
+                    </div>
+                  );
+                }
+                if (groups.length === 0) {
+                  return (
+                    <div key={sk} className="text-[11px] text-amber-400/90 border border-amber-500/25 rounded px-2 py-1">
+                      ({q},{r}) — no land army units for this formation.
+                    </div>
+                  );
+                }
+                return (
+                  <div key={sk} className="text-[11px] text-empire-parchment/85 border border-empire-stone/25 rounded px-2 py-1.5 space-y-0.5">
+                    <div className="text-empire-gold/90 font-medium">
+                      Stack ({q}, {r})
+                    </div>
+                    {groups.map((g, i) => (
+                      <div key={i} className="text-empire-parchment/75 pl-1">
+                        Wave {i + 1}: {g.length} unit{g.length === 1 ? '' : 's'}
+                      </div>
+                    ))}
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        )}
+
+        {setupMode === 'manual' && (
+          <>
+            <label className="flex items-center gap-2 text-xs text-empire-parchment/90 cursor-pointer select-none">
+              <input type="checkbox" checked={useWaves} onChange={e => setUseWaves(e.target.checked)} className="rounded border-empire-stone/50" />
+              <span>Send in waves (wave 2 waits until wave 1 reaches the rally point)</span>
+            </label>
+
+            {draft.stackKeys.map(sk => {
+              const [q, r] = sk.split(',').map(Number);
+              const f = forms[sk];
+              const stackUnits = units.filter(
+                u => u.q === q && u.r === r && u.ownerId === 'player_human' && u.hp > 0 && !u.aboardShipId,
+              );
+              const maxByType = countLandMilitaryByType(stackUnits);
+              const types = Object.keys(maxByType) as UnitType[];
+              if (types.length === 0) {
+                return (
+                  <div key={sk} className="text-xs text-amber-400 border border-amber-500/30 rounded p-2">
+                    Stack ({q},{r}) has no land combat units for this attack.
+                  </div>
+                );
+              }
+              return (
+                <div key={sk} className="border border-empire-stone/30 rounded-lg p-2 space-y-2">
+                  <div className="text-xs text-empire-gold font-medium">Stack at ({q}, {r})</div>
+                  <div className="space-y-1">
+                    {types.map(t => {
+                      const max = maxByType[t] ?? 0;
+                      const v1 = Math.min(max, f?.w1[t] ?? 0);
+                      const v2 = useWaves ? Math.min(max - v1, f?.w2[t] ?? 0) : 0;
+                      return (
+                        <div key={t} className="flex flex-wrap items-center gap-2 text-[11px]">
+                          <span className="text-empire-parchment/80 w-24 shrink-0">{UNIT_DISPLAY_NAMES[t] ?? t}</span>
+                          <span className="text-empire-parchment/40">max {max}</span>
+                          {!useWaves ? (
+                            <input
+                              type="number"
+                              min={0}
+                              max={max}
+                              value={v1}
+                              onChange={e => setCount(sk, 'w1', t, e.target.value)}
+                              className="w-16 px-1 py-0.5 rounded bg-empire-stone/20 border border-empire-stone/40 text-empire-parchment"
+                            />
+                          ) : (
+                            <>
+                              <span className="text-empire-parchment/50">W1</span>
+                              <input
+                                type="number"
+                                min={0}
+                                max={max}
+                                value={v1}
+                                onChange={e => setCount(sk, 'w1', t, e.target.value)}
+                                className="w-14 px-1 py-0.5 rounded bg-empire-stone/20 border border-empire-stone/40 text-empire-parchment"
+                              />
+                              <span className="text-empire-parchment/50">W2</span>
+                              <input
+                                type="number"
+                                min={0}
+                                max={Math.max(0, max - v1)}
+                                value={v2}
+                                onChange={e => setCount(sk, 'w2', t, e.target.value)}
+                                className="w-14 px-1 py-0.5 rounded bg-empire-stone/20 border border-empire-stone/40 text-empire-parchment"
+                              />
+                            </>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+          </>
+        )}
 
         <div className="flex gap-2 pt-2 border-t border-empire-stone/30">
           <button
@@ -1853,6 +2394,7 @@ function AttackCitySetupModal() {
 function BuilderActivityPanel() {
   const constructions = useGameStore(s => s.constructions);
   const roadConstructions = useGameStore(s => s.roadConstructions);
+  const tiles = useGameStore(s => s.tiles);
   const territory = useGameStore(s => s.territory);
   const cities = useGameStore(s => s.cities);
   const gameMode = useGameStore(s => s.gameMode);
@@ -1875,6 +2417,8 @@ function BuilderActivityPanel() {
     const typeName =
       site.type === 'city_defense' && site.defenseTowerType && site.defenseTowerTargetLevel
         ? `${DEFENSE_TOWER_DISPLAY_NAME[site.defenseTowerType]} L${site.defenseTowerTargetLevel}`
+        : site.type === 'wall_section'
+          ? `Wall section${site.wallBuildRing ? ` (ring ${site.wallBuildRing})` : ''}`
         : site.type.replace(/_/g, ' ');
     items.push({ key: site.id, label: typeName, pct, bpPerSec, etaSec: eta, q: site.q, r: site.r });
   }
@@ -1975,18 +2519,42 @@ function SiegeProgressPanel() {
   );
 }
 
-// ─── Tactical Panel (stack list only; orders from bottom bar) ────────
+// ─── Tactical Panel (map stacks = selection; armies = player-created only) ─
 
-function commanderForArmyStack(
+const ARMY_DRAG_MIME = 'application/x-fallen-empire-army';
+
+function parseArmyDragPayload(
+  e: React.DragEvent,
+): { kind: 'unitStack'; stackId: string } | { kind: 'mapHex'; q: number; r: number } | null {
+  let raw = e.dataTransfer.getData(ARMY_DRAG_MIME);
+  if (!raw) raw = e.dataTransfer.getData('text/plain');
+  if (!raw) return null;
+  try {
+    const p = JSON.parse(raw) as { kind?: string; stackId?: string; q?: number; r?: number };
+    if (p.kind === 'unitStack' && typeof p.stackId === 'string') return { kind: 'unitStack', stackId: p.stackId };
+    if (p.kind === 'mapHex' && typeof p.q === 'number' && typeof p.r === 'number') return { kind: 'mapHex', q: p.q, r: p.r };
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+/** Commander shown on a map stack row (legacy anchor / city / field_army). */
+function commanderOnMapStack(
   q: number,
   r: number,
   stackIds: Set<string>,
   commanders: Commander[],
   cities: City[],
+  stackUnits: import('@/types/game').Unit[],
 ): Commander | undefined {
   for (const c of commanders) {
     if (c.ownerId !== 'player_human' || !c.assignment) continue;
     const a = c.assignment;
+    if (a.kind === 'field_army') {
+      if (stackUnits.some(u => u.armyId === a.armyId)) return c;
+      continue;
+    }
     if (a.kind === 'field' && stackIds.has(a.anchorUnitId)) return c;
     if (a.kind === 'city_defense') {
       const city = cities.find(ct => ct.id === a.cityId);
@@ -1994,6 +2562,12 @@ function commanderForArmyStack(
     }
   }
   return undefined;
+}
+
+function commanderForOperationalArmy(armyId: string, commanders: Commander[]): Commander | undefined {
+  return commanders.find(
+    c => c.ownerId === 'player_human' && c.assignment?.kind === 'field_army' && c.assignment.armyId === armyId,
+  );
 }
 
 /** Recruit new commanders instantly for gold (no city selection, no training time). */
@@ -2029,16 +2603,61 @@ function TacticalPanel() {
   const units = useGameStore(s => s.units);
   const cities = useGameStore(s => s.cities);
   const commanders = useGameStore(s => s.commanders);
-  const scrollAttachments = useGameStore(s => s.scrollAttachments ?? []);
   const pendingTacticalOrders = useGameStore(s => s.pendingTacticalOrders);
   const tacticalSelectedStackKeys = useGameStore(s => s.tacticalSelectedStackKeys);
   const toggleTacticalStack = useGameStore(s => s.toggleTacticalStack);
   const confirmTacticalOrders = useGameStore(s => s.confirmTacticalOrders);
   const cancelTacticalMode = useGameStore(s => s.cancelTacticalMode);
   const assignCommanderToFieldStack = useGameStore(s => s.assignCommanderToFieldStack);
+  const assignCommanderToArmy = useGameStore(s => s.assignCommanderToArmy);
+  const attachSelectedStacksToArmy = useGameStore(s => s.attachSelectedStacksToArmy);
   const unassignCommander = useGameStore(s => s.unassignCommander);
-  const [commanderPickStack, setCommanderPickStack] = useState<string | null>(null);
-
+  const unitStacks = useGameStore(s => s.unitStacks);
+  const operationalArmies = useGameStore(s => s.operationalArmies);
+  const createArmy = useGameStore(s => s.createArmy);
+  const addStackToArmy = useGameStore(s => s.addStackToArmy);
+  const removeStackFromArmy = useGameStore(s => s.removeStackFromArmy);
+  const selectStacksForArmy = useGameStore(s => s.selectStacksForArmy);
+  const deleteArmy = useGameStore(s => s.deleteArmy);
+  const attachHexStackToArmy = useGameStore(s => s.attachHexStackToArmy);
+  const detachHexStackFromArmy = useGameStore(s => s.detachHexStackFromArmy);
+  const setTacticalOrderScope = useGameStore(s => s.setTacticalOrderScope);
+  const tacticalOrderScope = useGameStore(s => s.tacticalOrderScope);
+  const tacticalOrderScopeArmyId = useGameStore(s => s.tacticalOrderScopeArmyId);
+  const tacticalStackUnitTypeFocus = useGameStore(s => s.tacticalStackUnitTypeFocus);
+  const toggleTacticalStackUnitTypeFocus = useGameStore(s => s.toggleTacticalStackUnitTypeFocus);
+  const [commanderPickArmyId, setCommanderPickArmyId] = useState<string | null>(null);
+  const [commanderPickNavalStackKey, setCommanderPickNavalStackKey] = useState<string | null>(null);
+  const [armyDropHover, setArmyDropHover] = useState<string | null>(null);
+  const [marchTacticsOpen, setMarchTacticsOpen] = useState(false);
+  const [armyOrgTab, setArmyOrgTabState] = useState<'stacks' | 'armies'>(() => {
+    if (typeof window === 'undefined') return 'stacks';
+    try {
+      const v = sessionStorage.getItem('fe-army-org-tab');
+      if (v === 'armies') return 'armies';
+      if (v === 'stacks' || v === 'divisions') return 'stacks';
+    } catch {
+      /* */
+    }
+    return 'stacks';
+  });
+  const setArmyOrgTab = (t: 'stacks' | 'armies') => {
+    setArmyOrgTabState(t);
+    try {
+      sessionStorage.setItem('fe-army-org-tab', t);
+    } catch {
+      /* */
+    }
+  };
+  const [armyOrderIds, setArmyOrderIds] = useState<string[]>([]);
+  const [pinnedArmyId, setPinnedArmyId] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return null;
+    try {
+      return sessionStorage.getItem('fe-army-pinned');
+    } catch {
+      return null;
+    }
+  });
   const humanStacks = (() => {
     const byKey: Record<string, { q: number; r: number; units: import('@/types/game').Unit[] }> = {};
     for (const u of units) {
@@ -2053,11 +2672,93 @@ function TacticalPanel() {
   const friendlyCities = cities.filter(c => c.ownerId === 'player_human');
   const humanCommanderRoster = commanders.filter(c => c.ownerId === 'player_human');
 
+  const playerTrainingStacks = unitStacks.filter(d => d.ownerId === 'player_human');
+  const totalStackGroups = playerTrainingStacks.length + humanStacks.length;
+
+  const humanOpArmies = useMemo(
+    () => operationalArmies.filter(f => f.ownerId === 'player_human'),
+    [operationalArmies],
+  );
+
+  useEffect(() => {
+    const ids = humanOpArmies.map(a => a.id);
+    setArmyOrderIds(prev => {
+      let next = prev.filter(id => ids.includes(id));
+      for (const id of ids) {
+        if (!next.includes(id)) next.push(id);
+      }
+      try {
+        sessionStorage.setItem('fe-army-order', JSON.stringify(next));
+      } catch {
+        /* ignore */
+      }
+      return next;
+    });
+  }, [humanOpArmies]);
+
+  const sortedArmies = useMemo(() => {
+    const byId = new Map(humanOpArmies.map(a => [a.id, a]));
+    const ordered = armyOrderIds.map(id => byId.get(id)).filter(Boolean) as typeof humanOpArmies;
+    const rest = humanOpArmies.filter(a => !armyOrderIds.includes(a.id));
+    let list = [...ordered, ...rest];
+    if (pinnedArmyId) {
+      const p = list.find(a => a.id === pinnedArmyId);
+      if (p) list = [p, ...list.filter(a => a.id !== pinnedArmyId)];
+    }
+    return list;
+  }, [humanOpArmies, armyOrderIds, pinnedArmyId]);
+
+  const moveArmyInList = (armyId: string, dir: -1 | 1) => {
+    setArmyOrderIds(prev => {
+      const idx = prev.indexOf(armyId);
+      if (idx < 0) return prev;
+      const j = idx + dir;
+      if (j < 0 || j >= prev.length) return prev;
+      const next = [...prev];
+      [next[idx], next[j]] = [next[j], next[idx]];
+      try {
+        sessionStorage.setItem('fe-army-order', JSON.stringify(next));
+      } catch {
+        /* ignore */
+      }
+      return next;
+    });
+  };
+
+  const togglePinArmy = (id: string) => {
+    setPinnedArmyId(cur => {
+      const next = cur === id ? null : id;
+      try {
+        if (next) sessionStorage.setItem('fe-army-pinned', next);
+        else sessionStorage.removeItem('fe-army-pinned');
+      } catch {
+        /* ignore */
+      }
+      return next;
+    });
+  };
+
+  /** Field command modal: one primary action (confirm), secondary army actions, tertiary extras */
+  const fc = {
+    primary:
+      'flex-1 px-3 py-2 text-xs font-semibold rounded border border-emerald-500/55 bg-emerald-950/40 text-emerald-100 hover:bg-emerald-900/50 transition-colors',
+    cancel:
+      'px-3 py-2 text-xs rounded border border-empire-stone/35 bg-transparent text-empire-parchment/65 hover:bg-empire-stone/15 hover:text-empire-parchment/90 transition-colors',
+    secondary:
+      'w-full text-[10px] py-1.5 rounded border border-slate-500/45 bg-slate-950/40 text-slate-100/95 hover:bg-slate-900/45 hover:border-slate-400/50 transition-colors',
+    tertiary:
+      'w-full text-[10px] py-1.5 rounded border border-empire-stone/35 bg-black/25 text-empire-parchment/80 hover:bg-empire-stone/15 hover:border-empire-stone/50 transition-colors',
+    tertiaryInline:
+      'text-[9px] px-2 py-1 rounded border border-empire-stone/35 bg-black/25 text-empire-parchment/75 hover:bg-empire-stone/15',
+    detailsSummary:
+      'px-1.5 py-1 cursor-pointer list-none [&::-webkit-details-marker]:hidden flex items-center justify-between gap-2 text-[9px] font-semibold text-sky-200/85 uppercase tracking-wide select-none',
+  };
+
   return (
-    <div className="absolute top-14 right-2 w-[min(100%,26rem)] pointer-events-auto max-h-[85vh] overflow-y-auto">
-      <div className="bg-empire-dark/95 border border-empire-gold/40 rounded-lg p-3 space-y-3">
-        <div className="flex justify-between items-center">
-          <h3 className="text-empire-gold font-bold text-sm">Army</h3>
+    <div className="absolute top-14 right-2 z-[35] w-[min(100%,26rem)] pointer-events-auto max-h-[85vh] overflow-y-auto pb-4">
+      <div className="bg-empire-dark border border-empire-gold/40 rounded-lg p-3 space-y-3 pb-28">
+        <div className="flex justify-between items-center gap-2">
+          <h3 className="text-empire-gold font-bold text-sm tracking-wide">Field command</h3>
           <button
             type="button"
             onClick={cancelTacticalMode}
@@ -2067,206 +2768,698 @@ function TacticalPanel() {
             ×
           </button>
         </div>
-        <p className="text-empire-parchment/70 text-xs">
-          <strong>1.</strong> Click stacks to select armies (none = all). <strong>2.</strong> Bottom bar: Move, Attack hex, Incorporate, Attack city, Defend. <strong>3.</strong> Click the <strong>commander</strong> frame to assign or recruit; scroll slots below (assign scrolls on the hex panel). Then <strong>Confirm orders</strong>.
+
+        <p className="text-empire-parchment/55 text-[10px]">
+          Bottom bar scope:{' '}
+          <strong className="text-empire-parchment/85">
+            {tacticalOrderScope === 'all' && 'All forces'}
+            {tacticalOrderScope === 'selected' &&
+              `Selected hex groups (${tacticalSelectedStackKeys.length})`}
+            {tacticalOrderScope === 'army' &&
+              (() => {
+                const n = humanOpArmies.find(a => a.id === tacticalOrderScopeArmyId)?.name ?? '…';
+                return `Field army: ${n}`;
+              })()}
+          </strong>
+          {' · '}
+          Highlighted hexes: {tacticalSelectedStackKeys.length === 0 ? 'none' : `${tacticalSelectedStackKeys.length}`}
         </p>
-        <p className="text-empire-parchment/50 text-[10px]">
-          Selected: {tacticalSelectedStackKeys.length === 0 ? 'all armies' : `${tacticalSelectedStackKeys.length} stack(s)`}
-        </p>
-        <div className="space-y-2 max-h-60 overflow-y-auto">
-          {humanStacks.map(({ q, r, units: stackUnits }) => {
-            const stackKey = tileKey(q, r);
-            const order = pendingTacticalOrders?.[stackKey];
-            const isSelected = tacticalSelectedStackKeys.includes(stackKey);
-            const stackIds = new Set(stackUnits.map(u => u.id));
-            const isNavalStack =
-              stackUnits.length > 0 && stackUnits.every(u => isNavalUnitType(u.type));
-            const assignableCommanders = humanCommanderRoster.filter(
-              c => (c.commanderKind ?? 'land') === (isNavalStack ? 'naval' : 'land'),
-            );
-            const counts: Record<string, number> = {};
-            let status = 'idle';
-            for (const u of stackUnits) {
-              counts[u.type] = (counts[u.type] ?? 0) + 1;
-              if (u.status === 'fighting') status = 'fighting';
-              else if (u.status === 'moving' && status !== 'fighting') status = 'moving';
-            }
-            const compLines = Object.entries(counts)
-              .map(([t, n]) => `${n}× ${UNIT_DISPLAY_NAMES[t as UnitType]}`)
-              .join(' · ');
-            const cmd = commanderForArmyStack(q, r, stackIds, commanders, cities);
-            const attachmentOnStack = (kind: ScrollKind) =>
-              scrollAttachments.find(
-                a => a.kind === kind && a.ownerId === 'player_human' && stackIds.has(a.carrierUnitId),
-              );
-            return (
-              <div
-                key={stackKey}
-                role="button"
-                tabIndex={0}
-                onClick={() => toggleTacticalStack(stackKey)}
-                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleTacticalStack(stackKey); } }}
-                className={`rounded border p-2 cursor-pointer select-none transition-colors ${
-                  isSelected ? 'border-cyan-500/60 bg-cyan-900/20 ring-1 ring-cyan-400/40' : 'border-empire-stone/30 bg-empire-stone/10 hover:bg-empire-stone/20'
+
+        <div className="border-t border-empire-stone/30 pt-2 flex flex-col gap-1.5">
+          <div className="flex items-stretch gap-1.5 min-h-[2rem]">
+            <div className="flex flex-1 min-w-0 rounded border border-empire-stone/35 overflow-hidden text-[10px]">
+              <button
+                type="button"
+                className={`flex-1 py-1.5 font-semibold uppercase tracking-wide transition-colors ${
+                  armyOrgTab === 'stacks'
+                    ? 'bg-cyan-950/45 text-cyan-100 border-b-2 border-cyan-400/70'
+                    : 'bg-black/20 text-empire-parchment/55 hover:text-empire-parchment/80'
                 }`}
+                onClick={() => setArmyOrgTab('stacks')}
               >
-                <div className="flex justify-between items-start gap-2">
-                  <div className="text-xs min-w-0 flex-1">
-                    <span className="text-empire-parchment font-medium">
-                      {isNavalStack ? 'Fleet' : 'Army'} — ({q}, {r})
-                    </span>
-                    <span className="text-empire-parchment/50 ml-1">— {stackUnits.length} unit{stackUnits.length !== 1 ? 's' : ''}</span>
-                    <div className="text-[10px] text-empire-parchment/75 mt-1 leading-snug break-words" title={compLines}>
-                      <span className="text-empire-gold/80 font-semibold">Composition: </span>
-                      {compLines}
-                    </div>
-                    <div
-                      className="mt-2 flex flex-wrap gap-1.5 items-end"
-                      onClick={e => e.stopPropagation()}
-                      onKeyDown={e => e.stopPropagation()}
-                    >
-                      <div className="flex flex-col items-center gap-0.5 max-w-[4.5rem] relative">
-                        <button
-                          type="button"
-                          className={`w-11 h-11 rounded-md border-2 flex items-center justify-center overflow-hidden shrink-0 cursor-pointer transition-colors ${
-                            cmd ? 'border-violet-400/60 bg-violet-950/35 hover:bg-violet-900/40' : 'border-dashed border-violet-600/45 bg-black/25 hover:border-violet-500/55 hover:bg-violet-950/20'
-                          }`}
-                          title={cmd ? `${cmd.name} — click to change` : 'Commander — click to assign or recruit'}
-                          onClick={e => {
-                            e.stopPropagation();
-                            setCommanderPickStack(commanderPickStack === stackKey ? null : stackKey);
+                Stacks ({totalStackGroups})
+              </button>
+              <button
+                type="button"
+                className={`flex-1 py-1.5 font-semibold uppercase tracking-wide transition-colors ${
+                  armyOrgTab === 'armies'
+                    ? 'bg-sky-950/45 text-sky-100 border-b-2 border-sky-400/70'
+                    : 'bg-black/20 text-empire-parchment/55 hover:text-empire-parchment/80'
+                }`}
+                onClick={() => setArmyOrgTab('armies')}
+              >
+                Armies ({sortedArmies.length})
+              </button>
+            </div>
+            {armyOrgTab === 'armies' && (
+              <button type="button" onClick={() => createArmy()} className={`shrink-0 self-stretch ${fc.tertiaryInline}`}>
+                + New army
+              </button>
+            )}
+          </div>
+
+          {armyOrgTab === 'stacks' && (
+            <div className="space-y-2">
+              <details open className="rounded border border-sky-600/25 bg-sky-950/15 group">
+                <summary className="px-2 py-1.5 cursor-pointer list-none [&::-webkit-details-marker]:hidden flex items-center justify-between gap-2 text-[9px] font-semibold text-sky-200/90 uppercase tracking-wide select-none">
+                  <span>Your stacks ({totalStackGroups})</span>
+                  <span className="text-empire-parchment/45 text-[8px] group-open:rotate-180 transition-transform">▼</span>
+                </summary>
+                <div className="px-2 pb-2 space-y-2 border-t border-empire-stone/20 pt-2">
+                <p className="text-[9px] text-empire-parchment/50 leading-snug">
+                  Barracks training groups and map hex groups are all stacks — drag either onto a field army or add from the army card.
+                </p>
+                <div className="space-y-1">
+                  <span className="text-[8px] uppercase tracking-wide text-sky-300/55">Barracks (training)</span>
+                  {playerTrainingStacks.length === 0 ? (
+                    <p className="text-[9px] text-amber-200/75">None — create a template when recruiting at a Barracks.</p>
+                  ) : (
+                    <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto">
+                      {playerTrainingStacks.map(st => (
+                        <div
+                          key={st.id}
+                          draggable
+                          onDragStart={e => {
+                            const payload = JSON.stringify({ kind: 'unitStack', stackId: st.id });
+                            e.dataTransfer.setData(ARMY_DRAG_MIME, payload);
+                            e.dataTransfer.setData('text/plain', payload);
+                            e.dataTransfer.effectAllowed = 'copy';
                           }}
+                          className="cursor-grab active:cursor-grabbing text-[10px] px-2 py-1 rounded border border-sky-600/35 bg-sky-950/25 text-sky-100/95 hover:border-sky-500/50"
+                          title={`Drag to a field army: ${st.name}`}
                         >
-                          {cmd?.portraitDataUrl ? (
-                            // eslint-disable-next-line @next/next/no-img-element
-                            <img src={cmd.portraitDataUrl} alt="" className="w-full h-full object-cover" style={{ imageRendering: 'pixelated' }} />
-                          ) : (
-                            <span className="text-[9px] text-violet-500/45 text-center px-0.5">Empty</span>
-                          )}
-                        </button>
-                        <span className="text-[8px] uppercase tracking-wide text-violet-300/50">Commander</span>
-                        {cmd && (
-                          <span className="text-[9px] text-violet-200/90 text-center leading-tight line-clamp-2 w-full">{cmd.name}</span>
-                        )}
-                        {commanderPickStack === stackKey && (
-                          <div className="absolute left-0 top-full z-20 w-[min(14rem,calc(100vw-2rem))] mt-0.5 rounded border border-violet-500/40 bg-black/90 p-1 space-y-0.5 shadow-lg">
-                            {assignableCommanders.length > 0 && (
-                              <div className="text-[9px] font-semibold text-violet-300/80 px-1">Assign</div>
-                            )}
-                            {assignableCommanders.map(c => (
-                              <button
-                                key={c.id}
-                                type="button"
-                                className="w-full text-left text-[10px] px-1.5 py-1 rounded hover:bg-violet-900/50 text-violet-100"
-                                onClick={e => {
-                                  e.stopPropagation();
-                                  assignCommanderToFieldStack(c.id, q, r);
-                                  setCommanderPickStack(null);
-                                }}
-                              >
-                                {c.name}
-                                {(c.commanderKind ?? 'land') === 'naval' ? (
-                                  <span className="text-sky-400/80 ml-1">(naval)</span>
-                                ) : null}
-                              </button>
-                            ))}
-                            {assignableCommanders.length === 0 && humanCommanderRoster.length > 0 && (
-                              <p className="text-[9px] text-amber-200/75 px-1">
-                                {isNavalStack
-                                  ? 'No naval commander — recruit one (25% chance) or assign when you have one.'
-                                  : 'No land commander available for this stack.'}
-                              </p>
-                            )}
-                            <CommanderRecruitOptionsInPicker onRecruited={() => setCommanderPickStack(null)} />
-                            {cmd && (
-                              <button
-                                type="button"
-                                className="w-full text-[9px] text-empire-parchment/50 px-1.5 py-1 hover:bg-empire-stone/20 rounded border-t border-violet-500/25 mt-0.5 pt-1"
-                                onClick={e => {
-                                  e.stopPropagation();
-                                  unassignCommander(cmd.id);
-                                  setCommanderPickStack(null);
-                                }}
-                              >
-                                Clear commander
-                              </button>
-                            )}
-                          </div>
+                          {st.name}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <div className="space-y-1.5 pt-1 border-t border-empire-stone/20">
+                  <span className="text-[8px] uppercase tracking-wide text-cyan-300/55">Map</span>
+          <div className="space-y-2 max-h-44 overflow-y-auto">
+            {humanStacks.length === 0 ? (
+              <p className="text-empire-parchment/50 text-[11px]">No units on the map.</p>
+            ) : (
+              humanStacks.map(({ q, r, units: stackUnits }) => {
+                const stackKey = tileKey(q, r);
+                const order = pendingTacticalOrders?.[stackKey];
+                const isSelected = tacticalSelectedStackKeys.includes(stackKey);
+                const stackIds = new Set(stackUnits.map(u => u.id));
+                const isNavalStack =
+                  stackUnits.length > 0 && stackUnits.every(u => isNavalUnitType(u.type));
+                const navalAssignable = humanCommanderRoster.filter(c => (c.commanderKind ?? 'land') === 'naval');
+                const counts: Record<string, number> = {};
+                let status = 'idle';
+                for (const u of stackUnits) {
+                  counts[u.type] = (counts[u.type] ?? 0) + 1;
+                  if (u.status === 'fighting') status = 'fighting';
+                  else if (u.status === 'moving' && status !== 'fighting') status = 'moving';
+                }
+                const cmdMap = commanderOnMapStack(q, r, stackIds, commanders, cities, stackUnits);
+                const typeFocus = tacticalStackUnitTypeFocus[stackKey];
+                return (
+                  <div
+                    key={stackKey}
+                    className={`rounded border p-2 select-none transition-colors flex gap-1.5 items-start ${
+                      isSelected
+                        ? 'border-cyan-500/60 bg-cyan-900/20 ring-1 ring-cyan-400/40'
+                        : 'border-empire-stone/30 bg-empire-stone/10 hover:bg-empire-stone/20'
+                    }`}
+                  >
+                    {!isNavalStack && (
+                      <span
+                        draggable
+                        onDragStart={e => {
+                          const payload = JSON.stringify({ kind: 'mapHex', q, r });
+                          e.dataTransfer.setData(ARMY_DRAG_MIME, payload);
+                          e.dataTransfer.setData('text/plain', payload);
+                          e.dataTransfer.effectAllowed = 'copy';
+                        }}
+                        onClick={e => e.stopPropagation()}
+                        className="shrink-0 mt-0.5 text-[14px] leading-none text-empire-parchment/35 hover:text-empire-gold/90 cursor-grab active:cursor-grabbing px-0.5"
+                        title="Drag onto an army card to attach these troops"
+                        aria-hidden
+                      >
+                        ⠿
+                      </span>
+                    )}
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      className="text-xs min-w-0 flex-1 cursor-pointer"
+                      onClick={() => toggleTacticalStack(stackKey)}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          toggleTacticalStack(stackKey);
+                        }
+                      }}
+                    >
+                      <span className="text-empire-parchment font-medium">
+                        {isNavalStack ? 'Fleet' : 'Stack'} — ({q}, {r})
+                      </span>
+                      <span className="text-empire-parchment/50 ml-1">
+                        — {stackUnits.length} unit{stackUnits.length !== 1 ? 's' : ''}
+                      </span>
+                      <div
+                        className="flex flex-wrap gap-1 mt-0.5"
+                        onClick={e => e.stopPropagation()}
+                        onKeyDown={e => e.stopPropagation()}
+                      >
+                        {Object.entries(counts).map(([t, n]) =>
+                          n > 0 ? (
+                            <button
+                              key={t}
+                              type="button"
+                              className={`text-[10px] px-1.5 py-0.5 rounded border bg-black/25 text-empire-parchment/85 hover:border-cyan-500/50 hover:bg-cyan-950/25 ${
+                                typeFocus === t
+                                  ? 'border-cyan-400/70 ring-1 ring-cyan-400/35'
+                                  : 'border-empire-stone/35'
+                              }`}
+                              title="Scope pending orders to this unit type on this hex (click again for whole stack)"
+                              onClick={e => {
+                                e.stopPropagation();
+                                toggleTacticalStackUnitTypeFocus(stackKey, t as UnitType);
+                              }}
+                            >
+                              {n}× {UNIT_DISPLAY_NAMES[t as UnitType]}
+                            </button>
+                          ) : null,
                         )}
                       </div>
-                      {SCROLL_ARMY_SLOT_ORDER.map(kind => {
-                        const att = attachmentOnStack(kind);
-                        const short = SCROLL_DISPLAY_NAME[kind].replace(/^Scroll of /, '');
-                        return (
-                          <div key={kind} className="flex flex-col items-center gap-0.5 max-w-[4rem]">
-                            <div
-                              className={`w-11 h-11 rounded-md border-2 flex items-center justify-center px-0.5 ${
-                                att ? 'border-amber-500/55 bg-amber-950/35' : 'border-dashed border-amber-800/35 bg-amber-950/15'
+                      {typeFocus && (
+                        <p className="text-[9px] text-cyan-300/80 mt-0.5">
+                          Orders: {UNIT_DISPLAY_NAMES[typeFocus]} only — click the type again to order the full stack.
+                        </p>
+                      )}
+                      {isNavalStack && (
+                        <div
+                          className="mt-2 flex flex-wrap gap-1.5 items-end"
+                          onClick={e => e.stopPropagation()}
+                          onKeyDown={e => e.stopPropagation()}
+                        >
+                          <div className="flex flex-col items-center gap-0.5 max-w-[4.5rem] relative">
+                            <button
+                              type="button"
+                              className={`w-11 h-11 rounded-md border-2 flex items-center justify-center overflow-hidden shrink-0 cursor-pointer transition-colors ${
+                                cmdMap
+                                  ? 'border-violet-400/60 bg-violet-950/35 hover:bg-violet-900/40'
+                                  : 'border-dashed border-violet-600/45 bg-black/25 hover:border-violet-500/55 hover:bg-violet-950/20'
                               }`}
-                              title={att ? SCROLL_DISPLAY_NAME[kind] : `No ${SCROLL_SLOT_LABEL[kind].toLowerCase()} scroll`}
+                              title={cmdMap ? `${cmdMap.name} — fleet commander` : 'Fleet commander'}
+                              onClick={e => {
+                                e.stopPropagation();
+                                setCommanderPickNavalStackKey(commanderPickNavalStackKey === stackKey ? null : stackKey);
+                              }}
                             >
-                              {att ? (
-                                <span className="text-[8px] text-amber-100 text-center leading-tight">{short}</span>
+                              {cmdMap?.portraitDataUrl ? (
+                                // eslint-disable-next-line @next/next/no-img-element
+                                <img
+                                  src={cmdMap.portraitDataUrl}
+                                  alt=""
+                                  className="w-full h-full object-cover"
+                                  style={{ imageRendering: 'pixelated' }}
+                                />
                               ) : (
-                                <span className="text-[9px] text-amber-700/35">—</span>
+                                <span className="text-[9px] text-violet-500/45 text-center px-0.5">Empty</span>
+                              )}
+                            </button>
+                            <span className="text-[8px] uppercase tracking-wide text-violet-300/50">Commander</span>
+                            {commanderPickNavalStackKey === stackKey && (
+                              <div className="absolute left-0 top-full z-20 w-[min(14rem,calc(100vw-2rem))] mt-0.5 rounded border border-violet-500/40 bg-black/90 p-1 space-y-0.5 shadow-lg">
+                                {navalAssignable.map(c => (
+                                  <button
+                                    key={c.id}
+                                    type="button"
+                                    className="w-full text-left text-[10px] px-1.5 py-1 rounded hover:bg-violet-900/50 text-violet-100"
+                                    onClick={e => {
+                                      e.stopPropagation();
+                                      assignCommanderToFieldStack(c.id, q, r);
+                                      setCommanderPickNavalStackKey(null);
+                                    }}
+                                  >
+                                    {c.name}
+                                  </button>
+                                ))}
+                                <CommanderRecruitOptionsInPicker onRecruited={() => setCommanderPickNavalStackKey(null)} />
+                                {cmdMap && (
+                                  <button
+                                    type="button"
+                                    className="w-full text-[9px] text-empire-parchment/50 px-1.5 py-1 hover:bg-empire-stone/20 rounded border-t border-violet-500/25 mt-0.5 pt-1"
+                                    onClick={e => {
+                                      e.stopPropagation();
+                                      unassignCommander(cmdMap.id);
+                                      setCommanderPickNavalStackKey(null);
+                                    }}
+                                  >
+                                    Clear commander
+                                  </button>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                      <span
+                        className={`text-[10px] block mt-1 ${status === 'fighting' ? 'text-red-400' : status === 'moving' ? 'text-green-400' : 'text-empire-parchment/50'}`}
+                      >
+                        Status: {status}
+                      </span>
+                    </div>
+                    {order && (
+                      <div className="text-[10px] text-empire-gold/80 mt-1">
+                        {order.type === 'defend' && order.cityId
+                          ? `Defend ${friendlyCities.find(c => c.id === order.cityId)?.name ?? 'city'}`
+                          : order.type === 'city_defense' && order.cityId
+                            ? `City defense ${order.mode === 'stagnant' ? '(walls) ' : '(patrol) '}${friendlyCities.find(c => c.id === order.cityId)?.name ?? 'city'}`
+                            : order.type === 'patrol'
+                              ? `Patrol (${order.centerQ},${order.centerR}) r${order.radius}`
+                              : order.type === 'move' || order.type === 'intercept'
+                                ? `→ (${order.toQ}, ${order.toR})`
+                                : order.type === 'incorporate_village'
+                                  ? `Incorporate → (${order.toQ}, ${order.toR})`
+                                  : order.type === 'attack_city'
+                                    ? (() => {
+                                        const ec = cities.find(c => c.id === order.cityId);
+                                        return `Attack ${ec?.name ?? 'city'} — ${order.attackStyle}${formatAttackCityWaveSummary(order)}`;
+                                      })()
+                                    : order.type === 'attack_building' && order.cityId
+                                      ? `Raid building (${order.buildingQ},${order.buildingR}) — ${cities.find(c => c.id === order.cityId)?.name ?? 'city'}`
+                                      : ''}
+                      </div>
+                    )}
+                  </div>
+                );
+              })
+            )}
+          </div>
+                </div>
+                </div>
+              </details>
+            </div>
+          )}
+
+          {armyOrgTab === 'armies' && (
+            <div className="space-y-1.5">
+          {sortedArmies.length === 0 ? (
+            <p className="text-[11px] text-empire-parchment/45 py-1">No field armies yet — use + New army next to the tabs.</p>
+          ) : (
+            sortedArmies.map(fa => {
+                const stackIds = fa.stackIds ?? [];
+                const landInArmy = units.filter(
+                  u =>
+                    u.ownerId === 'player_human' &&
+                    u.hp > 0 &&
+                    u.armyId === fa.id &&
+                    !u.aboardShipId &&
+                    u.type !== 'builder' &&
+                    !isNavalUnitType(u.type),
+                );
+                const cmd = commanderForOperationalArmy(fa.id, commanders);
+                const landAssignable = humanCommanderRoster.filter(c => (c.commanderKind ?? 'land') === 'land');
+                const byHex = new Map<string, import('@/types/game').Unit[]>();
+                for (const u of landInArmy) {
+                  const k = tileKey(u.q, u.r);
+                  if (!byHex.has(k)) byHex.set(k, []);
+                  byHex.get(k)!.push(u);
+                }
+                const hexEntries = [...byHex.entries()];
+                const landSummary = (() => {
+                  if (landInArmy.length === 0) return 'No land units — attach stacks from the map list';
+                  if (hexEntries.length === 0) return `${landInArmy.length} land units`;
+                  if (hexEntries.length === 1) {
+                    const [k, us] = hexEntries[0]!;
+                    const [hq, hr] = k.split(',').map(Number);
+                    return `${us.length} land unit${us.length !== 1 ? 's' : ''} · hex (${hq},${hr})`;
+                  }
+                  return `${landInArmy.length} land units · ${hexEntries.length} map hexes`;
+                })();
+                const linkedParts: string[] = [];
+                if (stackIds.length > 0) {
+                  linkedParts.push(
+                    `Training: ${stackIds.map(id => unitStacks.find(d => d.id === id)?.name ?? id).join(', ')}`,
+                  );
+                }
+                if (byHex.size > 0) {
+                  linkedParts.push(hexEntries.length === 1 ? 'Map: 1 hex' : `Map: ${hexEntries.length} hexes`);
+                }
+                const linkedLine = linkedParts.length === 0 ? '—' : linkedParts.join(' · ');
+                const barracksLeft = playerTrainingStacks.some(d => !stackIds.includes(d.id));
+                const mapLeft = humanStacks.some(({ units: stackUnits }) => {
+                  const land = stackUnits.filter(
+                    u =>
+                      u.hp > 0 &&
+                      !u.aboardShipId &&
+                      u.type !== 'builder' &&
+                      !isNavalUnitType(u.type),
+                  );
+                  if (land.length === 0) return false;
+                  return !land.every(u => u.armyId === fa.id);
+                });
+                const canAttachMore = barracksLeft || mapLeft;
+                const distinctLandHexKeys = [...new Set(landInArmy.map(u => tileKey(u.q, u.r)))];
+                const showPendingHexLabel = distinctLandHexKeys.length > 1;
+                const multiHex = hexEntries.length > 1;
+
+                return (
+                  <div
+                    key={fa.id}
+                    className={`rounded border px-2 py-1.5 space-y-1.5 transition-colors ${
+                      armyDropHover === fa.id
+                        ? 'border-empire-gold/70 bg-empire-gold/10 ring-1 ring-empire-gold/35'
+                        : 'border-sky-500/25 bg-sky-950/15'
+                    }`}
+                    onDragOver={e => {
+                      e.preventDefault();
+                      e.dataTransfer.dropEffect = 'copy';
+                    }}
+                    onDragEnter={e => {
+                      e.preventDefault();
+                      setArmyDropHover(fa.id);
+                    }}
+                    onDragLeave={e => {
+                      if (!e.currentTarget.contains(e.relatedTarget as Node)) setArmyDropHover(null);
+                    }}
+                    onDrop={e => {
+                      e.preventDefault();
+                      setArmyDropHover(null);
+                      const p = parseArmyDragPayload(e);
+                      if (!p) return;
+                      if (p.kind === 'unitStack') addStackToArmy(fa.id, p.stackId);
+                      else attachHexStackToArmy(fa.id, p.q, p.r);
+                    }}
+                  >
+                    <div className="flex justify-between items-center gap-2">
+                      <span className="text-[11px] text-empire-parchment font-medium">{fa.name}</span>
+                      <button
+                        type="button"
+                        className="text-[9px] text-red-300/80 hover:underline"
+                        onClick={() => deleteArmy(fa.id)}
+                      >
+                        Disband
+                      </button>
+                    </div>
+                    <div className="text-[9px] text-empire-parchment/60 leading-snug">{landSummary}</div>
+                    <button
+                      type="button"
+                      onClick={() => attachSelectedStacksToArmy(fa.id)}
+                      className={fc.secondary}
+                    >
+                      Attach selected map stacks to this army
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => selectStacksForArmy(fa.id)}
+                      className={fc.secondary}
+                    >
+                      Select stacks for army (orders)
+                    </button>
+                    <button type="button" onClick={() => setMarchTacticsOpen(true)} className={fc.tertiary}>
+                      March tactics & formation…
+                    </button>
+
+                    <details open className="rounded border border-sky-800/30 bg-black/15">
+                      <summary className={`${fc.detailsSummary} rounded-t`}>
+                        <span>Attached stacks</span>
+                        <span className="text-empire-parchment/35 text-[8px] normal-case">▼</span>
+                      </summary>
+                      <div className="px-1.5 pb-1.5 space-y-1 border-t border-empire-stone/20 pt-1.5">
+                        <div className="text-[9px] text-empire-parchment/50 leading-snug">
+                          Linked: {linkedLine}
+                        </div>
+                        <select
+                          key={`add-stack-${fa.id}-${stackIds.join('|')}-${[...byHex.keys()].join(';')}-${playerTrainingStacks.length}`}
+                          className="w-full text-[9px] px-1 py-0.5 rounded border border-empire-stone/40 bg-black/40"
+                          defaultValue=""
+                          onChange={e => {
+                            const v = e.currentTarget.value;
+                            if (!v) return;
+                            if (v.startsWith('us:')) addStackToArmy(fa.id, v.slice(3));
+                            else if (v.startsWith('hex:')) {
+                              const [qs, rs] = v.slice(4).split(',');
+                              const q = Number(qs);
+                              const r = Number(rs);
+                              if (!Number.isFinite(q) || !Number.isFinite(r)) return;
+                              attachHexStackToArmy(fa.id, q, r);
+                            }
+                            e.currentTarget.value = '';
+                          }}
+                        >
+                          <option value="">+ Add stack…</option>
+                          {playerTrainingStacks.length > 0 && (
+                            <optgroup label="Barracks (training)">
+                              {playerTrainingStacks.map(d => (
+                                <option key={d.id} value={`us:${d.id}`} disabled={stackIds.includes(d.id)}>
+                                  {d.name}
+                                </option>
+                              ))}
+                            </optgroup>
+                          )}
+                          {(() => {
+                            const mapOpts = humanStacks
+                              .map(({ q, r, units: stackUnits }) => {
+                                const land = stackUnits.filter(
+                                  su =>
+                                    su.hp > 0 &&
+                                    !su.aboardShipId &&
+                                    su.type !== 'builder' &&
+                                    !isNavalUnitType(su.type),
+                                );
+                                if (land.length === 0) return null;
+                                if (land.every(su => su.armyId === fa.id)) return null;
+                                return { q, r, n: land.length };
+                              })
+                              .filter((x): x is { q: number; r: number; n: number } => x !== null);
+                            if (mapOpts.length === 0) return null;
+                            return (
+                              <optgroup label="Map (hex)">
+                                {mapOpts.map(({ q, r, n }) => (
+                                  <option key={`hex-${q},${r}`} value={`hex:${q},${r}`}>
+                                    ({q}, {r}) — {n} land unit{n !== 1 ? 's' : ''}
+                                  </option>
+                                ))}
+                              </optgroup>
+                            );
+                          })()}
+                        </select>
+                        <p className="text-[8px] text-empire-parchment/45 leading-snug">
+                          {canAttachMore
+                            ? 'Pick a training group or map hex from the list to attach.'
+                            : 'Nothing left to attach — train more at a Barracks or move troops on the map.'}
+                        </p>
+                        {stackIds.map(sid => (
+                          <div key={sid} className="flex justify-between text-[9px] text-empire-parchment/70">
+                            <span>Training: {unitStacks.find(d => d.id === sid)?.name ?? sid}</span>
+                            <button type="button" className="text-red-300/70" onClick={() => removeStackFromArmy(fa.id, sid)}>
+                              ×
+                            </button>
+                          </div>
+                        ))}
+                        {[...byHex.entries()].map(([k, us]) => {
+                          const [hq, hr] = k.split(',').map(Number);
+                          const rowLabel =
+                            hexEntries.length === 1
+                              ? `Land stack — ${us.length} unit${us.length !== 1 ? 's' : ''}`
+                              : `(${hq},${hr}) — ${us.length} unit${us.length !== 1 ? 's' : ''}`;
+                          return (
+                            <div key={`maplnk-${fa.id}-${k}`} className="flex justify-between gap-2 text-[9px] text-empire-parchment/70">
+                              <span>{rowLabel}</span>
+                              <button
+                                type="button"
+                                className="text-red-300/70 shrink-0"
+                                onClick={() => detachHexStackFromArmy(fa.id, hq, hr)}
+                              >
+                                ×
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </details>
+
+                    <details open className="rounded border border-violet-900/35 bg-black/15">
+                      <summary className={`${fc.detailsSummary} rounded-t text-violet-200/90`}>
+                        <span>Commander</span>
+                        <span className="text-empire-parchment/35 text-[8px] normal-case">▼</span>
+                      </summary>
+                      <div
+                        className="flex flex-wrap gap-1.5 items-end px-1.5 pb-1.5 pt-1 border-t border-violet-900/25"
+                        onClick={e => e.stopPropagation()}
+                        onKeyDown={e => e.stopPropagation()}
+                      >
+                        <div className="flex flex-col items-center gap-0.5 max-w-[4.5rem] relative">
+                          <button
+                            type="button"
+                            className={`w-11 h-11 rounded-md border-2 flex items-center justify-center overflow-hidden shrink-0 cursor-pointer transition-colors ${
+                              cmd
+                                ? 'border-violet-400/60 bg-violet-950/35 hover:bg-violet-900/40'
+                                : 'border-dashed border-violet-600/45 bg-black/25 hover:border-violet-500/55 hover:bg-violet-950/20'
+                            }`}
+                            title={cmd ? `${cmd.name} — click to change` : 'Commander — attach units first'}
+                            onClick={e => {
+                              e.stopPropagation();
+                              setCommanderPickArmyId(commanderPickArmyId === fa.id ? null : fa.id);
+                            }}
+                          >
+                            {cmd?.portraitDataUrl ? (
+                              // eslint-disable-next-line @next/next/no-img-element
+                              <img src={cmd.portraitDataUrl} alt="" className="w-full h-full object-cover" style={{ imageRendering: 'pixelated' }} />
+                            ) : (
+                              <span className="text-[9px] text-violet-500/45 text-center px-0.5">Empty</span>
+                            )}
+                          </button>
+                          <span className="text-[8px] uppercase tracking-wide text-violet-300/50">Commander</span>
+                          {cmd && (
+                            <span className="text-[9px] text-violet-200/90 text-center leading-tight line-clamp-2 w-full">{cmd.name}</span>
+                          )}
+                          {commanderPickArmyId === fa.id && (
+                            <div className="absolute left-0 top-full z-20 w-[min(14rem,calc(100vw-2rem))] mt-0.5 rounded border border-violet-500/40 bg-black/90 p-1 space-y-0.5 shadow-lg">
+                              {landAssignable.length > 0 && (
+                                <div className="text-[9px] font-semibold text-violet-300/80 px-1">Assign to army</div>
+                              )}
+                              {landAssignable.map(c => (
+                                <button
+                                  key={c.id}
+                                  type="button"
+                                  className="w-full text-left text-[10px] px-1.5 py-1 rounded hover:bg-violet-900/50 text-violet-100"
+                                  onClick={e => {
+                                    e.stopPropagation();
+                                    assignCommanderToArmy(c.id, fa.id);
+                                    setCommanderPickArmyId(null);
+                                  }}
+                                >
+                                  {c.name}
+                                </button>
+                              ))}
+                              <CommanderRecruitOptionsInPicker onRecruited={() => setCommanderPickArmyId(null)} />
+                              {cmd && (
+                                <button
+                                  type="button"
+                                  className="w-full text-[9px] text-empire-parchment/50 px-1.5 py-1 hover:bg-empire-stone/20 rounded border-t border-violet-500/25 mt-0.5 pt-1"
+                                  onClick={e => {
+                                    e.stopPropagation();
+                                    unassignCommander(cmd.id);
+                                    setCommanderPickArmyId(null);
+                                  }}
+                                >
+                                  Clear commander
+                                </button>
                               )}
                             </div>
-                            <span className="text-[8px] uppercase tracking-wide text-amber-200/40">{SCROLL_SLOT_LABEL[kind]}</span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                    <p className="text-[9px] text-empire-parchment/35 mt-1.5">Scrolls: equip from hex panel when this army is selected on the map.</p>
-                    <span className={`text-[10px] block mt-1 ${status === 'fighting' ? 'text-red-400' : status === 'moving' ? 'text-green-400' : 'text-empire-parchment/50'}`}>
-                      Status: {status}
-                    </span>
+                          )}
+                        </div>
+                      </div>
+                    </details>
+
+                    <details open className="rounded border border-empire-stone/30 bg-black/15">
+                      <summary className={`${fc.detailsSummary} rounded-t text-empire-parchment/75`}>
+                        <span>Unit orders & pending</span>
+                        <span className="text-empire-parchment/35 text-[8px] normal-case">▼</span>
+                      </summary>
+                      <div className="px-1.5 pb-1.5 space-y-1.5 border-t border-empire-stone/20 pt-1.5">
+                        {[...byHex.entries()].map(([stackKey, stackUnits]) => {
+                          if (stackUnits.length <= 1) return null;
+                          const q = stackUnits[0]!.q;
+                          const r = stackUnits[0]!.r;
+                          const typeCounts: Record<string, number> = {};
+                          for (const u of stackUnits) {
+                            typeCounts[u.type] = (typeCounts[u.type] ?? 0) + 1;
+                          }
+                          const typeFocus = tacticalStackUnitTypeFocus[stackKey];
+                          return (
+                            <div
+                              key={`${fa.id}-${stackKey}`}
+                              className="rounded border border-empire-stone/25 bg-empire-stone/8 px-1.5 py-1"
+                              onClick={e => e.stopPropagation()}
+                              onKeyDown={e => e.stopPropagation()}
+                            >
+                              <div className="text-[9px] text-empire-parchment/55 mb-0.5">
+                                Unit orders
+                                {multiHex ? (
+                                  <>
+                                    {' '}
+                                    at ({q},{r})
+                                  </>
+                                ) : null}{' '}
+                                — click a type to scope
+                              </div>
+                              <div className="flex flex-wrap gap-1">
+                                {Object.entries(typeCounts).map(([t, n]) =>
+                                  n > 0 ? (
+                                    <button
+                                      key={t}
+                                      type="button"
+                                      className={`text-[9px] px-1.5 py-0.5 rounded border bg-black/25 text-empire-parchment/85 hover:border-cyan-500/50 ${
+                                        typeFocus === t
+                                          ? 'border-cyan-400/70 ring-1 ring-cyan-400/35'
+                                          : 'border-empire-stone/35'
+                                      }`}
+                                      title="Scope pending orders to this unit type (click again for whole stack)"
+                                      onClick={() => toggleTacticalStackUnitTypeFocus(stackKey, t as UnitType)}
+                                    >
+                                      {n}× {UNIT_DISPLAY_NAMES[t as UnitType]}
+                                    </button>
+                                  ) : null,
+                                )}
+                              </div>
+                              {typeFocus && (
+                                <p className="text-[8px] text-cyan-300/75 mt-0.5">
+                                  Orders: {UNIT_DISPLAY_NAMES[typeFocus]} only
+                                </p>
+                              )}
+                            </div>
+                          );
+                        })}
+                        {landInArmy.length > 0 &&
+                          distinctLandHexKeys.map(sk => {
+                            const order = pendingTacticalOrders?.[sk];
+                            if (!order) return null;
+                            const [pq, pr] = sk.split(',').map(Number);
+                            const pendingLead = showPendingHexLabel ? `Pending (${pq},${pr})` : 'Pending';
+                            return (
+                              <div key={`${fa.id}-ord-${sk}`} className="text-[10px] text-empire-gold/80">
+                                {pendingLead}:{' '}
+                                {order.type === 'defend' && order.cityId
+                                  ? `Defend ${friendlyCities.find(c => c.id === order.cityId)?.name ?? 'city'}`
+                                  : order.type === 'city_defense' && order.cityId
+                                    ? `City defense ${order.mode === 'stagnant' ? '(walls) ' : '(patrol) '}${friendlyCities.find(c => c.id === order.cityId)?.name ?? 'city'}`
+                                    : order.type === 'patrol'
+                                      ? `Patrol (${order.centerQ},${order.centerR}) r${order.radius}`
+                                      : order.type === 'move' || order.type === 'intercept'
+                                        ? `→ (${order.toQ}, ${order.toR})`
+                                        : order.type === 'incorporate_village'
+                                          ? `Incorporate → (${order.toQ}, ${order.toR})`
+                                          : order.type === 'attack_city'
+                                            ? (() => {
+                                                const ec = cities.find(c => c.id === order.cityId);
+                                                return `Attack ${ec?.name ?? 'city'} — ${order.attackStyle}${formatAttackCityWaveSummary(order)}`;
+                                              })()
+                                            : order.type === 'attack_building' && order.cityId
+                                              ? `Raid building (${order.buildingQ},${order.buildingR}) — ${cities.find(c => c.id === order.cityId)?.name ?? 'city'}`
+                                              : ''}
+                              </div>
+                            );
+                          })}
+                      </div>
+                    </details>
                   </div>
-                </div>
-                {order && (
-                  <div className="text-[10px] text-empire-gold/80 mt-1">
-                    {order.type === 'defend' && order.cityId
-                      ? `Defend ${friendlyCities.find(c => c.id === order.cityId)?.name ?? 'city'}`
-                      : order.type === 'move' || order.type === 'intercept'
-                        ? `→ (${order.toQ}, ${order.toR})`
-                        : order.type === 'incorporate_village'
-                          ? `Incorporate → (${order.toQ}, ${order.toR})`
-                          : order.type === 'attack_city'
-                            ? (() => {
-                                const ec = cities.find(c => c.id === order.cityId);
-                                const n1 = order.wave1UnitIds?.length ?? 0;
-                                const n2 = order.wave2UnitIds?.length ?? 0;
-                                const waves = n2 > 0 ? ` (W1:${n1} W2:${n2})` : ` (${n1}u)`;
-                                return `Attack ${ec?.name ?? 'city'} — ${order.attackStyle}${waves}`;
-                              })()
-                            : ''}
-                  </div>
-                )}
-              </div>
-            );
-          })}
+                );
+              })
+          )}
+            </div>
+          )}
         </div>
 
-        {humanStacks.length === 0 && (
-          <p className="text-empire-parchment/50 text-xs">No units on the map.</p>
-        )}
-
         <div className="flex gap-2 pt-2 border-t border-empire-stone/30">
-          <button
-            type="button"
-            onClick={confirmTacticalOrders}
-            className="flex-1 px-3 py-2 text-xs font-bold rounded border border-green-500/50 bg-green-900/30 text-green-300 hover:bg-green-800/40"
-          >
+          <button type="button" onClick={confirmTacticalOrders} className={fc.primary}>
             Confirm orders
           </button>
-          <button
-            type="button"
-            onClick={cancelTacticalMode}
-            className="px-3 py-2 text-xs font-bold rounded border border-empire-stone/40 text-empire-parchment/80 hover:bg-empire-stone/20"
-          >
+          <button type="button" onClick={cancelTacticalMode} className={fc.cancel}>
             Cancel
           </button>
         </div>
       </div>
+      <MarchTacticsModal open={marchTacticsOpen} onClose={() => setMarchTacticsOpen(false)} />
     </div>
   );
 }
@@ -2277,13 +3470,26 @@ function TacticalBottomBar() {
   const pendingTacticalOrders = useGameStore(s => s.pendingTacticalOrders);
   const cities = useGameStore(s => s.cities);
   const tacticalSelectedStackKeys = useGameStore(s => s.tacticalSelectedStackKeys);
+  const tacticalOrderScope = useGameStore(s => s.tacticalOrderScope);
+  const tacticalOrderScopeArmyId = useGameStore(s => s.tacticalOrderScopeArmyId);
+  const operationalArmies = useGameStore(s => s.operationalArmies);
+  const setTacticalOrderScope = useGameStore(s => s.setTacticalOrderScope);
+  const confirmTacticalOrders = useGameStore(s => s.confirmTacticalOrders);
+  const cancelTacticalMode = useGameStore(s => s.cancelTacticalMode);
   const assigningTacticalForSelectedStacks = useGameStore(s => s.assigningTacticalForSelectedStacks);
   const startTacticalOrderForSelected = useGameStore(s => s.startTacticalOrderForSelected);
   const clearTacticalOrdersForSelected = useGameStore(s => s.clearTacticalOrdersForSelected);
+  const tacticalCityDefenseMode = useGameStore(s => s.tacticalCityDefenseMode);
+  const setTacticalCityDefenseMode = useGameStore(s => s.setTacticalCityDefenseMode);
+  const tacticalPatrolPaintHexKeys = useGameStore(s => s.tacticalPatrolPaintHexKeys);
+  const finishTacticalPatrolFromPaint = useGameStore(s => s.finishTacticalPatrolFromPaint);
+  const clearTacticalPatrolPaint = useGameStore(s => s.clearTacticalPatrolPaint);
+  const startTacticalPatrolCenterOnly = useGameStore(s => s.startTacticalPatrolCenterOnly);
 
   if (pendingTacticalOrders === null) return null;
 
   const friendlyCities = cities.filter(c => c.ownerId === 'player_human');
+  const humanArmies = operationalArmies.filter(o => o.ownerId === 'player_human');
   const isAssigningDestination = assigningTacticalForSelectedStacks !== null;
   const selectedCount = tacticalSelectedStackKeys.length;
 
@@ -2295,7 +3501,14 @@ function TacticalBottomBar() {
     if (ot === 'move') return `Move: click land tile (${n} stack(s))`;
     if (ot === 'incorporate_village') return `Incorporate: click neutral village (${n} stack(s))`;
     if (ot === 'attack_city') return `Attack city: click enemy city center (${n} stack(s))`;
-    if (ot === 'defend_pick') return `Defend: click your city center (${n} stack(s))`;
+    if (ot === 'attack_building_pick') {
+      return `Raid building: click an enemy district building (${n} stack(s))`;
+    }
+    if (ot === 'defend_pick' || ot === 'city_defense_pick') {
+      return `City defense (${tacticalCityDefenseMode === 'stagnant' ? 'walls' : 'patrol'}): click your city center (${n} stack(s))`;
+    }
+    if (ot === 'patrol_pick') return `Patrol: click a hex for center + default radius (${n} stack(s))`;
+    if (ot === 'patrol_paint') return `Patrol zone: click hexes or drag across land — Done when ready (${n} stack(s))`;
     return '';
   })();
 
@@ -2309,9 +3522,71 @@ function TacticalBottomBar() {
   })();
 
   return (
-    <div className="fixed bottom-0 left-0 right-0 z-40 pointer-events-auto bg-empire-dark/95 border-t border-empire-gold/40 px-4 py-3 flex flex-col gap-2">
+    <div className="fixed bottom-0 left-0 right-0 z-40 pointer-events-auto bg-empire-dark/95 border-t border-empire-gold/40 px-3 sm:px-4 py-2 sm:py-3 flex flex-col gap-2">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 border-b border-empire-stone/25 pb-2">
+        <span className="text-[9px] text-empire-parchment/45 uppercase tracking-wide shrink-0 w-full sm:w-auto">Who receives orders</span>
+        <button
+          type="button"
+          onClick={() => setTacticalOrderScope('all')}
+          className={`px-2 py-1 text-[10px] sm:text-xs rounded border transition-colors ${
+            tacticalOrderScope === 'all'
+              ? 'border-cyan-400/70 bg-cyan-950/50 text-cyan-100'
+              : 'border-empire-stone/40 text-empire-parchment/75 hover:bg-empire-stone/15'
+          }`}
+          title="Every human hex group — ignores hex list selection"
+        >
+          All forces
+        </button>
+        <button
+          type="button"
+          onClick={() => setTacticalOrderScope('selected')}
+          className={`px-2 py-1 text-[10px] sm:text-xs rounded border transition-colors ${
+            tacticalOrderScope === 'selected'
+              ? 'border-cyan-400/70 bg-cyan-950/50 text-cyan-100'
+              : 'border-empire-stone/40 text-empire-parchment/75 hover:bg-empire-stone/15'
+          }`}
+          title="Only highlighted hex groups in the Army panel"
+        >
+          Selected hex groups
+        </button>
+        <div className="flex items-center gap-1">
+          <span className="text-[9px] text-empire-parchment/50 hidden sm:inline">Field army</span>
+          <select
+            className="text-[10px] sm:text-xs px-1.5 py-1 rounded border border-sky-600/45 bg-sky-950/40 text-sky-100 max-w-[9rem] sm:max-w-[14rem]"
+            value={tacticalOrderScope === 'army' ? tacticalOrderScopeArmyId ?? '' : ''}
+            onChange={e => {
+              const v = e.target.value;
+              if (!v) setTacticalOrderScope('all');
+              else setTacticalOrderScope('army', v);
+            }}
+            title="Only land troops assigned to this field army"
+          >
+            <option value="">— Field army —</option>
+            {humanArmies.map(a => (
+              <option key={a.id} value={a.id}>
+                {a.name}
+              </option>
+            ))}
+          </select>
+        </div>
+        <span className="flex-1 min-w-[1rem]" />
+        <button
+          type="button"
+          onClick={() => confirmTacticalOrders()}
+          className="px-3 py-1.5 text-[10px] sm:text-xs font-bold rounded border border-green-500/55 bg-green-900/35 text-green-200 hover:bg-green-800/45"
+        >
+          Confirm orders
+        </button>
+        <button
+          type="button"
+          onClick={() => cancelTacticalMode()}
+          className="px-2 py-1.5 text-[10px] sm:text-xs rounded border border-empire-stone/45 text-empire-parchment/85 hover:bg-empire-stone/15"
+        >
+          Close panel
+        </button>
+      </div>
       <div className="flex flex-wrap items-center gap-3">
-        <span className="text-empire-gold font-bold text-sm uppercase tracking-wide shrink-0">Orders</span>
+        <span className="text-empire-gold font-bold text-xs sm:text-sm uppercase tracking-wide shrink-0">Orders</span>
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
@@ -2364,21 +3639,47 @@ function TacticalBottomBar() {
           >
             Attack city
           </button>
+          <button
+            type="button"
+            onClick={() => startTacticalOrderForSelected('attack_building_pick')}
+            disabled={isAssigningDestination}
+            className={`px-3 py-2 text-sm rounded border font-medium transition-colors text-orange-200 hover:bg-orange-950/50 disabled:opacity-50 disabled:cursor-not-allowed ${
+              assignOt === 'attack_building_pick'
+                ? 'ring-2 ring-orange-300/70 border-orange-400/90 bg-orange-950/45'
+                : 'border-orange-500/50 bg-orange-950/20'
+            } ${pendingOrderTypes.has('attack_building') ? 'border-orange-400 bg-orange-950/55 shadow-[inset_0_0_10px_rgba(251,146,60,0.2)]' : ''}`}
+            title="March on a specific enemy building (farm, barracks, market, …) and tear it down"
+          >
+            Raid building
+          </button>
           {friendlyCities.length > 0 && (
             <button
               type="button"
-              onClick={() => startTacticalOrderForSelected('defend_pick')}
+              onClick={() => startTacticalOrderForSelected('city_defense_pick')}
               disabled={isAssigningDestination}
               className={`px-3 py-2 text-sm rounded border font-medium transition-colors text-blue-300 hover:bg-blue-900/40 disabled:opacity-50 disabled:cursor-not-allowed ${
-                assignOt === 'defend_pick'
+                assignOt === 'city_defense_pick'
                   ? 'ring-2 ring-blue-300/70 border-blue-400/90 bg-blue-950/45'
                   : 'border-blue-500/50 bg-blue-900/20'
-              } ${pendingOrderTypes.has('defend') ? 'border-sky-400 bg-blue-950/55 shadow-[inset_0_0_10px_rgba(56,189,248,0.2)]' : ''}`}
-              title="Then click one of your cities on the map"
+              } ${pendingOrderTypes.has('city_defense') ? 'border-sky-400 bg-blue-950/55 shadow-[inset_0_0_10px_rgba(56,189,248,0.2)]' : ''}`}
+              title="Choose mode below, then click your city center"
             >
-              Defend
+              City defense
             </button>
           )}
+          <button
+            type="button"
+            onClick={() => startTacticalOrderForSelected('patrol_pick')}
+            disabled={isAssigningDestination}
+            className={`px-3 py-2 text-sm rounded border font-medium transition-colors text-teal-300 hover:bg-teal-900/40 disabled:opacity-50 disabled:cursor-not-allowed ${
+              assignOt === 'patrol_pick'
+                ? 'ring-2 ring-teal-300/70 border-teal-400/90 bg-teal-950/45'
+                : 'border-teal-500/50 bg-teal-900/20'
+            } ${pendingOrderTypes.has('patrol') ? 'border-teal-400 bg-teal-950/55 shadow-[inset_0_0_10px_rgba(45,212,191,0.2)]' : ''}`}
+            title="Click map hex for patrol center (default radius)"
+          >
+            Patrol
+          </button>
           <button
             type="button"
             onClick={clearTacticalOrdersForSelected}
@@ -2394,6 +3695,67 @@ function TacticalBottomBar() {
           </span>
         )}
       </div>
+
+      {assignOt === 'city_defense_pick' && friendlyCities.length > 0 && (
+        <div className="flex flex-wrap items-center gap-3 pl-1 border-t border-empire-stone/25 pt-2 mt-1">
+          <span className="text-[11px] text-empire-parchment/75 font-medium">City defense mode</span>
+          <div className="flex flex-wrap items-center gap-2 text-[11px]">
+            <button
+              type="button"
+              className={`px-2 py-1 rounded border ${tacticalCityDefenseMode === 'auto_engage' ? 'border-cyan-400 bg-cyan-950/50 text-cyan-100' : 'border-empire-stone/40 text-empire-parchment/80'}`}
+              onClick={() => setTacticalCityDefenseMode('auto_engage')}
+            >
+              Active (patrol territory)
+            </button>
+            <button
+              type="button"
+              className={`px-2 py-1 rounded border ${tacticalCityDefenseMode === 'stagnant' ? 'border-amber-400 bg-amber-950/50 text-amber-100' : 'border-empire-stone/40 text-empire-parchment/80'}`}
+              onClick={() => setTacticalCityDefenseMode('stagnant')}
+            >
+              Passive (hold walls)
+            </button>
+          </div>
+          <p className="text-[10px] text-empire-parchment/55 max-w-xl">
+            Active sends stacks to intercept enemies inside your territory; passive keeps units on the city tile as a compact garrison.
+          </p>
+        </div>
+      )}
+
+      {assignOt === 'patrol_pick' && (
+        <div className="pl-1 border-t border-empire-stone/25 pt-2 mt-1 text-[10px] text-empire-parchment/60">
+          Click a land hex for patrol center (default radius). Cancel with the Army panel or change order.
+        </div>
+      )}
+
+      {assignOt === 'patrol_paint' && (
+        <div className="flex flex-wrap items-center gap-2 pl-1 border-t border-empire-stone/25 pt-2 mt-1">
+          <span className="text-[11px] text-teal-200/90 font-medium">Patrol zone</span>
+          <span className="text-[10px] text-empire-parchment/55">
+            {(tacticalPatrolPaintHexKeys?.length ?? 0)} hex{(tacticalPatrolPaintHexKeys?.length ?? 0) !== 1 ? 'es' : ''} selected
+          </span>
+          <button
+            type="button"
+            onClick={() => finishTacticalPatrolFromPaint()}
+            className="px-2 py-1 text-[11px] rounded border border-teal-500/50 bg-teal-950/40 text-teal-100 hover:bg-teal-900/50"
+          >
+            Done painting
+          </button>
+          <button
+            type="button"
+            onClick={() => clearTacticalPatrolPaint()}
+            className="px-2 py-1 text-[11px] rounded border border-empire-stone/40 text-empire-parchment/75 hover:bg-empire-stone/15"
+          >
+            Clear selection
+          </button>
+          <button
+            type="button"
+            onClick={() => startTacticalPatrolCenterOnly()}
+            className="px-2 py-1 text-[11px] rounded border border-empire-stone/35 text-empire-parchment/80 hover:bg-empire-stone/15"
+          >
+            Center + radius instead
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -2416,36 +3778,26 @@ function SidePanel() {
   const getAcademyAt = useGameStore(s => s.getAcademyAt);
   const getQuarryMineAt = useGameStore(s => s.getQuarryMineAt);
   const getJobBuildingAt = useGameStore(s => s.getJobBuildingAt);
-  const getHeroAt = useGameStore(s => s.getHeroAt);
   const getTile = useGameStore(s => s.getTile);
   const isInPlayerTerritory = useGameStore(s => s.isInPlayerTerritory);
   const getCityAt = useGameStore(s => s.getCityAt);
   const hasBuildingAt = useGameStore(s => s.hasBuildingAt);
   const incorporateVillage = useGameStore(s => s.incorporateVillage);
   const getConstructionAt = useGameStore(s => s.getConstructionAt);
-  const hasRoadConstructionAt = useGameStore(s => s.hasRoadConstructionAt);
-  const buildRoad = useGameStore(s => s.buildRoad);
   const buildTrebuchetInField = useGameStore(s => s.buildTrebuchetInField);
-  const buildScoutTowerInField = useGameStore(s => s.buildScoutTowerInField);
-  const scoutTowers = useGameStore(s => s.scoutTowers);
   const defenseInstallations = useGameStore(s => s.defenseInstallations);
   const startCityDefenseTowerBuild = useGameStore(s => s.startCityDefenseTowerBuild);
   const startBuilderBuild = useGameStore(s => s.startBuilderBuild);
   const cancelBuilderBuild = useGameStore(s => s.cancelBuilderBuild);
-  const confirmRoadPath = useGameStore(s => s.confirmRoadPath);
-  const roadPathSelection = useGameStore(s => s.roadPathSelection);
   const isHexVisible = useGameStore(s => s.isHexVisible);
   const isHexScouted = useGameStore(s => s.isHexScouted);
   const getScoutMissionAt = useGameStore(s => s.getScoutMissionAt);
   const sendScout = useGameStore(s => s.sendScout);
+  const operationalArmies = useGameStore(s => s.operationalArmies);
   const deselectAll = useGameStore(s => s.deselectAll);
   const pendingMove = useGameStore(s => s.pendingMove);
   const scrollSearchProgress = useGameStore(s => s.scrollSearchProgress);
   const scrollSearchClaimed = useGameStore(s => s.scrollSearchClaimed);
-  const scrollInventory = useGameStore(s => s.scrollInventory);
-  const scrollAttachments = useGameStore(s => s.scrollAttachments);
-  const assignScrollToUnit = useGameStore(s => s.assignScrollToUnit);
-  const unassignScrollFromUnit = useGameStore(s => s.unassignScrollFromUnit);
   const addNotification = useGameStore(s => s.addNotification);
   const commanders = useGameStore(s => s.commanders);
   const assignCommanderToCityDefense = useGameStore(s => s.assignCommanderToCityDefense);
@@ -2453,11 +3805,6 @@ function SidePanel() {
   const unassignCommander = useGameStore(s => s.unassignCommander);
   const openCityLogistics = useGameStore(s => s.openCityLogistics);
   const gameMode = useGameStore(s => s.gameMode);
-  const [armyScrollPickKind, setArmyScrollPickKind] = useState<ScrollKind | null>(null);
-
-  useEffect(() => {
-    setArmyScrollPickKind(null);
-  }, [selectedHex?.q, selectedHex?.r, pendingTacticalOrders]);
 
   if (pendingTacticalOrders !== null) return <TacticalPanel />;
   if (!selectedHex) return null;
@@ -2479,7 +3826,6 @@ function SidePanel() {
   const academyInfo = getAcademyAt(selectedHex.q, selectedHex.r);
   const quarryMineInfo = getQuarryMineAt(selectedHex.q, selectedHex.r);
   const jobBuildingInfo = getJobBuildingAt(selectedHex.q, selectedHex.r);
-  const heroAtHex = getHeroAt(selectedHex.q, selectedHex.r);
   const inTerritory = isInPlayerTerritory(selectedHex.q, selectedHex.r);
   const hasBuilding = hasBuildingAt(selectedHex.q, selectedHex.r);
   const construction = getConstructionAt(selectedHex.q, selectedHex.r);
@@ -2490,6 +3836,11 @@ function SidePanel() {
   const militaryHere = allUnits.filter(
     u => u.q === selectedHex.q && u.r === selectedHex.r && u.ownerId === 'player_human' && u.hp > 0 && u.type !== 'builder'
   );
+  const landMilHere = militaryHere.filter(u => !isNavalUnitType(u.type));
+  const fieldArmyIdsAtHex = [...new Set(landMilHere.map(u => u.armyId).filter((x): x is string => Boolean(x)))];
+  const fieldArmyNamesAtHex = fieldArmyIdsAtHex
+    .map(aid => operationalArmies.find(o => o.id === aid)?.name)
+    .filter(Boolean) as string[];
 
   const hasUniversity = cities.some(
     c => c.ownerId === 'player_human' && c.buildings.some(b => b.type === 'academy'),
@@ -2544,22 +3895,6 @@ function SidePanel() {
       cities,
       territory,
     );
-  const hasScoutTowerHere = scoutTowers.some(t => t.q === selectedHex.q && t.r === selectedHex.r);
-  const canBuildScoutTowerHere =
-    hasUniversity &&
-    !cityAtHex &&
-    !construction &&
-    !hasScoutTowerHere &&
-    !hasDefenseHere &&
-    tile?.biome !== 'water' &&
-    tile?.biome !== 'mountain';
-  const canAffordScoutTower = (human?.gold ?? 0) >= SCOUT_TOWER_GOLD_COST;
-  const cityForWall = inTerritory && human ? (() => {
-    const info = territory.get(tileKey(selectedHex.q, selectedHex.r));
-    if (!info || info.playerId !== human.id) return null;
-    return cities.find(c => c.id === info.cityId) ?? null;
-  })() : null;
-
   let shipyardInfo: { city: import('@/types/game').City; building: import('@/types/game').CityBuilding } | null = null;
   for (const c of cities) {
     if (c.ownerId !== 'player_human') continue;
@@ -2588,6 +3923,13 @@ function SidePanel() {
             ×
           </button>
         </div>
+
+        {human && fieldArmyNamesAtHex.length > 0 && (
+          <div className="text-[10px] text-sky-100/95 px-2 py-1.5 rounded border border-sky-500/35 bg-sky-950/30 leading-snug">
+            <span className="text-sky-300/80 uppercase tracking-wide text-[9px]">Field army</span>{' '}
+            <span className="font-medium">{fieldArmyNamesAtHex.join(', ')}</span>
+          </div>
+        )}
 
         {cityAtHex &&
           (cityAtHex.ownerId === 'player_human' ||
@@ -2654,126 +3996,6 @@ function SidePanel() {
           );
         })()}
 
-        {human && militaryHere.filter(u => !isNavalUnitType(u.type)).length > 0 && (() => {
-          const landArmy = militaryHere.filter(u => !isNavalUnitType(u.type));
-          const landIds = new Set(landArmy.map(u => u.id));
-          const inv = scrollInventory[human.id] ?? [];
-          const attachmentForKind = (kind: ScrollKind) =>
-            scrollAttachments.find(
-              a => a.kind === kind && a.ownerId === human.id && landIds.has(a.carrierUnitId),
-            );
-          const firstUnitWithoutScroll = landArmy.find(
-            u => !scrollAttachments.some(a => a.carrierUnitId === u.id),
-          );
-          const slotBonusLine = (kind: ScrollKind) => {
-            switch (kind) {
-              case 'combat':
-                return `+${Math.round(SCROLL_COMBAT_BONUS * 100)}% attack`;
-              case 'defense':
-                return `+${Math.round(SCROLL_DEFENSE_BONUS * 100)}% damage reduction`;
-              case 'movement':
-                return `+${Math.round(SCROLL_MOVEMENT_BONUS * 100)}% movement`;
-            }
-          };
-          const assignItemFromVault = (scrollItemId: string) => {
-            if (!firstUnitWithoutScroll) {
-              addNotification(
-                'Every unit in this army already carries a scroll. Return one to the vault to assign another.',
-                'warning',
-              );
-              return;
-            }
-            assignScrollToUnit(scrollItemId, firstUnitWithoutScroll.id);
-            setArmyScrollPickKind(null);
-          };
-          return (
-            <div className="px-2 py-1.5 bg-amber-950/30 border border-amber-700/30 rounded text-xs space-y-2">
-              <div className="font-medium text-amber-200/90">Army scrolls</div>
-              <p className="text-empire-parchment/60 text-[11px] leading-snug">
-                This army group can equip <span className="text-empire-parchment/80">three</span> ancient scrolls—attack, defense, and movement. Each bonus applies to{' '}
-                <span className="text-empire-parchment/85">the whole stack</span> at this hex (each scroll is held by one of your units).
-              </p>
-              <div className="grid grid-cols-1 gap-1.5">
-                {SCROLL_ARMY_SLOT_ORDER.map(kind => {
-                  const att = attachmentForKind(kind);
-                  const isPicking = armyScrollPickKind === kind;
-                  const matchingInv = inv.filter(i => i.kind === kind);
-                  return (
-                    <div
-                      key={kind}
-                      className="rounded border border-amber-800/45 bg-amber-950/25 px-2 py-1.5 space-y-1"
-                    >
-                      <div className="flex items-baseline justify-between gap-2">
-                        <span className="text-[10px] font-semibold uppercase tracking-wide text-amber-100/85">
-                          {SCROLL_SLOT_LABEL[kind]}
-                        </span>
-                        <span className="text-[9px] text-empire-parchment/40 shrink-0">
-                          {slotBonusLine(kind)} · stack
-                        </span>
-                      </div>
-                      {att ? (
-                        <div className="flex flex-wrap items-center justify-between gap-1 pt-0.5">
-                          <span className="text-[11px] text-amber-200/95">{SCROLL_DISPLAY_NAME[kind]}</span>
-                          <button
-                            type="button"
-                            className="text-[10px] px-1.5 py-0.5 rounded bg-empire-stone/25 hover:bg-empire-stone/40"
-                            onClick={() => unassignScrollFromUnit(att.carrierUnitId)}
-                          >
-                            Return
-                          </button>
-                        </div>
-                      ) : (
-                        <div className="pt-0.5 space-y-1">
-                          <button
-                            type="button"
-                            className={`w-full min-h-[34px] rounded border border-dashed px-2 py-1 text-left transition-colors ${
-                              isPicking
-                                ? 'border-amber-500/55 bg-amber-900/35 text-empire-parchment/80'
-                                : 'border-amber-700/35 bg-amber-950/20 text-empire-parchment/45 hover:bg-amber-900/20 hover:border-amber-600/45'
-                            }`}
-                            onClick={() => setArmyScrollPickKind(isPicking ? null : kind)}
-                          >
-                            {isPicking ? (
-                              <span className="text-[11px]">Choosing from vault… (tap to cancel)</span>
-                            ) : (
-                              <span className="text-[11px]">Empty — tap to assign from vault</span>
-                            )}
-                          </button>
-                          {isPicking && (
-                            <div className="space-y-1 pl-0.5">
-                              {matchingInv.length === 0 ? (
-                                <p className="text-[10px] text-empire-parchment/45">
-                                  No {SCROLL_SLOT_LABEL[kind].toLowerCase()} scroll in your vault. Discover scrolls in named regions on the map.
-                                </p>
-                              ) : (
-                                matchingInv.map(item => (
-                                  <button
-                                    key={item.id}
-                                    type="button"
-                                    className="w-full text-left text-[10px] px-2 py-1 rounded bg-amber-900/45 hover:bg-amber-800/55 text-amber-100/90"
-                                    onClick={() => assignItemFromVault(item.id)}
-                                  >
-                                    Assign {SCROLL_DISPLAY_NAME[item.kind]}
-                                  </button>
-                                ))
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-              {inv.length > 0 && (
-                <p className="text-[10px] text-empire-parchment/40 pt-0.5 border-t border-amber-700/15">
-                  Vault: {inv.map(i => SCROLL_DISPLAY_NAME[i.kind]).join(' · ')}
-                </p>
-              )}
-            </div>
-          );
-        })()}
-
         {/* Battle panel — show both sides */}
         {isBattle && (
           <BattlePanel friendly={friendlyInBattle} enemy={enemyInBattle} />
@@ -2788,15 +4010,6 @@ function SidePanel() {
             onSendScout={() => sendScout(selectedHex.q, selectedHex.r)}
             gold={players.find(p => p.isHuman)?.gold ?? 0}
           />
-        )}
-
-        {/* Hero indicator */}
-        {heroAtHex && (
-          <div className="flex items-center gap-2 px-2 py-1.5 bg-yellow-900/20 border border-yellow-500/30 rounded text-xs">
-            <span className="text-yellow-400">&#9733;</span>
-            <span className="text-yellow-300 font-medium">{heroAtHex.name}</span>
-            <span className="text-yellow-400/60">({HERO_BUFFS[heroAtHex.type].desc})</span>
-          </div>
         )}
 
         {commanders
@@ -2968,26 +4181,20 @@ function SidePanel() {
 
         {/* City details shown in CityModal when city hex clicked */}
 
-        {/* Field engineering: Mine, Quarry, Road — when you have a University */}
+        {/* Field engineering: deposits + trebuchet — when you have a University */}
         {hasUniversity && !city && !cityAtHex && !barracksCity && !academyInfo && !factoryInfo && !quarryMineInfo && !construction && (
           <BuilderBuildMenu
             uiMode={uiMode}
             startBuilderBuild={startBuilderBuild}
             cancelBuilderBuild={cancelBuilderBuild}
-            confirmRoadPath={confirmRoadPath}
-            roadPathSelection={roadPathSelection}
             buildTrebuchetHere={() => buildTrebuchetInField(selectedHex.q, selectedHex.r)}
             canBuildTrebuchetHere={canBuildTrebuchetHere}
             canAffordTrebuchet={canAffordTrebuchet}
-            buildScoutTowerHere={() => buildScoutTowerInField(selectedHex.q, selectedHex.r)}
-            canBuildScoutTowerHere={canBuildScoutTowerHere}
-            canAffordScoutTower={canAffordScoutTower}
             hasBuildingOnHex={hasBuilding}
             hasCityAtHex={!!cityAtDefenseHex}
             tileHasMineDeposit={tile?.hasMineDeposit}
             tileHasQuarryDeposit={tile?.hasQuarryDeposit}
             tileHasGoldMineDeposit={tile?.hasGoldMineDeposit}
-            tileIsForest={tile?.biome === 'forest'}
           />
         )}
 
@@ -3057,11 +4264,8 @@ function SidePanel() {
             inTerritory={inTerritory ?? false}
             buildersHere={buildersHere}
             tile={tile}
-            hasRoadConstructionAt={hasRoadConstructionAt}
             hasConstructionAt={(q, r) => !!getConstructionAt(q, r)}
             hasCityAt={(q, r) => !!getCityAt(q, r)}
-            buildRoad={buildRoad}
-            cityForWall={cityForWall ?? null}
           />
         )}
 
@@ -3126,7 +4330,7 @@ function PopulationMechanicsPopover({
               <li><strong>Expected capacity (K)</strong> — smoothed over ~2–4 cycles. People have kids based on this, not this cycle’s harvest.</li>
               <li><strong>Births</strong> = floor(0.25 × P × (1 − P/K)). More when P is below K.</li>
               <li><strong>Natural deaths</strong> = {POP_NATURAL_DEATHS} per cycle. <strong>Starvation</strong> = +{STARVATION_DEATHS} per cycle when grain storage is empty.</li>
-              <li>Civilians consume <strong>0.5 grain per pop</strong> per cycle (cluster-wide).</li>
+              <li>Civilians consume <strong>0.25 grain per pop</strong> per cycle (empire-wide pool).</li>
             </ul>
           </div>
           <div>
@@ -3185,23 +4389,19 @@ function CityPanel({ city }: { city: import('@/types/game').City }) {
 
   const harvestMult = getWeatherHarvestMultiplier(activeWeather);
   const localProd = computeCityProductionRate(city, tiles, territory, harvestMult);
-  const clusters = computeTradeClusters(cities, tiles, units, territory);
-  const playerClusters = human ? clusters.get(human.id) ?? [] : [];
-  const cluster = playerClusters.find(c => c.cityIds.includes(city.id));
-  const clusterTotal = cluster
-    ? cluster.cities.reduce(
-        (acc, c) => {
-          const p = computeCityProductionRate(c, tiles, territory, harvestMult);
-          return { food: acc.food + p.food, guns: acc.guns + p.guns };
-        },
-        { food: 0, guns: 0 },
-      )
-    : localProd;
+  const empireCities = human ? cities.filter(c => c.ownerId === human.id) : [];
+  const empireTotal = empireCities.reduce(
+    (acc, c) => {
+      const p = computeCityProductionRate(c, tiles, territory, harvestMult);
+      return { food: acc.food + p.food, guns: acc.guns + p.guns };
+    },
+    { food: 0, guns: 0 },
+  );
   const fromNetwork = {
-    food: Math.max(0, clusterTotal.food - localProd.food),
-    guns: Math.max(0, clusterTotal.guns - localProd.guns),
+    food: Math.max(0, empireTotal.food - localProd.food),
+    guns: Math.max(0, empireTotal.guns - localProd.guns),
   };
-  const isIsolated = cluster ? cluster.cities.length === 1 : true;
+  const isIsolated = empireCities.length <= 1;
 
   return (
     <div className="space-y-3">
@@ -3391,17 +4591,12 @@ function ShipyardPanel({ city, shipyardQ, shipyardR }: { city: import('@/types/g
 
 function BarracksPanel({ city, barracksQ, barracksR }: { city: import('@/types/game').City; barracksQ: number; barracksR: number }) {
   const recruitUnit = useGameStore(s => s.recruitUnit);
-  const recruitHero = useGameStore(s => s.recruitHero);
   const recruitCommanderInstant = useGameStore(s => s.recruitCommanderInstant);
   const upgradeBarracks = useGameStore(s => s.upgradeBarracks);
   const players = useGameStore(s => s.players);
-  const heroes = useGameStore(s => s.heroes);
   const pendingRecruits = useGameStore(s => s.pendingRecruits);
   const units = useGameStore(s => s.units);
   const human = players.find(p => p.isHuman);
-  const playerHeroes = heroes.filter(h => h.ownerId === human?.id).length;
-  const pendingHeroSlots = pendingRecruits.filter(pr => 'heroKind' in pr && pr.playerId === human?.id).length;
-  const leaderSlotsUsed = playerHeroes + pendingHeroSlots;
   const gold = human?.gold ?? 0;
   const cities = useGameStore(s => s.cities);
   const barracks = city.buildings.find(b => b.type === 'barracks' && b.q === barracksQ && b.r === barracksR);
@@ -3411,10 +4606,7 @@ function BarracksPanel({ city, barracksQ, barracksR }: { city: import('@/types/g
   const totalPop = humanCities.reduce((s, c) => s + c.population, 0);
   const livingTroops = units.filter(u => u.ownerId === human?.id && u.hp > 0).length;
   const troopSlotsLeft = Math.max(0, totalPop - livingTroops);
-  const playerBarracks = humanCities.reduce((sum, c) => sum + c.buildings.filter(b => b.type === 'barracks').length, 0);
-  const canRecruitLeader = leaderSlotsUsed < playerBarracks;
   const canRecruitCommander = gold >= COMMANDER_RECRUIT_GOLD;
-  const heroUnlockedByPop = totalPop >= HERO_POPULATION_UNLOCK;
 
   const [quantities, setQuantities] = useState<Record<string, number>>({});
   const [levels, setLevels] = useState<Record<string, 1 | 2 | 3>>({});
@@ -3428,9 +4620,7 @@ function BarracksPanel({ city, barracksQ, barracksR }: { city: import('@/types/g
   const setLevel = (type: string, l: 1 | 2 | 3) => setLevels(prev => ({ ...prev, [type]: l }));
 
   const handleBatchRecruit = (type: import('@/types/game').UnitType, qty: number, armsLevel: 1 | 2 | 3) => {
-    for (let i = 0; i < qty; i++) {
-      recruitUnit(city.id, type, armsLevel);
-    }
+    for (let i = 0; i < qty; i++) recruitUnit(city.id, type, armsLevel);
   };
 
   return (
@@ -3567,18 +4757,6 @@ function BarracksPanel({ city, barracksQ, barracksR }: { city: import('@/types/g
         })}
       </div>
 
-      {!heroUnlockedByPop && (
-        <p className="text-[10px] text-amber-200/85 text-center">
-          Heroes unlock at {HERO_POPULATION_UNLOCK} empire population (currently {totalPop}).
-        </p>
-      )}
-      <button
-        onClick={() => recruitHero(city.id)}
-        disabled={!canRecruitLeader || gold < 80 || !heroUnlockedByPop}
-        className="w-full px-2 py-1.5 text-xs bg-yellow-900/20 border border-yellow-500/30 rounded text-yellow-300 hover:bg-yellow-900/40 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-      >
-        &#9733; Recruit Hero (80g) — {leaderSlotsUsed}/{playerBarracks} hero slots
-      </button>
       <button
         type="button"
         onClick={() => recruitCommanderInstant()}
@@ -3603,6 +4781,7 @@ function AcademyPanel({ city, academyQ, academyR }: { city: import('@/types/game
   const players = useGameStore(s => s.players);
   const constructions = useGameStore(s => s.constructions);
   const roadConstructions = useGameStore(s => s.roadConstructions);
+  const tiles = useGameStore(s => s.tiles);
   const territory = useGameStore(s => s.territory);
   const cities = useGameStore(s => s.cities);
   const human = players.find(p => p.isHuman);
@@ -3687,7 +4866,7 @@ function AcademyPanel({ city, academyQ, academyR }: { city: import('@/types/game
                 case 'expand_quarries': return c.type === 'quarry';
                 case 'expand_iron_mines': return c.type === 'mine' || c.type === 'gold_mine';
                 case 'expand_forestry': return c.type === 'logging_hut' || c.type === 'sawmill';
-                case 'city_defenses': return c.type === 'city_defense';
+                case 'city_defenses': return c.type === 'city_defense' || c.type === 'wall_section';
                 default: return false;
               }
             });
@@ -3704,7 +4883,7 @@ function AcademyPanel({ city, academyQ, academyR }: { city: import('@/types/game
               >
                 <div className="flex items-center justify-between">
                   <span className="font-medium">
-                    {isActive && <span className="text-sky-400 mr-1">\u25B6</span>}
+                    {isActive && <span className="text-sky-400 mr-1">{'\u25B6'}</span>}
                     {t.label}
                   </span>
                   {matching.length > 0 && (
@@ -3725,9 +4904,26 @@ function AcademyPanel({ city, academyQ, academyR }: { city: import('@/types/game
       {/* Defense towers + walls — expanded when Defenses task is selected */}
       {task === 'city_defenses' && (() => {
         const cityDefenses = defenseInstallations.filter(d => d.cityId === city.id);
-        const totalStone = cities.filter(c => c.ownerId === human?.id).reduce((s, c) => s + (c.storage.stone ?? 0), 0);
-        const ring1Walls = wallSections.filter(w => w.ownerId === human?.id && hexDistance(w.q, w.r, city.q, city.r) === 1).length;
-        const ring2Walls = wallSections.filter(w => w.ownerId === human?.id && hexDistance(w.q, w.r, city.q, city.r) === 2).length;
+        const cityStone = city.storage.stone ?? 0;
+        const queuedWallKeys = new Set(
+          constructions
+            .filter(c => c.ownerId === human?.id && c.type === 'wall_section')
+            .map(c => tileKey(c.q, c.r)),
+        );
+        const ringStatus = (ring: 1 | 2) => {
+          const ringHexes = getHexRing(city.q, city.r, ring).filter(({ q, r }) => {
+            const t = tiles.get(tileKey(q, r));
+            return !!t && t.biome !== 'water';
+          });
+          const built = ringHexes.filter(({ q, r }) => wallSections.some(
+            w => w.ownerId === human?.id && w.q === q && w.r === r,
+          )).length;
+          const queued = ringHexes.filter(({ q, r }) => queuedWallKeys.has(tileKey(q, r))).length;
+          const missing = Math.max(0, ringHexes.length - built - queued);
+          return { target: ringHexes.length, built, queued, missing, stoneCost: missing * WALL_SECTION_STONE_COST };
+        };
+        const ring1 = ringStatus(1);
+        const ring2 = ringStatus(2);
         return (
           <div className="space-y-2 border border-rose-500/25 rounded-md px-2.5 py-2 bg-rose-950/15">
             <p className="text-rose-300 text-[11px] font-semibold">Defense towers</p>
@@ -3769,30 +4965,38 @@ function AcademyPanel({ city, academyQ, academyR }: { city: import('@/types/game
             <div className="flex flex-col gap-1">
               <button
                 onClick={() => buildWallRing(city.id, 1)}
-                disabled={totalStone < 6 * WALL_SECTION_STONE_COST || ring1Walls >= 6}
+                disabled={ring1.missing <= 0 || cityStone < ring1.stoneCost}
                 className={`w-full text-left px-2 py-1.5 rounded border text-[11px] transition-colors ${
-                  totalStone >= 6 * WALL_SECTION_STONE_COST && ring1Walls < 6
-                    ? 'border-rose-500/40 bg-rose-950/30 text-rose-200 hover:bg-rose-900/35'
-                    : 'border-empire-stone/20 text-empire-parchment/25 cursor-not-allowed'
+                  ring1.missing <= 0
+                    ? 'border-emerald-500/30 bg-emerald-950/20 text-emerald-300/70 cursor-default'
+                    : cityStone >= ring1.stoneCost
+                      ? 'border-rose-500/40 bg-rose-950/30 text-rose-200 hover:bg-rose-900/35'
+                      : 'border-empire-stone/20 text-empire-parchment/25 cursor-not-allowed'
                 }`}
               >
                 <div className="flex justify-between">
-                  <span>Wall ring 1 ({ring1Walls}/6)</span>
-                  <span className={totalStone >= 30 ? 'text-rose-300/70' : 'text-red-400/50'}>{6 * WALL_SECTION_STONE_COST} stone</span>
+                  <span>Wall ring 1 ({ring1.built + ring1.queued}/{ring1.target})</span>
+                  {ring1.missing <= 0
+                    ? <span className="text-emerald-400/70">{'\u2714'} Built</span>
+                    : <span className={cityStone >= ring1.stoneCost ? 'text-rose-300/70' : 'text-red-400/50'}>{ring1.stoneCost} stone</span>}
                 </div>
               </button>
               <button
                 onClick={() => buildWallRing(city.id, 2)}
-                disabled={totalStone < 12 * WALL_SECTION_STONE_COST || ring2Walls >= 12}
+                disabled={ring2.missing <= 0 || cityStone < ring2.stoneCost}
                 className={`w-full text-left px-2 py-1.5 rounded border text-[11px] transition-colors ${
-                  totalStone >= 12 * WALL_SECTION_STONE_COST && ring2Walls < 12
-                    ? 'border-rose-500/40 bg-rose-950/30 text-rose-200 hover:bg-rose-900/35'
-                    : 'border-empire-stone/20 text-empire-parchment/25 cursor-not-allowed'
+                  ring2.missing <= 0
+                    ? 'border-emerald-500/30 bg-emerald-950/20 text-emerald-300/70 cursor-default'
+                    : cityStone >= ring2.stoneCost
+                      ? 'border-rose-500/40 bg-rose-950/30 text-rose-200 hover:bg-rose-900/35'
+                      : 'border-empire-stone/20 text-empire-parchment/25 cursor-not-allowed'
                 }`}
               >
                 <div className="flex justify-between">
-                  <span>Wall ring 2 ({ring2Walls}/12)</span>
-                  <span className={totalStone >= 60 ? 'text-rose-300/70' : 'text-red-400/50'}>{12 * WALL_SECTION_STONE_COST} stone</span>
+                  <span>Wall ring 2 ({ring2.built + ring2.queued}/{ring2.target})</span>
+                  {ring2.missing <= 0
+                    ? <span className="text-emerald-400/70">{'\u2714'} Built</span>
+                    : <span className={cityStone >= ring2.stoneCost ? 'text-rose-300/70' : 'text-red-400/50'}>{ring2.stoneCost} stone</span>}
                 </div>
               </button>
             </div>
@@ -3813,13 +5017,15 @@ function AcademyPanel({ city, academyQ, academyR }: { city: import('@/types/game
                   case 'expand_quarries': return site.type === 'quarry';
                   case 'expand_iron_mines': return site.type === 'mine' || site.type === 'gold_mine';
                   case 'expand_forestry': return site.type === 'logging_hut' || site.type === 'sawmill';
-                  case 'city_defenses': return site.type === 'city_defense';
+                  case 'city_defenses': return site.type === 'city_defense' || site.type === 'wall_section';
                   default: return false;
                 }
               })();
               const typeName = site.type === 'city_defense' && site.defenseTowerType && site.defenseTowerTargetLevel
                 ? `${DEFENSE_TOWER_DISPLAY_NAME[site.defenseTowerType]} L${site.defenseTowerTargetLevel}`
-                : site.type.replace(/_/g, ' ');
+                : site.type === 'wall_section'
+                  ? `Wall section${site.wallBuildRing ? ` (ring ${site.wallBuildRing})` : ''}`
+                  : site.type.replace(/_/g, ' ');
               return (
                 <div key={site.id} className="bg-empire-stone/8 border border-empire-stone/15 rounded px-2 py-1.5">
                   <div className="flex justify-between items-center text-[10px]">
@@ -3860,7 +5066,7 @@ function AcademyPanel({ city, academyQ, academyR }: { city: import('@/types/game
       )}
 
       <p className="text-[10px] text-empire-parchment/40">
-        All territory buildings get {CITY_BUILDING_POWER} base BP. Builder workforce adds {workforceBP} BP to projects matching the assigned task. Roads and field builds (trebuchets, scout towers) always use workforce.
+        All territory buildings get {CITY_BUILDING_POWER} base BP. Builder workforce adds {workforceBP} BP to projects matching the assigned task. Field trebuchets use workforce.
       </p>
     </div>
   );
@@ -3945,9 +5151,22 @@ function JobBuildingPanel({ city, building }: { city: import('@/types/game').Cit
   const adjustWorkers = useGameStore(s => s.adjustWorkers);
   const upgradeFarm = useGameStore(s => s.upgradeFarm);
   const gold = useGameStore(s => s.players.find(p => p.isHuman)?.gold ?? 0);
+  const cities = useGameStore(s => s.cities);
+  const tiles = useGameStore(s => s.tiles);
+  const territory = useGameStore(s => s.territory);
+  const units = useGameStore(s => s.units);
   const maxW = getBuildingJobs(building);
   const assigned = building.assignedWorkers ?? 0;
   const lvl = building.level ?? 1;
+  const marketGoldPreview = useMemo(() => {
+    if (building.type !== 'market') return null;
+    const villageCount = countVillagesInPlayerTerritory(city.ownerId, cities, territory, tiles);
+    const jobs = BUILDING_JOBS.market;
+    const staffRatio = jobs > 0 ? Math.min(1, assigned / jobs) : 0;
+    const moraleMod = city.morale / 100;
+    const goldPerCycle = Math.floor(MARKET_GOLD_PER_VILLAGE * villageCount * moraleMod * staffRatio);
+    return { villageCount, goldPerCycle };
+  }, [building.type, assigned, city.ownerId, city.morale, cities, tiles, territory]);
   const isFarm = building.type === 'farm' || building.type === 'banana_farm';
   const farmFoodPerCycle = isFarm
     ? (lvl >= 2 ? FARM_L2_FOOD_PER_CYCLE : (BUILDING_PRODUCTION[building.type].food ?? 0) * lvl)
@@ -3967,6 +5186,20 @@ function JobBuildingPanel({ city, building }: { city: import('@/types/game').Cit
         <div className="flex justify-between text-xs">
           <span className="text-empire-parchment/50">Production</span>
           <span className="text-cyan-300">+{farmFoodPerCycle} grain/cycle</span>
+        </div>
+      )}
+      {building.type === 'market' && marketGoldPreview && (
+        <div className="space-y-1">
+          <div
+            className="flex justify-between text-xs gap-2"
+            title={`${MARKET_GOLD_PER_VILLAGE} gold per incorporated village × ${marketGoldPreview.villageCount} empire villages × staffing × city morale. Same formula as economy tick.`}
+          >
+            <span className="text-empire-parchment/50">Production</span>
+            <span className="text-amber-300 font-medium">+{marketGoldPreview.goldPerCycle} gold/cycle</span>
+          </div>
+          <p className="text-[10px] text-empire-parchment/55 leading-snug">
+            {MARKET_GOLD_PER_VILLAGE}g per incorporated village in your empire ({marketGoldPreview.villageCount} villages). Scales with workers and morale ({Math.round(city.morale)}%).
+          </p>
         </div>
       )}
       {building.type === 'fishery' && (
@@ -4018,7 +5251,7 @@ function JobBuildingPanel({ city, building }: { city: import('@/types/game').Cit
       })()}
       {building.type === 'port' && (
         <div className="text-[10px] text-empire-parchment/55">
-          Links your trade cluster across water to other port cities on the same sea.
+          Coastal access for ships — embark, naval routes, and sea trade (economy is pooled empire-wide).
         </div>
       )}
       <div className="flex items-center justify-between gap-2">
@@ -4057,15 +5290,30 @@ function QuarryMinePanel({ city, building }: { city: import('@/types/game').City
   const maxW = getBuildingJobs(building);
   const assigned = building.assignedWorkers ?? 0;
   const staffRatio = maxW > 0 ? assigned / maxW : 0;
-  const active = staffRatio > MIN_STAFFING_RATIO;
+  /** Matches productionPhase / computeCityProductionRate for quarry & mine. */
+  const activeMult =
+    building.type === 'quarry' || building.type === 'mine' || building.type === 'logging_hut'
+      ? staffRatio > MIN_STAFFING_RATIO
+        ? staffRatio
+        : 0
+      : staffRatio;
   const lvl = building.level ?? 1;
   const prod = building.type === 'quarry'
     ? (BUILDING_PRODUCTION.quarry.stone ?? 0) * lvl
     : building.type === 'gold_mine'
       ? (BUILDING_PRODUCTION.gold_mine.gold ?? 0) * lvl
       : (BUILDING_PRODUCTION.mine.iron ?? 0) * lvl;
-  const effectiveProd = active ? Math.floor(prod * staffRatio) : 0;
+  const rawPerCycle =
+    building.type === 'quarry' || building.type === 'mine'
+      ? prod * activeMult
+      : building.type === 'gold_mine'
+        ? prod * (staffRatio > MIN_STAFFING_RATIO ? staffRatio : 0)
+        : 0;
+  const moraleMod = city.morale / 100;
+  const effectiveProd = Math.floor(rawPerCycle * moraleMod);
   const staffColor = staffRatio > 0.8 ? 'text-green-400' : staffRatio > MIN_STAFFING_RATIO ? 'text-yellow-400' : 'text-red-400';
+  const mineOrQuarry = building.type === 'quarry' || building.type === 'mine';
+  const zeroFromMorale = mineOrQuarry && assigned > 0 && staffRatio > MIN_STAFFING_RATIO && rawPerCycle > 0 && effectiveProd === 0;
   const label = building.type === 'quarry' ? 'Quarry' : building.type === 'gold_mine' ? 'Gold mine' : 'Mine';
 
   return (
@@ -4089,6 +5337,16 @@ function QuarryMinePanel({ city, building }: { city: import('@/types/game').City
         <span className="text-empire-parchment/50">Production</span>
         <span className="text-cyan-300">+{effectiveProd} {building.type === 'quarry' ? 'stone' : building.type === 'gold_mine' ? 'gold' : 'iron'}/cycle</span>
       </div>
+      {mineOrQuarry && (
+        <p className="text-[10px] text-empire-parchment/45 leading-snug">
+          Shown rate includes city morale ({Math.round(city.morale)}%). Same formula as economy tick.
+        </p>
+      )}
+      {zeroFromMorale && (
+        <p className="text-[10px] text-amber-400/90 leading-snug">
+          Morale is low enough that iron/stone rounds down to 0 per cycle. Raise morale (food, tax, employment) to restore output.
+        </p>
+      )}
       {assigned > 0 && (
         <button onClick={() => adjustWorkers(city.id, building.q, building.r, -assigned)}
           className="w-full px-2 py-1 text-[10px] bg-empire-stone/20 border border-empire-stone/30 rounded text-empire-parchment/70 hover:bg-empire-stone/30">
@@ -4264,15 +5522,56 @@ function BattleSide({ label, units, color }: { label: string; units: import('@/t
 }
 
 function BattlePanel({ friendly, enemy }: { friendly: import('@/types/game').Unit[]; enemy: import('@/types/game').Unit[] }) {
+  const killFeed = useGameStore(s => s.combatKillFeed);
+  const moraleState = useGameStore(s => s.combatMoraleState);
+  const selectedHex = useGameStore(s => s.selectedHex);
+
+  const hexKey = selectedHex ? tileKey(selectedHex.q, selectedHex.r) : '';
+  const friendlyOwner = friendly[0]?.ownerId;
+  const enemyOwner = enemy[0]?.ownerId;
+
+  const friendlyMorale = friendlyOwner ? (moraleState.get(`${hexKey}:${friendlyOwner}`)?.morale ?? 100) : 100;
+  const enemyMorale = enemyOwner ? (moraleState.get(`${hexKey}:${enemyOwner}`)?.morale ?? 100) : 100;
+
+  const recentKills = killFeed.filter(k => k.hexKey === hexKey).slice(-5);
+
   return (
     <div className="space-y-2 p-2 bg-red-950/30 border border-red-500/30 rounded">
-      <div className="text-center text-red-400 text-xs font-bold tracking-wider">&#9876; ACTIVE COMBAT &#9876;</div>
+      <div className="text-center text-red-400 text-xs font-bold tracking-wider">{'\u2694'} ACTIVE COMBAT {'\u2694'}</div>
+
+      <div className="flex justify-between text-[10px]">
+        <span className="text-blue-400">Morale: {Math.round(friendlyMorale)}</span>
+        <span className="text-red-400">Morale: {Math.round(enemyMorale)}</span>
+      </div>
+      <div className="flex gap-1 h-1.5">
+        <div className="flex-1 bg-empire-stone/20 rounded-full overflow-hidden">
+          <div className={`h-full rounded-full transition-all ${friendlyMorale > 30 ? 'bg-blue-500' : friendlyMorale > 15 ? 'bg-amber-500' : 'bg-red-500'}`} style={{ width: `${friendlyMorale}%` }} />
+        </div>
+        <div className="flex-1 bg-empire-stone/20 rounded-full overflow-hidden">
+          <div className={`h-full rounded-full transition-all ${enemyMorale > 30 ? 'bg-red-500' : enemyMorale > 15 ? 'bg-amber-500' : 'bg-red-700'}`} style={{ width: `${enemyMorale}%` }} />
+        </div>
+      </div>
 
       <BattleSide label="YOUR FORCES" units={friendly} color="text-blue-400" />
-
       <div className="border-t border-red-500/20 my-1" />
-
       <BattleSide label="ENEMY FORCES" units={enemy} color="text-red-400" />
+
+      {recentKills.length > 0 && (
+        <div className="border-t border-red-500/15 pt-1">
+          <p className="text-[9px] text-empire-parchment/40 mb-0.5">Kill feed</p>
+          {recentKills.map((k, i) => (
+            <div key={i} className="text-[9px] text-empire-parchment/60">
+              <span className={k.killerOwner.includes('human') ? 'text-blue-400' : 'text-red-400'}>
+                {UNIT_DISPLAY_NAMES[k.killerType as UnitType] ?? k.killerType}
+              </span>
+              {' killed '}
+              <span className={k.victimOwner.includes('human') ? 'text-blue-400' : 'text-red-400'}>
+                {UNIT_DISPLAY_NAMES[k.victimType as UnitType] ?? k.victimType}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -4281,18 +5580,11 @@ function BattlePanel({ friendly, enemy }: { friendly: import('@/types/game').Uni
 
 function ArmyPanel({ units }: { units: import('@/types/game').Unit[] }) {
   const [showUnitList, setShowUnitList] = useState(false);
-  const [splitCount, setSplitCount] = useState('');
-  const setStance = useGameStore(s => s.setStance);
-  const startDefendMode = useGameStore(s => s.startDefendMode);
-  const startInterceptMode = useGameStore(s => s.startInterceptMode);
-  const setRetreat = useGameStore(s => s.setRetreat);
-  const disbandSelectedUnits = useGameStore(s => s.disbandSelectedUnits);
-  const setSiegeAssault = useGameStore(s => s.setSiegeAssault);
-  const startSplitStack = useGameStore(s => s.startSplitStack);
+  const startSplitStackByUnitType = useGameStore(s => s.startSplitStackByUnitType);
   const cancelSplitStack = useGameStore(s => s.cancelSplitStack);
   const boardAdjacentShip = useGameStore(s => s.boardAdjacentShip);
   const disembarkShip = useGameStore(s => s.disembarkShip);
-  const uiMode = useGameStore(s => s.uiMode);
+  const activateAbility = useGameStore(s => s.activateAbility);
   const cities = useGameStore(s => s.cities);
   const selectedHex = useGameStore(s => s.selectedHex);
   const splitStackPending = useGameStore(s => s.splitStackPending);
@@ -4320,24 +5612,13 @@ function ArmyPanel({ units }: { units: import('@/types/game').Unit[] }) {
 
   const hasLandCombat =
     counts.infantry > 0 || counts.cavalry > 0 || counts.ranged > 0 || counts.trebuchet > 0 || counts.battering_ram > 0 || counts.defender > 0;
-  const hasNavalCombat = units.some(u => isNavalUnitType(u.type) && UNIT_BASE_STATS[u.type].attack > 0);
-  const hasCombatUnits = hasLandCombat || hasNavalCombat;
   const shipCount = counts.scout_ship + counts.warship + counts.transport_ship + counts.capital_ship;
   const soleShip = units.length === 1 && isNavalUnitType(units[0].type) ? units[0] : null;
   const canBoard = soleShip && getShipMaxCargo(soleShip.type) > 0;
   const canDisembark = soleShip && (soleShip.cargoUnitIds?.length ?? 0) > 0;
-  const avgStance = units[0]?.stance ?? 'aggressive';
-  const stances: ArmyStance[] = ['aggressive', 'defensive', 'passive'];
-  const stanceColors: Record<ArmyStance, string> = {
-    aggressive: 'text-red-400 border-red-500/40 bg-red-900/20',
-    defensive: 'text-blue-400 border-blue-500/40 bg-blue-900/20',
-    passive: 'text-gray-400 border-gray-500/40 bg-gray-900/20',
-  };
 
   const isThisStackSplitting = selectedHex && splitStackPending && splitStackPending.fromQ === selectedHex.q && splitStackPending.fromR === selectedHex.r;
   const canSplit = units.length > 1;
-  const defaultSplitHalf = Math.max(1, Math.floor(units.length / 2));
-  const splitN = isThisStackSplitting ? splitStackPending!.count : (splitCount === '' ? defaultSplitHalf : Math.max(1, Math.min(units.length - 1, parseInt(splitCount, 10) || defaultSplitHalf)));
 
   return (
     <div className="space-y-2">
@@ -4347,17 +5628,20 @@ function ArmyPanel({ units }: { units: import('@/types/game').Unit[] }) {
           {hasLandCombat ? 'ARMY' : shipCount > 0 && !hasLandCombat ? 'FLEET' : 'UNITS'} ({units.length})
         </h3>
         <div className="flex gap-1.5 text-[10px] text-empire-parchment/90 flex-wrap">
-          {counts.infantry > 0 && <span>&#9876;{counts.infantry}</span>}
-          {counts.cavalry > 0 && <span>&#9822;{counts.cavalry}</span>}
-          {counts.ranged > 0 && <span>&#127993;{counts.ranged}</span>}
-          {counts.trebuchet > 0 && <span>&#9883;{counts.trebuchet}</span>}
-          {counts.battering_ram > 0 && <span>&#128737;{counts.battering_ram}</span>}
-          {counts.defender > 0 && <span>Def{counts.defender}</span>}
-          {counts.builder > 0 && <span>B{counts.builder}</span>}
-          {counts.scout_ship > 0 && <span className="text-sky-300">Sc{counts.scout_ship}</span>}
-          {counts.warship > 0 && <span className="text-sky-300">W{counts.warship}</span>}
-          {counts.transport_ship > 0 && <span className="text-sky-300">T{counts.transport_ship}</span>}
-          {counts.capital_ship > 0 && <span className="text-sky-300">K{counts.capital_ship}</span>}
+          {(Object.entries(counts) as [UnitType, number][]).map(([t, n]) =>
+            n > 0 ? (
+              <button
+                key={t}
+                type="button"
+                disabled={!canSplit || !selectedHex}
+                title="Split: move this unit type to an adjacent hex"
+                onClick={() => selectedHex && startSplitStackByUnitType(t, selectedHex.q, selectedHex.r)}
+                className="px-1.5 py-0.5 rounded border border-empire-stone/35 bg-black/20 hover:border-cyan-500/45 hover:bg-cyan-950/25 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {n}× {UNIT_DISPLAY_NAMES[t]}
+              </button>
+            ) : null,
+          )}
         </div>
         <span className="text-empire-parchment/60 text-[10px] ml-auto">HP {totalHp}/{totalMaxHp}</span>
       </div>
@@ -4375,40 +5659,46 @@ function ArmyPanel({ units }: { units: import('@/types/game').Unit[] }) {
         </div>
       )}
 
-      {/* Stance + actions in one compact block */}
-      {hasCombatUnits && (
-        <div className="space-y-1.5">
-          <div className="flex gap-1">
-            {stances.map(s => (
-              <button key={s} onClick={() => setStance(s)}
-                className={`flex-1 px-1 py-0.5 text-[10px] rounded border capitalize transition-colors ${
-                  avgStance === s ? stanceColors[s] : 'border-empire-stone/20 text-empire-parchment/30'
-                }`}>
-                {s}
-              </button>
-            ))}
+      {(() => {
+        const abilityTypes = new Set<UnitType>();
+        for (const u of units) {
+          if (getAbilityForUnit(u.type)) abilityTypes.add(u.type);
+        }
+        if (abilityTypes.size === 0) return null;
+        const now = Date.now();
+        return (
+          <div className="border-t border-empire-stone/20 pt-1.5 space-y-1">
+            <p className="text-[9px] text-empire-parchment/40 mb-0.5">Abilities</p>
+            <div className="flex flex-wrap gap-1">
+              {[...abilityTypes].map(ut => {
+                const abilityId = getAbilityForUnit(ut)!;
+                const def = ABILITY_DEFS[abilityId];
+                const sampleUnit = units.find(u => u.type === ut);
+                const isActive = sampleUnit?.abilityActive ?? false;
+                const onCd = sampleUnit?.abilityCooldownUntil ? now < sampleUnit.abilityCooldownUntil : false;
+                return (
+                  <button
+                    key={ut}
+                    type="button"
+                    onClick={() => activateAbility(ut)}
+                    disabled={onCd && !def.toggle}
+                    title={def.desc}
+                    className={`px-1.5 py-0.5 text-[10px] rounded border transition-colors ${
+                      isActive
+                        ? 'border-cyan-500/60 bg-cyan-900/30 text-cyan-300'
+                        : onCd
+                          ? 'border-empire-stone/20 text-empire-parchment/25 cursor-not-allowed'
+                          : 'border-purple-500/40 bg-purple-900/20 text-purple-300 hover:bg-purple-800/30'
+                    }`}
+                  >
+                    {def.label}
+                  </button>
+                );
+              })}
+            </div>
           </div>
-          <div className="flex flex-wrap gap-1">
-            {hasLandCombat && (
-              <>
-                <button type="button" onClick={startDefendMode} disabled={uiMode === 'defend'}
-                  className="px-1.5 py-0.5 text-[10px] rounded border border-blue-500/40 bg-blue-900/20 text-blue-300 hover:bg-blue-800/30 disabled:opacity-50">Defend</button>
-                <button type="button" onClick={startInterceptMode} disabled={uiMode === 'intercept'}
-                  className="px-1.5 py-0.5 text-[10px] rounded border border-amber-500/40 bg-amber-900/20 text-amber-300 hover:bg-amber-800/30 disabled:opacity-50">Intercept</button>
-                <button type="button" onClick={() => setSiegeAssault(!assaulting)}
-                  className={`px-1.5 py-0.5 text-[10px] rounded border ${assaulting ? 'border-red-500/60 bg-red-900/30 text-red-300' : 'border-empire-stone/40 bg-empire-stone/20 text-empire-parchment/80'}`}>Siege</button>
-              </>
-            )}
-            <button type="button" onClick={setRetreat}
-              className="px-1.5 py-0.5 text-[10px] rounded border border-amber-600/50 bg-amber-950/30 text-amber-400 hover:bg-amber-900/40">Retreat</button>
-            <button type="button" onClick={disbandSelectedUnits}
-              className="px-1.5 py-0.5 text-[10px] rounded border border-red-700/50 bg-red-950/30 text-red-400 hover:bg-red-900/40">Disband</button>
-          </div>
-          {(uiMode === 'defend' || uiMode === 'intercept') && (
-            <p className="text-empire-parchment/60 text-[10px]">{uiMode === 'defend' ? 'Click a friendly city' : 'Click hex to intercept'}</p>
-          )}
-        </div>
-      )}
+        );
+      })()}
 
       {(canBoard || canDisembark) && soleShip && (
         <div className="flex flex-wrap gap-1 border-t border-empire-stone/25 pt-1.5">
@@ -4433,30 +5723,16 @@ function ArmyPanel({ units }: { units: import('@/types/game').Unit[] }) {
         </div>
       )}
 
-      {/* Split stack — easy split to adjacent hex */}
-      {canSplit && (
-        <div className="rounded border border-empire-stone/30 bg-empire-stone/10 px-2 py-1.5 space-y-1">
-          {isThisStackSplitting ? (
-            <>
-              <p className="text-cyan-400/90 text-[10px]">Move {splitStackPending!.count} unit(s) → click adjacent hex</p>
-              <button type="button" onClick={cancelSplitStack}
-                className="px-2 py-0.5 text-[10px] rounded border border-empire-stone/40 text-empire-parchment/80 hover:bg-empire-stone/20">Cancel</button>
-            </>
-          ) : (
-            <>
-              <div className="flex items-center gap-1.5 flex-wrap">
-                <span className="text-empire-parchment/80 text-[10px]">Split:</span>
-                <input type="number" min={1} max={units.length - 1} value={splitCount || defaultSplitHalf}
-                  onChange={e => setSplitCount(e.target.value === '' ? '' : e.target.value)}
-                  className="w-12 px-1 py-0.5 text-[10px] rounded border border-empire-stone/40 bg-empire-dark text-empire-parchment"
-                />
-                <span className="text-empire-parchment/50 text-[10px]">units</span>
-                <button type="button" onClick={() => startSplitStack(splitN)}
-                  className="px-2 py-0.5 text-[10px] rounded border border-cyan-500/50 bg-cyan-900/20 text-cyan-300 hover:bg-cyan-800/30">Split</button>
-              </div>
-              <p className="text-empire-parchment/50 text-[10px]">New stack goes to adjacent hex</p>
-            </>
-          )}
+      {canSplit && isThisStackSplitting && (
+        <div className="rounded border border-empire-stone/30 bg-empire-stone/10 px-2 py-1.5 flex items-center justify-between gap-2">
+          <p className="text-cyan-400/90 text-[10px]">Move {splitStackPending!.count} unit(s) → click adjacent hex</p>
+          <button
+            type="button"
+            onClick={cancelSplitStack}
+            className="px-2 py-0.5 text-[10px] rounded border border-empire-stone/40 text-empire-parchment/80 hover:bg-empire-stone/20 shrink-0"
+          >
+            Cancel
+          </button>
         </div>
       )}
 
@@ -4522,6 +5798,8 @@ function ConstructionProgress({ site, availBP }: { site: import('@/types/game').
   const typeName =
     site.type === 'city_defense' && site.defenseTowerType && site.defenseTowerTargetLevel
       ? `${DEFENSE_TOWER_DISPLAY_NAME[site.defenseTowerType]} L${site.defenseTowerTargetLevel}`
+      : site.type === 'wall_section'
+        ? `Wall section${site.wallBuildRing ? ` (ring ${site.wallBuildRing})` : ''}`
       : site.type.charAt(0).toUpperCase() + site.type.slice(1);
 
   return (
@@ -4541,44 +5819,32 @@ function ConstructionProgress({ site, availBP }: { site: import('@/types/game').
   );
 }
 
-// ─── Builder Build Menu (Mine, Quarry, Road outside territory) ───────
+// ─── Builder Build Menu (field deposits + trebuchet — no roads/scout/logging here) ──
 
 function BuilderBuildMenu({
   uiMode,
   startBuilderBuild,
   cancelBuilderBuild,
-  confirmRoadPath,
-  roadPathSelection,
   buildTrebuchetHere,
   canBuildTrebuchetHere,
   canAffordTrebuchet,
-  buildScoutTowerHere,
-  canBuildScoutTowerHere,
-  canAffordScoutTower,
   hasBuildingOnHex,
   hasCityAtHex,
   tileHasMineDeposit,
   tileHasQuarryDeposit,
   tileHasGoldMineDeposit,
-  tileIsForest,
 }: {
   uiMode: string;
-  startBuilderBuild: (mode: 'mine' | 'quarry' | 'gold_mine' | 'logging_hut' | 'road') => void;
+  startBuilderBuild: (mode: 'mine' | 'quarry' | 'gold_mine') => void;
   cancelBuilderBuild: () => void;
-  confirmRoadPath: () => void;
-  roadPathSelection: { q: number; r: number }[];
   buildTrebuchetHere: () => void;
   canBuildTrebuchetHere: boolean;
   canAffordTrebuchet: boolean;
-  buildScoutTowerHere: () => void;
-  canBuildScoutTowerHere: boolean;
-  canAffordScoutTower: boolean;
   hasBuildingOnHex: boolean;
   hasCityAtHex: boolean;
   tileHasMineDeposit?: boolean;
   tileHasQuarryDeposit?: boolean;
   tileHasGoldMineDeposit?: boolean;
-  tileIsForest?: boolean;
 }) {
   if (uiMode === 'normal' || uiMode === 'move') {
     return (
@@ -4586,8 +5852,8 @@ function BuilderBuildMenu({
         <h3 className="text-amber-400/90 text-xs font-semibold uppercase tracking-wide">Builder</h3>
         <p className="text-empire-parchment/50 text-[10px]">Build here or select type — deposits will highlight on map</p>
         <div className="flex flex-col gap-1.5">
-          {(canBuildTrebuchetHere || canBuildScoutTowerHere) && (
-            <p className="text-empire-parchment/45 text-[10px] font-semibold uppercase tracking-wide pt-0.5">Siege & vision</p>
+          {canBuildTrebuchetHere && (
+            <p className="text-empire-parchment/45 text-[10px] font-semibold uppercase tracking-wide pt-0.5">Siege</p>
           )}
           {canBuildTrebuchetHere && (
             <button
@@ -4605,69 +5871,38 @@ function BuilderBuildMenu({
               </span>
             </button>
           )}
-          {canBuildScoutTowerHere && (
-            <button
-              onClick={buildScoutTowerHere}
-              disabled={!canAffordScoutTower}
-              className={`w-full text-left px-3 py-2 rounded border text-xs transition-colors ${
-                canAffordScoutTower
-                  ? 'border-cyan-600/40 bg-cyan-900/20 text-cyan-300 hover:bg-cyan-900/30'
-                  : 'border-empire-stone/20 bg-transparent text-empire-parchment/30 cursor-not-allowed'
-              }`}
-            >
-              <span className="font-medium">Build Scout Tower (this hex)</span>
-              <span className={canAffordScoutTower ? 'text-cyan-400/70 ml-1' : 'text-red-400/50 ml-1'}>
-                — {SCOUT_TOWER_GOLD_COST}g, {SCOUT_TOWER_BP_COST} BP (vision 4)
-              </span>
-            </button>
+          {!hasBuildingOnHex && !hasCityAtHex && (tileHasMineDeposit || tileHasQuarryDeposit || tileHasGoldMineDeposit) && (
+            <>
+              <p className="text-empire-parchment/45 text-[10px] font-semibold uppercase tracking-wide pt-0.5">Resource sites</p>
+              {tileHasMineDeposit && (
+                <button
+                  onClick={() => startBuilderBuild('mine')}
+                  className="w-full text-left px-3 py-2 rounded border border-amber-600/40 bg-amber-900/20 text-amber-300 hover:bg-amber-900/30 text-xs"
+                >
+                  <span className="font-medium">Mine</span>
+                  <span className="text-amber-400/70 ml-1">— +1 iron/cycle on deposit</span>
+                </button>
+              )}
+              {tileHasQuarryDeposit && (
+                <button
+                  onClick={() => startBuilderBuild('quarry')}
+                  className="w-full text-left px-3 py-2 rounded border border-stone-500/40 bg-stone-900/20 text-stone-300 hover:bg-stone-900/30 text-xs"
+                >
+                  <span className="font-medium">Quarry</span>
+                  <span className="text-stone-400/70 ml-1">— +3 stone/cycle on deposit</span>
+                </button>
+              )}
+              {tileHasGoldMineDeposit && (
+                <button
+                  onClick={() => startBuilderBuild('gold_mine')}
+                  className="w-full text-left px-3 py-2 rounded border border-yellow-600/40 bg-yellow-900/20 text-yellow-300 hover:bg-yellow-900/30 text-xs"
+                >
+                  <span className="font-medium">Gold mine</span>
+                  <span className="text-yellow-400/70 ml-1">— +7 gold/cycle on mountain deposit (20 iron)</span>
+                </button>
+              )}
+            </>
           )}
-          {!hasBuildingOnHex && !hasCityAtHex && (tileHasMineDeposit || tileHasQuarryDeposit || tileHasGoldMineDeposit || tileIsForest) && (<>
-          <p className="text-empire-parchment/45 text-[10px] font-semibold uppercase tracking-wide pt-0.5">Resource sites</p>
-          {tileHasMineDeposit && (
-          <button
-            onClick={() => startBuilderBuild('mine')}
-            className="w-full text-left px-3 py-2 rounded border border-amber-600/40 bg-amber-900/20 text-amber-300 hover:bg-amber-900/30 text-xs"
-          >
-            <span className="font-medium">Mine</span>
-            <span className="text-amber-400/70 ml-1">— +1 iron/cycle on deposit</span>
-          </button>
-          )}
-          {tileHasQuarryDeposit && (
-          <button
-            onClick={() => startBuilderBuild('quarry')}
-            className="w-full text-left px-3 py-2 rounded border border-stone-500/40 bg-stone-900/20 text-stone-300 hover:bg-stone-900/30 text-xs"
-          >
-            <span className="font-medium">Quarry</span>
-            <span className="text-stone-400/70 ml-1">— +3 stone/cycle on deposit</span>
-          </button>
-          )}
-          {tileHasGoldMineDeposit && (
-          <button
-            onClick={() => startBuilderBuild('gold_mine')}
-            className="w-full text-left px-3 py-2 rounded border border-yellow-600/40 bg-yellow-900/20 text-yellow-300 hover:bg-yellow-900/30 text-xs"
-          >
-            <span className="font-medium">Gold mine</span>
-            <span className="text-yellow-400/70 ml-1">— +7 gold/cycle on mountain deposit (20 iron)</span>
-          </button>
-          )}
-          {tileIsForest && (
-          <button
-            onClick={() => startBuilderBuild('logging_hut')}
-            className="w-full text-left px-3 py-2 rounded border border-emerald-600/40 bg-emerald-900/20 text-emerald-300 hover:bg-emerald-900/30 text-xs"
-          >
-            <span className="font-medium">Logging hut</span>
-            <span className="text-emerald-400/70 ml-1">— +wood/cycle on forest</span>
-          </button>
-          )}
-          </>)}
-          <p className="text-empire-parchment/45 text-[10px] font-semibold uppercase tracking-wide pt-0.5">Roads</p>
-          <button
-            onClick={() => startBuilderBuild('road')}
-            className="w-full text-left px-3 py-2 rounded border border-amber-600/40 bg-amber-900/20 text-amber-300 hover:bg-amber-900/30 text-xs"
-          >
-            <span className="font-medium">Road</span>
-            <span className="text-amber-400/70 ml-1">— Mark path (hexes), Confirm</span>
-          </button>
         </div>
       </div>
     );
@@ -4706,16 +5941,14 @@ function BuilderBuildMenu({
   if (uiMode === 'build_road') {
     return (
       <div className="space-y-2">
-        <h3 className="text-amber-400/90 text-xs font-semibold">Road — Mark Path</h3>
-        <p className="text-empire-parchment/50 text-[10px]">Click hexes in your territory (with a University). Confirm when done — workforce builds roads in parallel.</p>
-        <p className="text-amber-400/80 text-xs font-medium">{roadPathSelection.length} hex(es) selected</p>
-        <div className="flex gap-2">
-          <button onClick={confirmRoadPath} disabled={roadPathSelection.length === 0}
-            className="flex-1 px-2 py-1.5 text-xs rounded border border-amber-500/50 bg-amber-900/30 text-amber-300 hover:bg-amber-900/50 disabled:opacity-50 disabled:cursor-not-allowed">
-            Confirm
-          </button>
-          <button onClick={cancelBuilderBuild} className="px-2 py-1.5 text-xs border border-empire-stone/40 rounded text-empire-parchment/70 hover:bg-empire-stone/20">Cancel</button>
-        </div>
+        <p className="text-empire-parchment/50 text-[10px]">Road placement from this panel is disabled.</p>
+        <button
+          type="button"
+          onClick={cancelBuilderBuild}
+          className="w-full px-2 py-1.5 text-xs border border-empire-stone/40 rounded text-empire-parchment/70 hover:bg-empire-stone/20"
+        >
+          Cancel
+        </button>
       </div>
     );
   }
@@ -4750,28 +5983,21 @@ function DefensePlacementOverlay() {
 
 // ─── Build Menu ────────────────────────────────────────────────────
 
-function BuildMenu({ q, r, inTerritory, buildersHere, tile, hasRoadConstructionAt, hasConstructionAt, hasCityAt, buildRoad, cityForWall }: {
+function BuildMenu({ q, r, inTerritory, buildersHere, tile, hasConstructionAt, hasCityAt }: {
   q: number; r: number; inTerritory: boolean; buildersHere: number;
   tile?: { hasRoad?: boolean; hasQuarryDeposit?: boolean; hasMineDeposit?: boolean; hasWoodDeposit?: boolean; biome?: string } | undefined;
-  hasRoadConstructionAt: (q: number, r: number) => boolean;
   hasConstructionAt: (q: number, r: number) => boolean;
   hasCityAt: (q: number, r: number) => boolean;
-  buildRoad: (q: number, r: number) => void;
-  cityForWall: import('@/types/game').City | null;
 }) {
   const tiles = useGameStore(s => s.tiles);
   const coastal = hexTouchesBiome(tiles, q, r, 'water');
   const buildStructure = useGameStore(s => s.buildStructure);
   const buildTrebuchetInField = useGameStore(s => s.buildTrebuchetInField);
-  const buildScoutTowerInField = useGameStore(s => s.buildScoutTowerInField);
-  const scoutTowers = useGameStore(s => s.scoutTowers);
   const defenseInstallations = useGameStore(s => s.defenseInstallations);
-  const buildWallRing = useGameStore(s => s.buildWallRing);
   const human = useGameStore(s => s.getHumanPlayer)();
   const allCitiesState = useGameStore(s => s.cities);
   const territoryState = useGameStore(s => s.territory);
   const humanCities = allCitiesState.filter(c => c.ownerId === human?.id);
-  const totalStone = humanCities.reduce((s, c) => s + (c.storage.stone ?? 0), 0);
   const hasUniversity = humanCities.some(c => c.buildings.some(b => b.type === 'academy'));
 
   let availBP = 0;
@@ -4787,17 +6013,6 @@ function BuildMenu({ q, r, inTerritory, buildersHere, tile, hasRoadConstructionA
     !hasDefenseAtHex &&
     tile?.biome !== 'water' &&
     tile?.biome !== 'mountain';
-  const hasScoutTowerAt = scoutTowers.some(t => t.q === q && t.r === r);
-  const canBuildScoutTowerHere =
-    hasUniversity &&
-    !hasCityAt(q, r) &&
-    !hasConstructionAt(q, r) &&
-    !hasScoutTowerAt &&
-    !hasDefenseAtHex &&
-    tile?.biome !== 'water' &&
-    tile?.biome !== 'mountain';
-  const scoutTowerCanAfford = (human?.gold ?? 0) >= SCOUT_TOWER_GOLD_COST;
-
   type BuildMenuCategory = 'Food & trade' | 'Industry' | 'Recruitment' | 'Resource sites' | 'Coast & ships';
   const BUILD_MENU_CATEGORY_ORDER: BuildMenuCategory[] = [
     'Food & trade',
@@ -4828,16 +6043,15 @@ function BuildMenu({ q, r, inTerritory, buildersHere, tile, hasRoadConstructionA
         label: 'Farm',
         desc: `L1: +${BUILDING_PRODUCTION.farm.food} grain/cycle (2 jobs); L2: +${FARM_L2_FOOD_PER_CYCLE} (3 jobs)  (${BUILDING_BP_COST.farm} BP)`,
       }]),
-    { category: 'Food & trade' as BuildMenuCategory, type: 'market' as BuildingType, label: 'Market', desc: `+${MARKET_GOLD_PER_CYCLE} gold/cycle (2 jobs)  (${BUILDING_BP_COST.market} BP)` },
+    { category: 'Food & trade' as BuildMenuCategory, type: 'market' as BuildingType, label: 'Market', desc: `+${MARKET_GOLD_PER_VILLAGE}g per empire incorporated village/cycle (2 jobs) (${BUILDING_BP_COST.market} BP)` },
     { category: 'Food & trade' as BuildMenuCategory, type: 'fishery' as BuildingType, label: 'Fishery', desc: `+${BUILDING_PRODUCTION.fishery.food} grain/cycle on coast (2 jobs) (${BUILDING_BP_COST.fishery} BP)`, show: coastal },
     { category: 'Industry' as BuildMenuCategory, type: 'factory' as BuildingType, label: 'Factory', desc: `+1 arms/cycle (2 jobs)  (${BUILDING_BP_COST.factory} BP)` },
     { category: 'Industry' as BuildMenuCategory, type: 'sawmill' as BuildingType, label: 'Sawmill', desc: `+${BUILDING_PRODUCTION.sawmill.refinedWood} refined wood/cycle; needs ${SAWMILL_WOOD_PER_REFINED} raw wood each (2 jobs) (${BUILDING_BP_COST.sawmill} BP)` },
-    { category: 'Recruitment' as BuildMenuCategory, type: 'barracks' as BuildingType, label: 'Barracks', desc: `Recruit military units & heroes (2 jobs)  (${BUILDING_BP_COST.barracks} BP)` },
+    { category: 'Recruitment' as BuildMenuCategory, type: 'barracks' as BuildingType, label: 'Barracks', desc: `Recruit military units (2 jobs)  (${BUILDING_BP_COST.barracks} BP)` },
     { category: 'Recruitment' as BuildMenuCategory, type: 'academy' as BuildingType, label: 'University', desc: `Workforce & tasks; upgrade for more builder slots (2 jobs) (${BUILDING_BP_COST.academy} BP)` },
     { category: 'Resource sites' as BuildMenuCategory, type: 'quarry' as BuildingType, label: 'Quarry', desc: `+${BUILDING_PRODUCTION.quarry.stone} stone/cycle (2 jobs) (${BUILDING_BP_COST.quarry} BP)`, show: tile?.hasQuarryDeposit && !isCityTile },
     { category: 'Resource sites' as BuildMenuCategory, type: 'mine' as BuildingType, label: 'Mine', desc: `+${BUILDING_PRODUCTION.mine.iron} iron/cycle (2 jobs) (${BUILDING_BP_COST.mine} BP)`, show: tile?.hasMineDeposit && !isCityTile },
-    { category: 'Resource sites' as BuildMenuCategory, type: 'logging_hut' as BuildingType, label: 'Logging hut', desc: `+${BUILDING_PRODUCTION.logging_hut.wood} wood/cycle (2 jobs) (${BUILDING_BP_COST.logging_hut} BP)`, show: tile?.biome === 'forest' && !isCityTile },
-    { category: 'Coast & ships' as BuildMenuCategory, type: 'port' as BuildingType, label: 'Port', desc: `Trade cluster link across water (1 job) (${BUILDING_BP_COST.port} BP)`, show: coastal },
+    { category: 'Coast & ships' as BuildMenuCategory, type: 'port' as BuildingType, label: 'Port', desc: `Coastal — ships & naval play (1 job) (${BUILDING_BP_COST.port} BP)`, show: coastal },
     { category: 'Coast & ships' as BuildMenuCategory, type: 'shipyard' as BuildingType, label: 'Shipyard', desc: `Build ships (2 jobs) (${BUILDING_BP_COST.shipyard} BP)`, show: coastal },
   ].filter(b => b.show !== false);
 
@@ -4846,12 +6060,11 @@ function BuildMenu({ q, r, inTerritory, buildersHere, tile, hasRoadConstructionA
     items: buildings.filter(b => b.category === title),
   })).filter(g => g.items.length > 0);
 
-  const canBuildRoad = inTerritory && buildersHere > 0 && !tile?.hasRoad && !hasRoadConstructionAt(q, r);
   const trebuchetCanAfford =
     (human?.gold ?? 0) >= TREBUCHET_FIELD_GOLD_COST &&
     !!findCityForRefinedWoodSpend(q, r, human?.id ?? '', TREBUCHET_REFINED_WOOD_COST, allCitiesState, territoryState);
 
-  const showFieldSection = canBuildTrebuchetHere || canBuildScoutTowerHere || canBuildRoad;
+  const showFieldSection = canBuildTrebuchetHere;
 
   return (
     <div className="space-y-2">
@@ -4876,35 +6089,6 @@ function BuildMenu({ q, r, inTerritory, buildersHere, tile, hasRoadConstructionA
             </span>
           </div>
           <div className="text-empire-parchment/40 text-[10px]">Siege. Nearest University supplies BP ({TREBUCHET_FIELD_BP_COST} BP)</div>
-        </button>
-      )}
-      {canBuildScoutTowerHere && (
-        <button
-          onClick={() => buildScoutTowerInField(q, r)}
-          disabled={!scoutTowerCanAfford}
-          className={`w-full text-left px-3 py-2 rounded border text-xs transition-colors ${
-            scoutTowerCanAfford
-              ? 'border-cyan-600/40 bg-cyan-900/20 text-cyan-300 hover:bg-cyan-900/30'
-              : 'border-empire-stone/20 bg-transparent text-empire-parchment/30 cursor-not-allowed'
-          }`}
-        >
-          <div className="flex justify-between">
-            <span className="font-medium">Build Scout Tower (field)</span>
-            <span className={scoutTowerCanAfford ? 'text-cyan-400' : 'text-red-400/50'}>{SCOUT_TOWER_GOLD_COST}g</span>
-          </div>
-          <div className="text-empire-parchment/40 text-[10px]">Vision 4. Nearest University supplies BP ({SCOUT_TOWER_BP_COST} BP)</div>
-        </button>
-      )}
-      {canBuildRoad && (
-        <button
-          onClick={() => buildRoad(q, r)}
-          className="w-full text-left px-3 py-2 rounded border border-amber-600/40 bg-amber-900/20 text-amber-300 hover:bg-amber-900/30 text-xs"
-        >
-          <div className="flex justify-between">
-            <span className="font-medium">Build Road</span>
-            <span className="text-amber-400/80">Free</span>
-          </div>
-          <div className="text-empire-parchment/40 text-[10px]">+50% speed; mountain pass ({ROAD_BP_COST} BP)</div>
         </button>
       )}
       <p className="text-empire-parchment/40 text-[10px]">
@@ -4950,20 +6134,20 @@ function BuildMenu({ q, r, inTerritory, buildersHere, tile, hasRoadConstructionA
   );
 }
 
-// ─── Supply Cluster Side Panel (income statement when cluster selected) ───
+// ─── Supply view: empire income statement ───
 
 function SupplyClusterSidePanel() {
   const phase = useGameStore(s => s.phase);
   const supplyViewTab = useGameStore(s => s.supplyViewTab);
   const selectedClusterKey = useGameStore(s => s.selectedClusterKey);
-  const getClusterIncomeStatement = useGameStore(s => s.getClusterIncomeStatement);
+  const getEmpireIncomeStatement = useGameStore(s => s.getEmpireIncomeStatement);
   const getSupplyClustersWithPaths = useGameStore(s => s.getSupplyClustersWithPaths);
   const setSelectedClusterKey = useGameStore(s => s.setSelectedClusterKey);
 
   if (phase !== 'playing' || supplyViewTab !== 'supply' || !selectedClusterKey) return null;
 
   const entry = getSupplyClustersWithPaths().find(e => e.clusterKey === selectedClusterKey);
-  const stmt = getClusterIncomeStatement(selectedClusterKey);
+  const stmt = getEmpireIncomeStatement();
 
   if (!entry || !stmt) return null;
 
@@ -4989,7 +6173,7 @@ function SupplyClusterSidePanel() {
         <div className="px-4 py-3 border-b border-empire-stone/30 bg-empire-stone/5">
           <div className="flex justify-between items-start">
             <div>
-              <h3 className="text-sm font-semibold text-empire-gold tracking-wide">Cluster</h3>
+              <h3 className="text-sm font-semibold text-empire-gold tracking-wide">Empire</h3>
               <p className="text-empire-parchment/70 text-xs mt-0.5 truncate" title={cityNames}>{cityNames}</p>
             </div>
             <button
@@ -5021,7 +6205,7 @@ function SupplyClusterSidePanel() {
           <div className={`mt-3 px-3 py-2 rounded-lg text-xs font-medium ${
             stmt.foodSurplus ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-red-500/10 text-red-400 border border-red-500/20'
           }`}>
-            {stmt.foodSurplus ? 'Food surplus — cluster healthy' : 'Food deficit — cluster at risk'}
+            {stmt.foodSurplus ? 'Food surplus — empire healthy' : 'Food deficit — empire at risk'}
           </div>
         </div>
       </div>
@@ -5069,24 +6253,26 @@ function SupplyViewPanel() {
           <button
             type="button"
             onClick={() => setTerritoryDisplayStyle('fill')}
+            title="Faction-colored tint only (no border dashes)"
             className={`flex-1 px-2 py-1.5 text-[10px] font-medium transition-colors ${
               territoryDisplayStyle === 'fill'
                 ? 'bg-empire-gold/15 text-empire-gold'
                 : 'text-empire-parchment/50 hover:text-empire-parchment/75 hover:bg-empire-stone/15'
             }`}
           >
-            Terr. fill
+            Tint only
           </button>
           <button
             type="button"
             onClick={() => setTerritoryDisplayStyle('dashed')}
+            title="Faction-colored tint on each hex, plus dashed border lines"
             className={`flex-1 px-2 py-1.5 text-[10px] font-medium transition-colors border-l border-empire-stone/20 ${
               territoryDisplayStyle === 'dashed'
                 ? 'bg-empire-gold/15 text-empire-gold'
                 : 'text-empire-parchment/50 hover:text-empire-parchment/75 hover:bg-empire-stone/15'
             }`}
           >
-            Terr. dashed
+            Tint + edges
           </button>
         </div>
         {supplyViewTab === 'supply' && (

@@ -10,7 +10,7 @@ import MapController, { MAP_CAMERA_OFFSET } from './MapController';
 import GameHUD from '../ui/GameHUD';
 import { useGameStore } from '@/store/useGameStore';
 import { setAiParams } from '@/lib/aiParams';
-import { axialToWorld, worldToAxial, HEX_RADIUS } from '@/types/game';
+import { axialToWorld, worldToAxial, HEX_RADIUS, tileKey } from '@/types/game';
 
 /** Match scripts/train-ai.ts default (TRAIN_MAP_SIZE / TRAIN_MAP) so watch mode uses same small map. */
 const TRAIN_MAP_SIZE = 38;
@@ -70,6 +70,8 @@ function MapAtmosphere() {
 function HexInteractionPlane() {
   const selectHex = useGameStore(s => s.selectHex);
   const config = useGameStore(s => s.config);
+  const dragPaintRef = useRef(false);
+  const lastPaintHexKeyRef = useRef<string | null>(null);
 
   const { center, size } = useMemo(() => {
     const w = config.width;
@@ -91,8 +93,29 @@ function HexInteractionPlane() {
     return null;
   }, [config]);
 
+  const handlePointerMove = useCallback((e: ThreeEvent<PointerEvent>) => {
+    const s = useGameStore.getState();
+    if (s.assigningTacticalForSelectedStacks?.orderType !== 'patrol_paint') return;
+    if (e.buttons === 0) return;
+    const hex = getHexFromEvent(e);
+    if (!hex) return;
+    const k = tileKey(hex.q, hex.r);
+    if (lastPaintHexKeyRef.current === k) return;
+    lastPaintHexKeyRef.current = k;
+    s.addTacticalPatrolPaintHex(hex.q, hex.r);
+    dragPaintRef.current = true;
+  }, [getHexFromEvent]);
+
+  const handlePointerUp = useCallback(() => {
+    lastPaintHexKeyRef.current = null;
+  }, []);
+
   const handleClick = useCallback((e: ThreeEvent<MouseEvent>) => {
     e.stopPropagation();
+    if (dragPaintRef.current) {
+      dragPaintRef.current = false;
+      return;
+    }
     const hex = getHexFromEvent(e);
     if (hex) selectHex(hex.q, hex.r);
   }, [selectHex, getHexFromEvent]);
@@ -101,6 +124,9 @@ function HexInteractionPlane() {
     <mesh
       rotation={[-Math.PI / 2, 0, 0]}
       position={[center[0], 0.01, center[1]]}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      onPointerLeave={handlePointerUp}
       onClick={handleClick}
     >
       <planeGeometry args={[size[0], size[1]]} />
@@ -116,6 +142,8 @@ function useCameraTarget(): [number, number, number] {
   const cities = useGameStore(s => s.cities);
   const config = useGameStore(s => s.config);
   const gameMode = useGameStore(s => s.gameMode);
+  const phase = useGameStore(s => s.phase);
+  const pendingCityHex = useGameStore(s => s.pendingCityHex);
 
   return useMemo(() => {
     // Bot-vs-bot (2 or 4): center camera on capitals so all are visible
@@ -127,6 +155,15 @@ function useCameraTarget(): [number, number, number] {
         sumZ += z;
       }
       return [sumX / cities.length, 0, sumZ / cities.length];
+    }
+    // Placement: follow suggested / selected capital hex so the player is not lost on the full map
+    if (
+      (gameMode === 'human_vs_ai' || gameMode === 'human_solo') &&
+      phase === 'place_city' &&
+      pendingCityHex
+    ) {
+      const [x, z] = axialToWorld(pendingCityHex.q, pendingCityHex.r, HEX_RADIUS);
+      return [x, 0, z];
     }
     const humanCity = cities.find(c => c.ownerId.includes('human'));
     if (humanCity) {
@@ -145,7 +182,7 @@ function useCameraTarget(): [number, number, number] {
     }
     const [x, z] = axialToWorld(config.width / 2, config.height / 2, HEX_RADIUS);
     return [x, 0, z];
-  }, [gameMode, provinceCenters, cities, config]);
+  }, [gameMode, provinceCenters, cities, config, phase, pendingCityHex]);
 }
 
 // ─── Camera Zoom Controller ─────────────────────────────────────────
@@ -219,15 +256,20 @@ export default function GameScene() {
   const isBotWatch = gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4' || gameMode === 'spectate';
   const [mapTarget, setMapTarget] = useState(liveTarget);
   const [aiParamsLoadAttempted, setAiParamsLoadAttempted] = useState(false);
+  const prevPhaseForCameraRef = useRef(phase);
 
   useEffect(() => {
     if (isBotWatch) {
       setMapTarget(liveTarget);
+      prevPhaseForCameraRef.current = phase;
       return;
     }
-    if (phase !== 'playing') {
+    const enteredPlaying = prevPhaseForCameraRef.current !== 'playing' && phase === 'playing';
+    // Keep syncing while not in the match (menus / placement); on first frame of play, snap to capital / live target
+    if (phase !== 'playing' || enteredPlaying) {
       setMapTarget(liveTarget);
     }
+    prevPhaseForCameraRef.current = phase;
   }, [liveTarget, phase, isBotWatch]);
 
   useEscapeKey();

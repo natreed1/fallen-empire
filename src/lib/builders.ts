@@ -31,7 +31,7 @@ export function universityTaskMatchesSiteType(task: BuilderTask, siteType: Const
     case 'expand_forestry':
       return siteType === 'logging_hut' || siteType === 'sawmill';
     case 'city_defenses':
-      return siteType === 'city_defense';
+      return siteType === 'city_defense' || siteType === 'wall_section';
     default:
       return false;
   }
@@ -69,7 +69,7 @@ export function computeConstructionAvailableBp(
   const key = tileKey(site.q, site.r);
   let avail = 0;
 
-  if (site.type !== 'trebuchet' && site.type !== 'scout_tower' && site.type !== 'city_defense') {
+  if (site.type !== 'trebuchet' && site.type !== 'scout_tower' && site.type !== 'city_defense' && site.type !== 'wall_section') {
     const terr = territory.get(key);
     if (terr && terr.playerId === site.ownerId) avail += CITY_BUILDING_POWER;
   }

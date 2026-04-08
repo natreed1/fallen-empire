@@ -1,15 +1,16 @@
 import {
   City, Unit, Player, Tile, GameNotification, TerritoryInfo, CityBuilding, Hero,
   Biome, TERRAIN_FOOD_YIELD, BUILDING_PRODUCTION, BUILDING_JOBS, CITY_CENTER_STORAGE,
-  MARKET_GOLD_PER_CYCLE, POP_BIRTH_RATE, POP_NATURAL_DEATHS,   POP_CARRYING_CAPACITY_PER_FOOD, POP_EXPECTED_K_ALPHA, STARVATION_DEATHS,
+  MARKET_GOLD_PER_VILLAGE, POP_BIRTH_RATE, POP_NATURAL_DEATHS,   POP_CARRYING_CAPACITY_PER_FOOD, POP_EXPECTED_K_ALPHA, STARVATION_DEATHS,
   FACTORY_L2_IRON_PER_CYCLE, FACTORY_L2_ARMS_PER_CYCLE, UNEMPLOYMENT_MORALE_PENALTY, UNEMPLOYMENT_MORALE_PENALTY_CAP,
-  FARM_L2_FOOD_PER_CYCLE, getBuildingJobs, PRODUCTIVITY_NORMALIZE,
+  FARM_L2_FOOD_PER_CYCLE,   getBuildingJobs, PRODUCTIVITY_NORMALIZE,
   WORKERS_PER_LEVEL, MIN_STAFFING_RATIO, getUnitStats,
+  isCityBuildingOperational,
   generateId, tileKey, parseTileKey, hexDistance,
   FRONTIER_CYCLES, FRONTIER_MIGRATION_BONUS, MIGRATION_BASE_RATE,
   PLAINS_FARM_FOOD_MULT, SAWMILL_WOOD_PER_REFINED, isFarmBuildingType,
 } from '@/types/game';
-import { computeTradeClusters, TradeCluster, getSupplyingClusterKey } from '@/lib/logistics';
+import { countVillagesInPlayerTerritory, isUnitInSupplyVicinityOfPlayerCities } from '@/lib/empireEconomy';
 
 /** Per-cycle production rates for a city (for UI display). */
 export function computeCityProductionRate(
@@ -30,6 +31,7 @@ export function computeCityProductionRate(
   let buildingWood = 0, buildingRefined = 0;
   for (const b of city.buildings) {
     if (b.type === 'city_center' || b.type === 'barracks' || b.type === 'academy' || b.type === 'port' || b.type === 'shipyard') continue;
+    if (!isCityBuildingOperational(b)) continue;
     const prod = BUILDING_PRODUCTION[b.type];
     const lvl = (b as CityBuilding).level ?? 1;
     const jobs = getBuildingJobs(b);
@@ -98,8 +100,8 @@ export function computeSawmillBuildingPreview(city: City, building: CityBuilding
   };
 }
 
-/** Per-cycle income statement for a cluster (for supply map UI). */
-export interface ClusterIncomeStatement {
+/** Per-cycle income statement for a player empire (supply map UI). */
+export interface EmpireIncomeStatement {
   food: { income: number; expense: number; net: number };
   goods: { income: number; expense: number; net: number };
   iron: { income: number; expense: number; net: number };
@@ -109,8 +111,10 @@ export interface ClusterIncomeStatement {
   foodSurplus: boolean;
 }
 
-export function computeClusterIncomeStatement(
-  cluster: TradeCluster,
+/** @deprecated Use EmpireIncomeStatement */
+export type ClusterIncomeStatement = EmpireIncomeStatement;
+
+export function computeEmpireIncomeStatement(
   cities: City[],
   units: Unit[],
   tiles: Map<string, Tile>,
@@ -118,36 +122,44 @@ export function computeClusterIncomeStatement(
   heroes: Hero[],
   playerId: string,
   harvestMultiplier: number = 1.0,
-): ClusterIncomeStatement {
-  const clusterCities = cluster.cities;
-  const clusterKey = cluster.cityIds.join(',');
+): EmpireIncomeStatement {
+  const empireCities = cities.filter(c => c.ownerId === playerId);
+  if (empireCities.length === 0) {
+    return {
+      food: { income: 0, expense: 0, net: 0 },
+      goods: { income: 0, expense: 0, net: 0 },
+      iron: { income: 0, expense: 0, net: 0 },
+      arms: { income: 0, expense: 0, net: 0 },
+      armsL2: { income: 0, expense: 0, net: 0 },
+      stone: { income: 0, expense: 0, net: 0 },
+      foodSurplus: true,
+    };
+  }
 
-  const foodIncome = clusterCities.reduce((s, c) => {
+  const foodIncome = empireCities.reduce((s, c) => {
     return s + computeCityProductionRate(c, tiles, territory, harvestMultiplier).food;
   }, 0);
-  const ironIncome = clusterCities.reduce((s, c) => {
+  const ironIncome = empireCities.reduce((s, c) => {
     return s + computeCityProductionRate(c, tiles, territory, harvestMultiplier).iron;
   }, 0);
-  const armsIncome = clusterCities.reduce((s, c) => {
+  const armsIncome = empireCities.reduce((s, c) => {
     return s + computeCityProductionRate(c, tiles, territory, harvestMultiplier).guns;
   }, 0);
-  const stoneIncome = clusterCities.reduce((s, c) => {
+  const stoneIncome = empireCities.reduce((s, c) => {
     return s + computeCityProductionRate(c, tiles, territory, harvestMultiplier).stone;
   }, 0);
 
-  const foodExpenseCiv = Math.ceil(clusterCities.reduce((s, c) => s + c.population, 0) * 0.25);
+  const foodExpenseCiv = Math.ceil(empireCities.reduce((s, c) => s + c.population, 0) * 0.25);
 
-  const clusterUnits = units.filter(u => {
-    if (u.hp <= 0) return false;
-    if (u.ownerId !== playerId) return false;
-    const key = getSupplyingClusterKey(u, [cluster], tiles, units, playerId);
-    return key === clusterKey;
+  const suppliedUnits = units.filter(u => {
+    if (u.hp <= 0 || u.ownerId !== playerId) return false;
+    return isUnitInSupplyVicinityOfPlayerCities(u, empireCities);
   });
 
   let foodExpenseMil = 0;
   let armsExpense = 0;
   let armsL2Expense = 0;
-  for (const u of clusterUnits) {
+  for (const u of suppliedUnits) {
     const stats = getUnitStats(u);
     let foodUp = stats.foodUpkeep;
     const heroAtUnit = heroes.find(h => h.q === u.q && h.r === u.r && h.ownerId === u.ownerId && h.type === 'logistician');
@@ -159,8 +171,8 @@ export function computeClusterIncomeStatement(
 
   const foodExpense = foodExpenseCiv + foodExpenseMil;
 
-  const l2FactoryCount = clusterCities.filter(c =>
-    c.buildings.some(b => b.type === 'factory' && ((b as CityBuilding).level ?? 1) >= 2)
+  const l2FactoryCount = empireCities.filter(c =>
+    c.buildings.some(b => b.type === 'factory' && ((b as CityBuilding).level ?? 1) >= 2),
   ).length;
   const ironExpense = l2FactoryCount * FACTORY_L2_IRON_PER_CYCLE;
 
@@ -185,8 +197,6 @@ export interface TurnResult {
   units: Unit[];
   players: Player[];
   notifications: GameNotification[];
-  /** Precomputed trade clusters (cities, tiles, units, territory); callers may reuse for upkeep. */
-  clusters?: Map<string, TradeCluster[]>;
 }
 
 // ─── Process Economy Cycle ──────────────────────────────────────────
@@ -212,18 +222,16 @@ export function processEconomyTurn(
     notifications.push({ id: generateId('notif'), turn, message: msg, type });
   };
 
-  const clusters = computeTradeClusters(newCities, tiles, units, territory);
-
   autoAssignWorkersPhase(newCities);
   const foodProduced = productionPhase(newCities, tiles, territory, notify, harvestMultiplier);
-  clusterResourcePhase(newCities, clusters, newPlayers, notify);
-  consumptionPhase(newCities, newPlayers, clusters, notify);
-  populationGrowthPhase(newCities, foodProduced, clusters, notify);
+  playerResourcePhase(newCities, newPlayers, notify);
+  consumptionPhase(newCities, newPlayers, notify);
+  populationGrowthPhase(newCities, foodProduced, notify);
   migrationPhase(newCities, newPlayers, turn, notify, foodProduced);
-  economicsPhase(newCities, newPlayers, notify);
+  economicsPhase(newCities, newPlayers, tiles, territory, notify);
   moraleDrift(newCities, newPlayers);
 
-  return { cities: newCities, units: newUnits, players: newPlayers, notifications, clusters };
+  return { cities: newCities, units: newUnits, players: newPlayers, notifications };
 }
 
 // ─── Phase 0: Auto-assign workers ───────────────────────────────────
@@ -293,6 +301,7 @@ function productionPhase(
     let sawmillWoodUsed = 0;
     for (const b of city.buildings) {
       if (b.type === 'city_center' || b.type === 'barracks' || b.type === 'academy' || b.type === 'port' || b.type === 'shipyard') continue;
+      if (!isCityBuildingOperational(b)) continue;
       const prod = BUILDING_PRODUCTION[b.type];
       const lvl = (b as CityBuilding).level ?? 1;
       const jobs = getBuildingJobs(b);
@@ -324,8 +333,7 @@ function productionPhase(
       }
     }
 
-    // L2 factory iron consumption is handled at cluster level in clusterResourcePhase
-    // (iron/stone flow along roads within clusters)
+    // L2 factory iron consumption is handled in playerResourcePhase (empire iron pool)
     // Storage cap comes from city center (1 per city)
     city.storageCap = { ...CITY_CENTER_STORAGE };
 
@@ -339,7 +347,7 @@ function productionPhase(
 
     city.storage.food = Math.min(city.storageCap.food, city.storage.food + totalFood);
     city.storage.guns = Math.min(city.storageCap.guns, city.storage.guns + totalGuns);
-    city.storage.gunsL2 = Math.min(city.storageCap.gunsL2, city.storage.gunsL2); // L2 added in clusterResourcePhase
+    city.storage.gunsL2 = Math.min(city.storageCap.gunsL2, city.storage.gunsL2); // L2 added in playerResourcePhase
     city.storage.iron = Math.min(city.storageCap.iron, city.storage.iron + totalIronRaw);
     city.storage.stone = Math.min(city.storageCap.stone, city.storage.stone + totalStone);
 
@@ -368,53 +376,47 @@ function productionPhase(
   return foodProduced;
 }
 
-// ─── Phase 1b: Cluster Resource Allocation (iron/stone flow along roads) ───
-// Within each trade cluster, iron and stone are pooled and allocated where needed.
-// L2 factories consume iron from the cluster pool and produce gunsL2.
-function clusterResourcePhase(
-  _cities: City[],
-  clusters: Map<string, TradeCluster[]>,
+// ─── Phase 1b: Empire resource allocation ───
+// Iron is pooled per player; L2 factories consume from the pool and produce gunsL2.
+function playerResourcePhase(
+  cities: City[],
   players: Player[],
   notify: (msg: string, type: GameNotification['type']) => void,
 ) {
   const humanId = players.find(p => p.isHuman)?.id;
-  for (const [playerId, playerClusters] of clusters) {
-    for (const cluster of playerClusters) {
-      const clusterCities = cluster.cities;
-      if (clusterCities.length === 0) continue;
+  for (const player of players) {
+    const playerCities = cities.filter(c => c.ownerId === player.id);
+    if (playerCities.length === 0) continue;
 
-      const totalIron = clusterCities.reduce((s, c) => s + (c.storage.iron ?? 0), 0);
+    const totalIron = playerCities.reduce((s, c) => s + (c.storage.iron ?? 0), 0);
 
-      // L2 factories: consume iron from cluster pool, produce gunsL2
-      const l2Cities = clusterCities.filter(c =>
-        c.buildings.some(b => b.type === 'factory' && ((b as CityBuilding).level ?? 1) >= 2)
+    const l2Cities = playerCities.filter(c =>
+      c.buildings.some(b => b.type === 'factory' && ((b as CityBuilding).level ?? 1) >= 2),
+    );
+    const l2Count = l2Cities.length;
+    const ironNeeded = l2Count * FACTORY_L2_IRON_PER_CYCLE;
+    const ironUsed = Math.min(totalIron, ironNeeded);
+    const gunsL2Produced = Math.floor(ironUsed * (FACTORY_L2_ARMS_PER_CYCLE / FACTORY_L2_IRON_PER_CYCLE));
+    const gunsPerCity = l2Count > 0 ? Math.floor(gunsL2Produced / l2Count) : 0;
+
+    for (const city of l2Cities) {
+      city.storage.gunsL2 = Math.min(
+        city.storageCap.gunsL2,
+        city.storage.gunsL2 + gunsPerCity,
       );
-      const l2Count = l2Cities.length;
-      const ironNeeded = l2Count * FACTORY_L2_IRON_PER_CYCLE;
-      const ironUsed = Math.min(totalIron, ironNeeded);
-      const gunsL2Produced = Math.floor(ironUsed * (FACTORY_L2_ARMS_PER_CYCLE / FACTORY_L2_IRON_PER_CYCLE));
-      const gunsPerCity = l2Count > 0 ? Math.floor(gunsL2Produced / l2Count) : 0;
+    }
+    if (gunsL2Produced > 0 && player.id === humanId) {
+      notify(`Empire: +${gunsL2Produced} L2 arms (from ${ironUsed} iron)`, 'info');
+    }
 
-      for (const city of l2Cities) {
-        city.storage.gunsL2 = Math.min(
-          city.storageCap.gunsL2,
-          city.storage.gunsL2 + gunsPerCity
-        );
-      }
-      if (gunsL2Produced > 0 && playerId === humanId) {
-        notify(`Cluster: +${gunsL2Produced} L2 arms (from ${ironUsed} iron)`, 'info');
-      }
-
-      // Deduct iron from cluster (take from cities that have it)
-      let toDeduct = ironUsed;
-      for (const city of clusterCities) {
-        if (toDeduct <= 0) break;
-        const avail = city.storage.iron ?? 0;
-        const take = Math.min(avail, toDeduct);
-        if (take > 0) {
-          city.storage.iron = Math.max(0, avail - take);
-          toDeduct -= take;
-        }
+    let toDeduct = ironUsed;
+    for (const city of playerCities) {
+      if (toDeduct <= 0) break;
+      const avail = city.storage.iron ?? 0;
+      const take = Math.min(avail, toDeduct);
+      if (take > 0) {
+        city.storage.iron = Math.max(0, avail - take);
+        toDeduct -= take;
       }
     }
   }
@@ -425,38 +427,33 @@ function clusterResourcePhase(
 function consumptionPhase(
   cities: City[],
   players: Player[],
-  clusters: Map<string, TradeCluster[]>,
   notify: (msg: string, type: GameNotification['type']) => void,
 ) {
   for (const player of players) {
-    const playerClusters = clusters.get(player.id) ?? [];
-    for (const cluster of playerClusters) {
-      const clusterCities = cluster.cities;
-      if (clusterCities.length === 0) continue;
+    const playerCities = cities.filter(c => c.ownerId === player.id);
+    if (playerCities.length === 0) continue;
 
-      const totalFood = clusterCities.reduce((sum, c) => sum + c.storage.food, 0);
-      const totalDemand = Math.ceil(clusterCities.reduce((sum, c) => sum + c.population, 0) * 0.25);
+    const totalFood = playerCities.reduce((sum, c) => sum + c.storage.food, 0);
+    const totalDemand = Math.ceil(playerCities.reduce((sum, c) => sum + c.population, 0) * 0.25);
 
-      if (totalFood >= totalDemand) {
-        deductFromPlayerCities(clusterCities, 'food', totalDemand);
-        for (const city of clusterCities) {
-          city.morale = Math.min(100, city.morale + 3);
-        }
-      } else {
-        for (const city of clusterCities) city.storage.food = 0;
-        const unfed = totalDemand - totalFood;
-        for (const city of clusterCities) {
-          const cityShare = totalDemand > 0 ? city.population / totalDemand : 0;
-          const cityUnfed = Math.ceil(unfed * cityShare);
-          const deaths = Math.ceil(cityUnfed / 2);
-          city.population = Math.max(1, city.population - deaths);
-          city.morale = Math.max(0, city.morale - 15);
-          if (player.isHuman && deaths > 0) {
-            notify(`Starvation in ${city.name}! -${deaths} pop`, 'danger');
-          }
+    if (totalFood >= totalDemand) {
+      deductFromPlayerCities(playerCities, 'food', totalDemand);
+      for (const city of playerCities) {
+        city.morale = Math.min(100, city.morale + 3);
+      }
+    } else {
+      for (const city of playerCities) city.storage.food = 0;
+      const unfed = totalDemand - totalFood;
+      for (const city of playerCities) {
+        const cityShare = totalDemand > 0 ? city.population / totalDemand : 0;
+        const cityUnfed = Math.ceil(unfed * cityShare);
+        const deaths = Math.ceil(cityUnfed / 2);
+        city.population = Math.max(1, city.population - deaths);
+        city.morale = Math.max(0, city.morale - 15);
+        if (player.isHuman && deaths > 0) {
+          notify(`Starvation in ${city.name}! -${deaths} pop`, 'danger');
         }
       }
-
     }
   }
 }
@@ -481,13 +478,12 @@ function deductFromPlayerCities(cities: City[], resource: 'food' | 'goods' | 'gu
 //   deaths = natural deaths + starvation deaths (when storage.food <= 0)
 //   netGrowth = births - deaths
 //
-// Expected K: EMA of actual K (production-based). Initialized from cluster total
-// production when unset (per-city share of cluster carrying capacity).
+// Expected K: EMA of actual K (production-based). Initialized from empire total
+// production when unset (per-city share of empire carrying capacity).
 
 function populationGrowthPhase(
   cities: City[],
   foodProduced: Record<string, number>,
-  clusters: Map<string, TradeCluster[]>,
   notify: (msg: string, type: GameNotification['type']) => void,
 ) {
   for (const city of cities) {
@@ -498,13 +494,11 @@ function populationGrowthPhase(
     // Initialize or update expected carrying capacity (smoothed; ~2–4 cycle lag)
     let K_expected = city.expectedCarryingCapacity;
     if (K_expected == null) {
-      // Base initial expected K on cluster: total cluster production → cluster K → per-city share
-      const playerClusters = clusters.get(city.ownerId) ?? [];
-      const cluster = playerClusters.find(cl => cl.cityIds.includes(city.id));
-      if (cluster && cluster.cities.length > 0) {
-        const clusterFood = cluster.cityIds.reduce((s, cid) => s + (foodProduced[cid] ?? 0), 0);
-        const K_cluster = Math.max(10, clusterFood * POP_CARRYING_CAPACITY_PER_FOOD);
-        K_expected = Math.max(10, Math.floor(K_cluster / cluster.cities.length));
+      const playerCities = cities.filter(c => c.ownerId === city.ownerId);
+      if (playerCities.length > 0) {
+        const empireFood = playerCities.reduce((s, c) => s + (foodProduced[c.id] ?? 0), 0);
+        const K_empire = Math.max(10, empireFood * POP_CARRYING_CAPACITY_PER_FOOD);
+        K_expected = Math.max(10, Math.floor(K_empire / playerCities.length));
       } else {
         K_expected = K_actual;
       }
@@ -671,35 +665,35 @@ function migrationPhase(
 //
 // Tax now scales directly with population:
 //   baseTax = floor(population * taxRate)
-//   wealthBonus = floor(population * wealthFactor * taxRate * 0.5) — goods enhance tax
-//   marketGold = markets * MARKET_GOLD_PER_CYCLE * moraleMod
-//   totalGold = baseTax + wealthBonus + marketGold
+//   marketGold = per market: floor(MARKET_GOLD_PER_VILLAGE * empireVillages * moraleMod * staffRatio)
+//   totalGold = baseTax + marketGold + goldMineGold
 
 function economicsPhase(
   cities: City[],
   players: Player[],
+  tiles: Map<string, Tile>,
+  territory: Map<string, TerritoryInfo>,
   notify: (msg: string, type: GameNotification['type']) => void,
 ) {
   for (const player of players) {
     const playerCities = cities.filter(c => c.ownerId === player.id);
+    const villageCount = countVillagesInPlayerTerritory(player.id, cities, territory, tiles);
     let totalTax = 0;
     let totalMarketGold = 0;
-
     let totalGoldMineGold = 0;
-    for (const city of playerCities) {
-      // Base tax: scales directly with population
-      const baseTax = Math.floor(city.population * player.taxRate);
 
+    for (const city of playerCities) {
+      const baseTax = Math.floor(city.population * player.taxRate);
       totalTax += baseTax;
 
-      // Market and gold_mine building gold income (scaled by staffing)
       const moraleMod = city.morale / 100;
+
       for (const b of city.buildings) {
         if (b.type === 'market') {
           const jobs = BUILDING_JOBS.market;
           const assigned = (b as CityBuilding).assignedWorkers ?? 0;
           const staffRatio = jobs > 0 ? Math.min(1, assigned / jobs) : 0;
-          totalMarketGold += Math.floor(MARKET_GOLD_PER_CYCLE * moraleMod * staffRatio);
+          totalMarketGold += Math.floor(MARKET_GOLD_PER_VILLAGE * villageCount * moraleMod * staffRatio);
         } else if (b.type === 'gold_mine') {
           const prod = BUILDING_PRODUCTION.gold_mine;
           const goldPerCycle = prod.gold ?? 0;

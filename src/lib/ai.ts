@@ -1,10 +1,10 @@
 import {
-  City, Unit, Player, Tile, TerritoryInfo, Hero, WallSection,
+  City, Unit, Player, Tile, TerritoryInfo, WallSection,
   BuildingType, UnitType, BUILDING_COSTS, UNIT_COSTS, UNIT_L2_COSTS, UNIT_L3_COSTS, getUnitStats,
   BARACKS_UPGRADE_COST, FACTORY_UPGRADE_COST, FARM_UPGRADE_COST,
   hexDistance, hexNeighbors, tileKey, generateId, getHexRing, parseTileKey,
-  STARTING_CITY_TEMPLATE, HERO_NAMES, CITY_CENTER_STORAGE,
-  BUILDING_IRON_COSTS, SCOUT_MISSION_COST, VILLAGE_INCORPORATE_COST, DEFENDER_IRON_COST, HERO_BASE_HP,
+  STARTING_CITY_TEMPLATE, CITY_CENTER_STORAGE,
+  BUILDING_IRON_COSTS, SCOUT_MISSION_COST, VILLAGE_INCORPORATE_COST, DEFENDER_IRON_COST,
   WALL_SECTION_STONE_COST, WALL_SECTION_HP,
   MapConfig,
   Commander, ScrollItem, ScrollAttachment, BuilderTask,
@@ -77,6 +77,15 @@ export interface AiUniversityTaskAction {
   task: 'expand_quarries' | 'expand_iron_mines' | 'expand_forestry' | 'city_defenses';
 }
 
+export interface AiStanceAction {
+  unitId: string;
+  stance: import('@/types/game').ArmyStance;
+}
+
+export interface AiRetreatAction {
+  unitId: string;
+}
+
 export interface AiActions {
   builds: AiBuildAction[];
   upgrades: AiUpgradeAction[];
@@ -88,6 +97,8 @@ export interface AiActions {
   commanderAssignments: AiCommanderAssignAction[];
   scrollAttachments: AiScrollAttachAction[];
   universityTasks: AiUniversityTaskAction[];
+  stanceChanges: AiStanceAction[];
+  retreats: AiRetreatAction[];
 }
 
 // ─── Evolvable AI Parameters (for self-improvement / training) ───────
@@ -156,12 +167,6 @@ export interface AiParams {
   villageDefensePriority: number;
   /** Priority for recapturing villages (0–1). */
   villageRecapturePriority: number;
-  /** Priority for cluster interdiction (0–1). */
-  clusterInterdictionPriority: number;
-  /** Share of forces committed to cluster isolation (0–1). */
-  clusterIsolationCommitShare: number;
-  /** Duration to maintain cluster isolation (cycles). */
-  clusterIsolationDuration: number;
   /** Share of melee on frontline (0–1). */
   frontlineMeleeShare: number;
   /** Preferred distance of backline ranged (hexes). */
@@ -266,9 +271,6 @@ export const DEFAULT_AI_PARAMS: AiParams = {
   targetDispersion: 0.5,
   villageDefensePriority: 0.5,
   villageRecapturePriority: 0.6,
-  clusterInterdictionPriority: 0.4,
-  clusterIsolationCommitShare: 0.3,
-  clusterIsolationDuration: 5,
   frontlineMeleeShare: 0.6,
   backlineRangedDistance: 3,
   siegeBacklineDistance: 4,
@@ -384,10 +386,10 @@ export function planAiTurn(
   const aiCities = cities.filter(c => c.ownerId === aiPlayerId);
   const aiPlayer = players.find(p => p.id === aiPlayerId);
   if (!aiPlayer || aiCities.length === 0) {
-    return { builds: [], upgrades: [], recruits: [], moveTargets: [], scouts: [], incorporateVillages: [], buildWallRings: [], commanderAssignments: [], scrollAttachments: [], universityTasks: [] };
+    return { builds: [], upgrades: [], recruits: [], moveTargets: [], scouts: [], incorporateVillages: [], buildWallRings: [], commanderAssignments: [], scrollAttachments: [], universityTasks: [], stanceChanges: [], retreats: [] };
   }
 
-  const actions: AiActions = { builds: [], upgrades: [], recruits: [], moveTargets: [], scouts: [], incorporateVillages: [], buildWallRings: [], commanderAssignments: [], scrollAttachments: [], universityTasks: [] };
+  const actions: AiActions = { builds: [], upgrades: [], recruits: [], moveTargets: [], scouts: [], incorporateVillages: [], buildWallRings: [], commanderAssignments: [], scrollAttachments: [], universityTasks: [], stanceChanges: [], retreats: [] };
   let goldBudget = aiPlayer.gold;
   const enemyCities = cities.filter(c => c.ownerId !== aiPlayerId);
   const aiUnits = units.filter(u => u.ownerId === aiPlayerId && u.hp > 0);
@@ -747,6 +749,70 @@ export function planAiTurn(
     }
   }
 
+  // ── Combat evaluation: retreat when losing badly, set stances tactically, attempt flanking ──
+  {
+    const fightingUnits = aiUnits.filter(u => u.status === 'fighting' && u.hp > 0 && !isNavalUnitType(u.type));
+    const fightingByHex = new Map<string, Unit[]>();
+    for (const u of fightingUnits) {
+      const k = tileKey(u.q, u.r);
+      const arr = fightingByHex.get(k) ?? [];
+      arr.push(u);
+      fightingByHex.set(k, arr);
+    }
+
+    for (const [hexK, myStack] of fightingByHex) {
+      const [hq, hr] = hexK.split(',').map(Number);
+      const enemyHere = units.filter(u => u.ownerId !== aiPlayerId && u.hp > 0 && u.q === hq && u.r === hr && !u.aboardShipId);
+      if (enemyHere.length === 0) continue;
+
+      const myPower = myStack.reduce((s, u) => s + getUnitStats(u).attack * u.hp, 0);
+      const enPower = enemyHere.reduce((s, u) => s + getUnitStats(u).attack * u.hp, 0);
+      const ratio = enPower > 0 ? myPower / enPower : 10;
+
+      if (ratio < 0.33) {
+        for (const u of myStack) {
+          if (!u.retreatAt) actions.retreats.push({ unitId: u.id });
+        }
+      } else if (ratio < 0.6) {
+        const rangedUnits = myStack.filter(u => getUnitStats(u).range >= 2);
+        for (const u of rangedUnits) {
+          actions.stanceChanges.push({ unitId: u.id, stance: 'skirmish' });
+        }
+        const melee = myStack.filter(u => getUnitStats(u).range <= 1);
+        for (const u of melee) {
+          actions.stanceChanges.push({ unitId: u.id, stance: 'defensive' });
+        }
+      } else if (ratio > 1.5) {
+        for (const u of myStack) {
+          actions.stanceChanges.push({ unitId: u.id, stance: 'aggressive' });
+        }
+      }
+    }
+
+    // Flanking: if AI has idle military near a battle hex, route them to attack from a different side
+    for (const [hexK, myStack] of fightingByHex) {
+      const [hq, hr] = hexK.split(',').map(Number);
+      const neighbors = hexNeighbors(hq, hr);
+      const emptyNeighbors = neighbors.filter(([nq, nr]) => {
+        const t = tiles.get(tileKey(nq, nr));
+        if (!t || t.biome === 'water') return false;
+        return !units.some(u => u.q === nq && u.r === nr && u.hp > 0 && !u.aboardShipId);
+      });
+      if (emptyNeighbors.length === 0) continue;
+
+      const nearbyIdle = aiUnits.filter(u =>
+        u.hp > 0 && u.type !== 'builder' && !isNavalUnitType(u.type) &&
+        u.status !== 'fighting' && !unitIdsAlreadyTargeted.has(u.id) &&
+        hexDistance(u.q, u.r, hq, hr) <= 4 && hexDistance(u.q, u.r, hq, hr) > 1
+      );
+      const [flankQ, flankR] = emptyNeighbors[Math.floor(Math.random() * emptyNeighbors.length)];
+      for (const u of nearbyIdle.slice(0, 3)) {
+        actions.moveTargets.push({ unitId: u.id, toQ: flankQ, toR: flankR });
+        unitIdsAlreadyTargeted.add(u.id);
+      }
+    }
+  }
+
   // ── Commander field assignment: attach idle city-defense commanders to army stacks ──
   const fieldAssignRate = Math.max(0, Math.min(1, params.commanderFieldAssignRate ?? 0.4));
   const minArmySize = Math.max(1, Math.round(params.commanderMinArmySize ?? 3));
@@ -863,21 +929,6 @@ export function planAiTurn(
   }
 
   return actions;
-}
-
-// ─── AI Hero Spawning ──────────────────────────────────────────────
-
-let heroNameIdx = 0;
-export function createAiHero(q: number, r: number, ownerId: string): Hero {
-  return {
-    id: generateId('hero'),
-    name: HERO_NAMES[heroNameIdx++ % HERO_NAMES.length],
-    type: 'general',
-    q, r,
-    ownerId,
-    hp: HERO_BASE_HP,
-    maxHp: HERO_BASE_HP,
-  };
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────
@@ -1124,10 +1175,10 @@ function placeOneAiApartFromPoints(
 ): City | null {
   const w = config.width;
   const h = config.height;
-  const minSep = Math.max(6, Math.floor(Math.min(w, h) * 0.12));
-  const idealSep = minSep + Math.floor(Math.min(w, h) * 0.12);
-  const maxSep = Math.floor(Math.min(w, h) * 0.55);
-  const margin = Math.max(3, Math.floor(Math.min(w, h) * 0.08));
+  const mapMin = Math.min(w, h);
+  /** Minimum hex distance to any existing capital — higher than before so FFA / many-AI starts are not cheek-by-jowl. */
+  const minSep = Math.max(10, Math.floor(mapMin * 0.18) + Math.floor(Math.max(0, placed.length - 2) * 2));
+  const margin = Math.max(3, Math.floor(mapMin * 0.08));
   const seedMix = config.seed ^ salt * 0x9e3779b9;
 
   const isInMapMargin = (q: number, r: number) =>
@@ -1136,38 +1187,33 @@ function placeOneAiApartFromPoints(
   const minDistToPlaced = (q: number, r: number) =>
     Math.min(...placed.map(p => hexDistance(q, r, p.q, p.r)));
 
-  const scoreCandidate = (c: AiStartCandMulti): number => {
-    const distPenalty = Math.abs(c.minD - idealSep);
-    return c.landFrac * 10 - distPenalty * 0.4;
-  };
+  /** Prefer good local land and being far from the nearest existing capital (spread), not a narrow “ideal ring” distance. */
+  const scoreCandidate = (c: AiStartCandMulti): number => c.landFrac * 10 + c.minD * 0.72;
 
-  let all: AiStartCandMulti[] = [];
-  for (const tile of tiles.values()) {
-    if (!isCapitalStartHex(tile)) continue;
-    if (placed.some(p => p.q === tile.q && p.r === tile.r)) continue;
-    if (isInMapMargin(tile.q, tile.r)) continue;
-    const minD = minDistToPlaced(tile.q, tile.r);
-    if (minD < minSep || minD > maxSep) continue;
-    const landFrac = landFractionInDisk(tiles, tile.q, tile.r, AI_START_LAND_DISK_RADIUS);
-    all.push({ q: tile.q, r: tile.r, landFrac, minD });
-  }
-
-  if (all.length === 0) {
+  const collect = (minSepRequired: number, respectMargin: boolean): AiStartCandMulti[] => {
+    const out: AiStartCandMulti[] = [];
     for (const tile of tiles.values()) {
       if (!isCapitalStartHex(tile)) continue;
       if (placed.some(p => p.q === tile.q && p.r === tile.r)) continue;
+      if (respectMargin && isInMapMargin(tile.q, tile.r)) continue;
       const minD = minDistToPlaced(tile.q, tile.r);
-      if (minD < minSep) continue;
+      if (minD < minSepRequired) continue;
       const landFrac = landFractionInDisk(tiles, tile.q, tile.r, AI_START_LAND_DISK_RADIUS);
-      all.push({ q: tile.q, r: tile.r, landFrac, minD });
+      out.push({ q: tile.q, r: tile.r, landFrac, minD });
     }
-  }
+    return out;
+  };
+
+  let all = collect(minSep, true);
+  if (all.length === 0) all = collect(minSep, false);
+  if (all.length === 0) all = collect(Math.max(6, minSep - 4), false);
+  if (all.length === 0) all = collect(4, false);
 
   if (all.length === 0) return null;
 
   all.sort((a, b) => scoreCandidate(b) - scoreCandidate(a));
 
-  const topN = Math.min(10, all.length);
+  const topN = Math.min(12, all.length);
   const idx = Math.abs(seedMix) % topN;
   const chosen = all[idx]!;
   return placeAiStartingCityAt(aiPlayerId, chosen.q, chosen.r, tiles);
@@ -1203,13 +1249,17 @@ function pickFirstSpectateCapital(
   const cq = Math.floor(w / 2);
   const cr = Math.floor(h / 2);
   let best: AiStartCandMulti | null = null;
+  let bestScore = -Infinity;
   for (const tile of tiles.values()) {
     if (!isCapitalStartHex(tile)) continue;
     const landFrac = landFractionInDisk(tiles, tile.q, tile.r, AI_START_LAND_DISK_RADIUS);
     const distCenter = hexDistance(tile.q, tile.r, cq, cr);
     const cand: AiStartCandMulti = { q: tile.q, r: tile.r, landFrac, minD: distCenter };
-    if (!best || cand.landFrac > best.landFrac || (cand.landFrac === best.landFrac && cand.minD > best.minD)) {
+    /** Prefer viable land, but also away from map center so the first capital anchors spread instead of sitting in the densest cluster. */
+    const score = landFrac * 10 + distCenter * 0.28;
+    if (!best || score > bestScore) {
       best = cand;
+      bestScore = score;
     }
   }
   return best ? { q: best.q, r: best.r } : null;

@@ -1,35 +1,99 @@
 'use client';
 
-import { useMemo, useRef, useEffect, useLayoutEffect, useState } from 'react';
+import { Fragment, useMemo, useRef, useEffect, useLayoutEffect, useState } from 'react';
 import * as THREE from 'three';
 import { useFrame } from '@react-three/fiber';
 import { Html } from '@react-three/drei';
 import { useGameStore } from '@/store/useGameStore';
 import {
-  Biome, Tile, City, Unit, Hero, Commander, ConstructionSite, WallSection, RoadConstructionSite, ScoutTower,
+  Biome, Tile, City, Unit, Commander, ConstructionSite, WallSection, RoadConstructionSite, ScoutTower,
   DefenseInstallation, DefenseTowerType,
   DEFENSE_TOWER_MORTAR_RANGE, DEFENSE_TOWER_ARCHER_RANGE,
   BuildingType,
   WeatherEventType,
   BIOME_COLORS, BIOME_COLORS_DARK, ROAD_COLOR,
-  MOUNTAIN_SNOW_COLOR, PLAYER_COLORS,
+  MOUNTAIN_SNOW_COLOR,
   HEX_RADIUS, HEX_INNER_RATIO, axialToWorld, tileKey, parseTileKey, hexDistance, hexNeighbors,
   CONTESTED_ZONE_COLOR, GOLD_MINE_DEPOSIT_COLOR, QUARRY_DEPOSIT_COLOR, WOOD_DEPOSIT_COLOR,
   isNavalUnitType, MOVE_ORDER_MAX_IN_TERRITORY_BAND,
+  ensureCityBuildingHp, isCityBuildingOperational,
   SPECIAL_REGION_OVERLAY_COLORS,
   type SpecialRegionKind,
+  type Player,
 } from '@/types/game';
 import { isGarrisonedAtCity } from '@/lib/garrison';
+import { universityTaskMatchesSiteType, getCityUniversityTask } from '@/lib/builders';
 import { createTerrainHexTopGeometry, defaultBiomePaintRadius } from '@/lib/hexTopGeometry';
 import type { DefenseVolleyFx, RangedShotFx } from '@/lib/military';
 
 const PLAYER_HUMAN_ID = 'player_human';
+
+/** Resolve map/entity tint from live player list (supports multi-AI distinct colors). */
+function playerColorOrDefault(players: Pick<Player, 'id' | 'color'>[], ownerId: string, fallback = '#888888'): string {
+  return players.find(p => p.id === ownerId)?.color ?? fallback;
+}
+
+function unitSpriteTint(
+  players: Pick<Player, 'id' | 'color'>[],
+  ownerId: string,
+  status: Unit['status'],
+): string {
+  const isHuman = ownerId === PLAYER_HUMAN_ID;
+  const rawColor = isHuman ? '#ffffff' : playerColorOrDefault(players, ownerId);
+  // Lerp enemy colors toward white so the multiplicative sprite tint stays vivid
+  // instead of crushing the pixel art to a dark muddy hue.
+  const base = isHuman
+    ? rawColor
+    : '#' + new THREE.Color(rawColor).lerp(new THREE.Color('#ffffff'), 0.45).getHexString();
+  if (status === 'starving') return '#cc6600';
+  if (status === 'fighting') {
+    const c = new THREE.Color(base);
+    c.lerp(new THREE.Color('#ff3838'), isHuman ? 0.38 : 0.32);
+    return '#' + c.getHexString();
+  }
+  return base;
+}
+
+/** Procedural radial-gradient dot texture for the colored owner ring beneath enemy units. */
+const _ownerRingTexCache = new Map<string, THREE.Texture>();
+function getOwnerRingTexture(): THREE.Texture {
+  const key = 'owner_ring';
+  if (_ownerRingTexCache.has(key)) return _ownerRingTexCache.get(key)!;
+  const size = 64;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d')!;
+  const cx = size / 2;
+  const grad = ctx.createRadialGradient(cx, cx, 0, cx, cx, cx);
+  grad.addColorStop(0, 'rgba(255,255,255,0.9)');
+  grad.addColorStop(0.55, 'rgba(255,255,255,0.45)');
+  grad.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, size, size);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.needsUpdate = true;
+  _ownerRingTexCache.set(key, tex);
+  return tex;
+}
+
+function rgbaFromHex(hex: string, alpha: number): string {
+  const c = new THREE.Color(hex);
+  const r = Math.round(c.r * 255);
+  const g = Math.round(c.g * 255);
+  const b = Math.round(c.b * 255);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
 
 const HEX_SEGMENTS = 6;
 const UNIT_HEIGHT = 1.0;
 
 /** Billboards & map meshes above special-region tints/decals (see BiomeTextureLayer renderOrder 2–6). */
 const MAP_ENTITY_RENDER_ORDER = 12;
+/** Forest trees draw below most map sprites so buildings/units sort cleanly on top. */
+const MAP_TREE_RENDER_ORDER = 11;
+/** Completed buildings and construction markers above terrain trees. */
+const MAP_BUILDING_RENDER_ORDER = 13;
 const SPECIAL_REGION_TINT_RENDER_ORDER = 1;
 
 // ─── Sprite Texture Loader ──────────────────────────────────────────
@@ -90,6 +154,10 @@ const SPRITE_PATHS: Record<string, string> = {
   deposit_wood:    '/sprites/entities/deposit_wood.png',
   deposit_ancient: '/sprites/entities/deposit_ancient.png',
   hero:     '/sprites/entities/hero.png',
+  detail_flower:   '/sprites/entities/detail_flower.png',
+  detail_grass:    '/sprites/entities/detail_grass.png',
+  detail_cow:      '/sprites/entities/detail_cow.png',
+  detail_wildlife: '/sprites/entities/detail_wildlife.png',
   // Overlays (pixel art, tileable)
   road:     '/sprites/overlays/road.png',
   // Biome painted hex tops (variants + coast/beach — npm run generate-biomes)
@@ -573,7 +641,10 @@ function SpecialRegionTextureDecals({ tiles }: { tiles: Map<string, Tile> }) {
 
 function LandBiomeVariantLayers({ tiles, biome }: { tiles: Tile[]; biome: Exclude<Biome, 'water'> }) {
   const buckets = useMemo(() => bucketTilesByVariant(tiles), [tiles]);
-  const useTransparency = biome === 'forest' || biome === 'mountain';
+  /** Forest / mountain: soft alpha in the PNG. Plains / desert: opaque paint inside hex, transparent in
+   * square corners — must discard those texels or Three.js draws black/void over the terrain cap. */
+  const softDecal = biome === 'forest' || biome === 'mountain';
+  const hexCornerCutout = biome === 'plains' || biome === 'desert';
   return (
     <>
       {[0, 1, 2, 3].map(v => (
@@ -581,7 +652,8 @@ function LandBiomeVariantLayers({ tiles, biome }: { tiles: Tile[]; biome: Exclud
           key={`${biome}-v${v}`}
           tiles={buckets[v]}
           textureKey={`biome_${biome}_${v}`}
-          {...(useTransparency && { transparentMap: true, alphaTest: 0.03 })}
+          {...(softDecal && { transparentMap: true, alphaTest: 0.03 })}
+          {...(hexCornerCutout && { transparentMap: true, alphaTest: 0.04 })}
         />
       ))}
     </>
@@ -593,7 +665,13 @@ function DeepWaterVariantLayers({ tiles }: { tiles: Tile[] }) {
   return (
     <>
       {[0, 1, 2, 3].map(v => (
-        <BiomeTextureLayer key={`water-v${v}`} tiles={buckets[v]} textureKey={`biome_water_${v}`} />
+        <BiomeTextureLayer
+          key={`water-v${v}`}
+          tiles={buckets[v]}
+          textureKey={`biome_water_${v}`}
+          transparentMap
+          alphaTest={0.04}
+        />
       ))}
     </>
   );
@@ -817,14 +895,25 @@ function VillageLayer({ tiles }: { tiles: Tile[] }) {
 
 // ─── Forest Tree Sprites ────────────────────────────────────────────
 
-function ForestTreeLayer({ tiles }: { tiles: Tile[] }) {
-  const tex = useMemo(() => getSpriteTexture('tree'), []);
+function forestTilesWithoutBuildings(tiles: Tile[], cities: City[]): Tile[] {
+  const occupied = new Set<string>();
+  for (const c of cities) {
+    for (const b of c.buildings) {
+      occupied.add(tileKey(b.q, b.r));
+    }
+  }
+  return tiles.filter(t => !occupied.has(tileKey(t.q, t.r)));
+}
 
-  if (tiles.length === 0) return null;
+function ForestTreeLayer({ tiles, cities }: { tiles: Tile[]; cities: City[] }) {
+  const tex = useMemo(() => getSpriteTexture('tree'), []);
+  const forestTiles = useMemo(() => forestTilesWithoutBuildings(tiles, cities), [tiles, cities]);
+
+  if (forestTiles.length === 0) return null;
   const scatter = HEX_RADIUS * 0.6;
   return (
     <group>
-      {tiles.flatMap(tile => {
+      {forestTiles.flatMap(tile => {
         const [cx, cz] = axialToWorld(tile.q, tile.r, HEX_RADIUS);
         const baseHash = ((tile.q * 92837111) ^ (tile.r * 689287499)) >>> 0;
         const treeCount = 3 + (baseHash % 3);
@@ -846,7 +935,7 @@ function ForestTreeLayer({ tiles }: { tiles: Tile[] }) {
               position={[cx + dx, tile.height + 0.5 + dy, cz + dz]}
               scale={[scale, scale, 1]}
               raycast={() => null}
-              renderOrder={MAP_ENTITY_RENDER_ORDER}
+              renderOrder={MAP_TREE_RENDER_ORDER}
             >
               <spriteMaterial map={tex} {...MAP_ENTITY_SPRITE_MAT} />
             </sprite>,
@@ -896,6 +985,219 @@ function MountainPeakLayer({ tiles }: { tiles: Tile[] }) {
           );
         }
         return sprites;
+      })}
+    </group>
+  );
+}
+
+// ─── Map Detail Props (flowers, grass, cows, deer — random scatter) ──
+
+const DETAIL_SPRITE_KEYS = ['detail_flower', 'detail_grass', 'detail_cow', 'detail_wildlife'] as const;
+const DETAIL_RENDER_ORDER = MAP_TREE_RENDER_ORDER - 1;
+
+function hashStr(s: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) h = ((h ^ s.charCodeAt(i)) * 0x01000193) >>> 0;
+  return h;
+}
+
+type DetailProp = { key: string; spriteKey: string; x: number; y: number; z: number; scale: number; herdId?: string };
+const PLANT_KEYS: string[] = ['detail_flower', 'detail_grass'];
+const ANIMAL_KEYS: string[] = ['detail_cow', 'detail_wildlife'];
+
+function detailPropsForTile(tile: Tile, occupied: Set<string>): DetailProp[] | null {
+  if (tile.biome !== 'plains' && tile.biome !== 'forest') return null;
+  const k = tileKey(tile.q, tile.r);
+  if (occupied.has(k)) return null;
+  if (tile.hasVillage) return null;
+
+  const seed = ((tile.q * 48611) ^ (tile.r * 92381)) >>> 0;
+  const roll = (seed % 1000) / 1000;
+
+  const out: DetailProp[] = [];
+  const [cx, cz] = axialToWorld(tile.q, tile.r, HEX_RADIUS);
+  const scatter = HEX_RADIUS * 0.5;
+
+  // Plants: ~15% of plains, ~8% of forest — always just 1 per tile
+  const plantChance = tile.biome === 'plains' ? 0.15 : 0.08;
+  if (roll < plantChance) {
+    const h1 = ((seed * 16807 + 1) * 48271) >>> 0;
+    const h2 = ((seed * 48271 + 1) * 69621) >>> 0;
+    const spriteKey = PLANT_KEYS[h1 % PLANT_KEYS.length]!;
+    const angle = ((h1 % 10000) / 10000) * Math.PI * 2;
+    const dist = Math.sqrt((h2 % 10000) / 10000) * scatter;
+    const s = 0.30 + ((h1 % 400) / 1000) * 0.18;
+    out.push({
+      key: `${k}_p0`,
+      spriteKey,
+      x: cx + Math.cos(angle) * dist,
+      y: tile.height + 0.35,
+      z: cz + Math.sin(angle) * dist,
+      scale: s,
+    });
+  }
+
+  // Animal herds: ~6% of plains only — spawn 2-4 of the same species clustered together
+  const herdRoll = ((seed * 31337) >>> 0) % 1000 / 1000;
+  if (tile.biome === 'plains' && herdRoll < 0.06) {
+    const herdSeed = ((seed * 92837111) ^ (tile.r * 689287499)) >>> 0;
+    const species = ANIMAL_KEYS[herdSeed % ANIMAL_KEYS.length]!;
+    const herdSize = 2 + (herdSeed % 3); // 2-4
+    const herdId = `herd_${k}`;
+    const herdAngle = ((herdSeed % 10000) / 10000) * Math.PI * 2;
+    const herdCx = cx + Math.cos(herdAngle) * scatter * 0.3;
+    const herdCz = cz + Math.sin(herdAngle) * scatter * 0.3;
+    for (let i = 0; i < herdSize; i++) {
+      const ah1 = ((herdSeed + i * 137_031) * 16807) >>> 0;
+      const ah2 = ((herdSeed + i * 253_993) * 48271) >>> 0;
+      const a = ((ah1 % 10000) / 10000) * Math.PI * 2;
+      const d = Math.sqrt((ah2 % 10000) / 10000) * HEX_RADIUS * 0.28;
+      const s = 0.42 + ((ah1 % 400) / 1000) * 0.16;
+      out.push({
+        key: `${k}_a${i}`,
+        spriteKey: species,
+        x: herdCx + Math.cos(a) * d,
+        y: tile.height + 0.35,
+        z: herdCz + Math.sin(a) * d,
+        scale: s,
+        herdId,
+      });
+    }
+  }
+
+  return out.length > 0 ? out : null;
+}
+
+function isAnimalSprite(k: string): boolean {
+  return k === 'detail_cow' || k === 'detail_wildlife';
+}
+
+/** Single animal sprite with idle hop + herd wander (shared drift direction per herd). */
+function AnimatedAnimalSprite({
+  spriteKey,
+  tex,
+  baseX,
+  baseY,
+  baseZ,
+  scale,
+  seed,
+  herdSeed,
+}: {
+  spriteKey: string;
+  tex: THREE.Texture;
+  baseX: number;
+  baseY: number;
+  baseZ: number;
+  scale: number;
+  seed: number;
+  herdSeed: number;
+}) {
+  const ref = useRef<THREE.Sprite>(null);
+  const phase = useMemo(() => (seed % 10000) / 10000 * Math.PI * 2, [seed]);
+  const herdPhase = useMemo(() => (herdSeed % 10000) / 10000 * Math.PI * 2, [herdSeed]);
+  const wanderRadius = HEX_RADIUS * 0.22;
+  const hopHeight = spriteKey === 'detail_wildlife' ? 0.07 : 0.035;
+  const speed = spriteKey === 'detail_wildlife' ? 0.55 : 0.30;
+  const wanderSpeed = 0.12;
+
+  useFrame(({ clock }) => {
+    if (!ref.current) return;
+    const t = clock.elapsedTime * speed + phase;
+
+    // Herd drift: all members share herdPhase so they move in the same general direction
+    const ht = clock.elapsedTime * wanderSpeed + herdPhase;
+    const herdDx = Math.sin(ht) * wanderRadius;
+    const herdDz = Math.cos(ht * 0.8) * wanderRadius * 0.7;
+
+    // Individual jitter so they don't overlap perfectly
+    const jitterX = Math.sin(t * 0.7 + phase) * HEX_RADIUS * 0.06;
+    const jitterZ = Math.cos(t * 0.5 + phase * 1.3) * HEX_RADIUS * 0.05;
+
+    const hop = Math.abs(Math.sin(t * 1.6)) * hopHeight;
+
+    ref.current.position.set(
+      baseX + herdDx + jitterX,
+      baseY + hop,
+      baseZ + herdDz + jitterZ,
+    );
+
+    const stretch = 1 + Math.abs(Math.sin(t * 1.6)) * 0.05;
+    const squash = 1 - Math.abs(Math.sin(t * 1.6)) * 0.03;
+    ref.current.scale.set(scale * squash, scale * stretch, 1);
+  });
+
+  return (
+    <sprite
+      ref={ref}
+      position={[baseX, baseY, baseZ]}
+      scale={[scale, scale, 1]}
+      raycast={() => null}
+      renderOrder={DETAIL_RENDER_ORDER}
+    >
+      <spriteMaterial map={tex} {...MAP_ENTITY_SPRITE_MAT} />
+    </sprite>
+  );
+}
+
+function MapDetailLayer({ tiles, cities }: { tiles: Tile[]; cities: City[] }) {
+  const textures = useGameTextures(DETAIL_SPRITE_KEYS as unknown as string[]);
+
+  const occupied = useMemo(() => {
+    const s = new Set<string>();
+    for (const c of cities) {
+      s.add(tileKey(c.q, c.r));
+      for (const b of c.buildings) s.add(tileKey(b.q, b.r));
+    }
+    return s;
+  }, [cities]);
+
+  const props = useMemo(() => {
+    const out: (DetailProp & { seed: number; herdSeed: number })[] = [];
+    for (const t of tiles) {
+      const list = detailPropsForTile(t, occupied);
+      if (list) {
+        for (const p of list) {
+          const s = ((p.x * 73856093) ^ (p.z * 19349663)) >>> 0;
+          const hs = p.herdId ? (hashStr(p.herdId) >>> 0) : s;
+          out.push({ ...p, seed: s, herdSeed: hs });
+        }
+      }
+    }
+    return out;
+  }, [tiles, occupied]);
+
+  if (props.length === 0) return null;
+  return (
+    <group>
+      {props.map(p => {
+        const tex = textures[p.spriteKey];
+        if (!tex) return null;
+        if (isAnimalSprite(p.spriteKey)) {
+          return (
+            <AnimatedAnimalSprite
+              key={p.key}
+              spriteKey={p.spriteKey}
+              tex={tex}
+              baseX={p.x}
+              baseY={p.y}
+              baseZ={p.z}
+              scale={p.scale}
+              seed={p.seed}
+              herdSeed={p.herdSeed}
+            />
+          );
+        }
+        return (
+          <sprite
+            key={p.key}
+            position={[p.x, p.y, p.z]}
+            scale={[p.scale, p.scale, 1]}
+            raycast={() => null}
+            renderOrder={DETAIL_RENDER_ORDER}
+          >
+            <spriteMaterial map={tex} {...MAP_ENTITY_SPRITE_MAT} />
+          </sprite>
+        );
       })}
     </group>
   );
@@ -1017,6 +1319,11 @@ function SpecialRegionHexTint({ tiles: regionTiles, color }: { tiles: Tile[]; co
 
 // ─── Territory Overlay ─────────────────────────────────────────────
 
+/** Per-hex brightness jitter so faction tint reads as a light wash, not a flat sheet. */
+function territoryTileShadeMultiplier(q: number, r: number): number {
+  return 0.9 + terrainHash01(q + 11, r - 7) * 0.14;
+}
+
 function TerritoryOverlay({ playerColor, tileKeys, tiles, isHuman }: {
   playerColor: string; tileKeys: string[]; tiles: Map<string, Tile>;
   /** Stronger tint + draw order so your land reads clearly vs AI. */
@@ -1028,16 +1335,22 @@ function TerritoryOverlay({ playerColor, tileKeys, tiles, isHuman }: {
   }, [tileKeys, tiles]);
 
   const geometry = useMemo(() => makeHexGeo(HEX_RADIUS * 0.98, 0.04), []);
-  const fillOpacity = isHuman ? 0.4 : 0.18;
-  const material = useMemo(() => new THREE.MeshBasicMaterial({
-    color: playerColor,
-    transparent: true,
-    opacity: fillOpacity,
-    depthWrite: false,
-    polygonOffset: true,
-    polygonOffsetFactor: -1,
-    polygonOffsetUnits: -1,
-  }), [playerColor, fillOpacity]);
+  /** Slightly stronger AI fill so each tribe’s map color matches units/cities; human stays a bit bolder. */
+  const fillOpacity = isHuman ? 0.38 : 0.28;
+  const material = useMemo(
+    () =>
+      new THREE.MeshBasicMaterial({
+        color: '#ffffff',
+        transparent: true,
+        opacity: fillOpacity,
+        depthWrite: false,
+        polygonOffset: true,
+        polygonOffsetFactor: -1,
+        polygonOffsetUnits: -1,
+        vertexColors: true,
+      }),
+    [fillOpacity],
+  );
 
   useEffect(() => {
     if (!meshRef.current || validTiles.length === 0) return;
@@ -1052,6 +1365,29 @@ function TerritoryOverlay({ playerColor, tileKeys, tiles, isHuman }: {
     });
     mesh.instanceMatrix.needsUpdate = true;
   }, [validTiles, isHuman]);
+
+  useEffect(() => {
+    if (!meshRef.current || validTiles.length === 0) return;
+    const mesh = meshRef.current;
+    const base = new THREE.Color(playerColor);
+    const colors = new Float32Array(validTiles.length * 3);
+    validTiles.forEach((tile, i) => {
+      const c = base.clone().multiplyScalar(territoryTileShadeMultiplier(tile.q, tile.r));
+      colors[i * 3] = c.r;
+      colors[i * 3 + 1] = c.g;
+      colors[i * 3 + 2] = c.b;
+    });
+    const attr = new THREE.InstancedBufferAttribute(colors, 3);
+    mesh.instanceColor = attr;
+    return () => {
+      if (meshRef.current?.instanceColor === attr) {
+        meshRef.current.instanceColor = null;
+      }
+      // BufferAttribute.dispose exists in many Three builds; InstancedBufferAttribute may not expose it at runtime.
+      const dispose = (attr as { dispose?: () => void }).dispose;
+      if (typeof dispose === 'function') dispose.call(attr);
+    };
+  }, [validTiles, playerColor]);
 
   if (validTiles.length === 0) return null;
   return (
@@ -1144,7 +1480,7 @@ function TerritoryDashedBorder({ playerColor, tileKeys, tiles, isHuman }: {
 
 // ─── City Sprites ───────────────────────────────────────────────────
 
-function CityMarkers({ cities, tiles }: { cities: City[]; tiles: Map<string, Tile> }) {
+function CityMarkers({ cities, tiles, players }: { cities: City[]; tiles: Map<string, Tile>; players: Player[] }) {
   const tex = useMemo(() => getSpriteTexture('city'), []);
 
   if (cities.length === 0) return null;
@@ -1154,15 +1490,38 @@ function CityMarkers({ cities, tiles }: { cities: City[]; tiles: Map<string, Til
         const tile = tiles.get(tileKey(city.q, city.r));
         const h = tile?.height ?? 0.3;
         const [x, z] = axialToWorld(city.q, city.r, HEX_RADIUS);
-        const isHuman = city.ownerId.includes('human');
+        const isHuman = city.ownerId === PLAYER_HUMAN_ID;
+        const factionColor = playerColorOrDefault(players, city.ownerId);
+        const spriteColor = isHuman ? '#ffffff' : factionColor;
+        const scale = isHuman ? 1.6 : 1.74;
         return (
-          <sprite key={city.id} position={[x, h + 0.65, z]} scale={[1.6, 1.6, 1]} raycast={() => null} renderOrder={MAP_ENTITY_RENDER_ORDER}>
-            <spriteMaterial
-              map={tex}
-              {...MAP_ENTITY_SPRITE_MAT}
-              color={isHuman ? '#ffffff' : '#ff9999'}
-            />
-          </sprite>
+          <group key={city.id}>
+            {!isHuman && (
+              <mesh
+                position={[x, h + 0.028, z]}
+                rotation={[-Math.PI / 2, 0, Math.PI / 6]}
+                raycast={() => null}
+                renderOrder={MAP_ENTITY_RENDER_ORDER - 1}
+              >
+                <ringGeometry args={[HEX_RADIUS * 0.5, HEX_RADIUS * 0.9, 6]} />
+                <meshBasicMaterial
+                  color={factionColor}
+                  transparent
+                  opacity={0.55}
+                  depthWrite={false}
+                  side={THREE.DoubleSide}
+                />
+              </mesh>
+            )}
+            <sprite
+              position={[x, h + 0.65, z]}
+              scale={[scale, scale, 1]}
+              raycast={() => null}
+              renderOrder={MAP_ENTITY_RENDER_ORDER}
+            >
+              <spriteMaterial map={tex} {...MAP_ENTITY_SPRITE_MAT} color={spriteColor} />
+            </sprite>
+          </group>
         );
       })}
     </group>
@@ -1235,7 +1594,7 @@ function BuildingMarkers({ cities, tiles }: { cities: City[]; tiles: Map<string,
         const tex = textures[b.type];
         const [sx, sy] = BUILDING_SPRITE_SCALE[b.type] ?? [1.0, 1.0];
         return (
-          <sprite key={b.key} position={[b.x, b.y, b.z]} scale={[sx, sy, 1]} raycast={() => null} renderOrder={MAP_ENTITY_RENDER_ORDER}>
+          <sprite key={b.key} position={[b.x, b.y, b.z]} scale={[sx, sy, 1]} raycast={() => null} renderOrder={MAP_BUILDING_RENDER_ORDER}>
             <spriteMaterial map={tex} {...MAP_ENTITY_SPRITE_MAT} />
           </sprite>
         );
@@ -1247,10 +1606,11 @@ function BuildingMarkers({ cities, tiles }: { cities: City[]; tiles: Map<string,
 // ─── Unit HP Bars (floating above each army stack) ────────────────
 
 function unitShownAsGarrisonSprite(u: Unit, cities: City[]): boolean {
+  if (u.cityDefenseMode === 'auto_engage') return false;
   return cities.some(c => isGarrisonedAtCity(u, c));
 }
 
-function UnitHpBars({ units, tiles, cities }: { units: Unit[]; tiles: Map<string, Tile>; cities: City[] }) {
+function UnitHpBars({ units, tiles, cities, players }: { units: Unit[]; tiles: Map<string, Tile>; cities: City[]; players: Player[] }) {
   const stacks = useMemo(() => {
     const byHex: Record<string, Unit[]> = {};
     for (const u of units) {
@@ -1263,10 +1623,15 @@ function UnitHpBars({ units, tiles, cities }: { units: Unit[]; tiles: Map<string
       const [q, r] = key.split(',').map(Number);
       let totalHp = 0, totalMaxHp = 0;
       for (const u of stackUnits) { totalHp += u.hp; totalMaxHp += u.maxHp; }
-      const isHuman = stackUnits[0].ownerId.includes('human');
-      return { key, q, r, totalHp, totalMaxHp, count: stackUnits.length, isHuman };
+      const lead = stackUnits[0];
+      const ownerId = lead.ownerId;
+      const isHuman = ownerId === PLAYER_HUMAN_ID;
+      const factionColor = playerColorOrDefault(players, ownerId);
+      return {
+        key, q, r, totalHp, totalMaxHp, count: stackUnits.length, isHuman, factionColor,
+      };
     });
-  }, [units, cities]);
+  }, [units, cities, players]);
 
   if (stacks.length === 0) return null;
 
@@ -1278,15 +1643,23 @@ function UnitHpBars({ units, tiles, cities }: { units: Unit[]; tiles: Map<string
         const [x, z] = axialToWorld(stack.q, stack.r, HEX_RADIUS);
         const ratio = stack.totalMaxHp > 0 ? stack.totalHp / stack.totalMaxHp : 0;
         const barColor = ratio > 0.6 ? '#22c55e' : ratio > 0.3 ? '#eab308' : '#ef4444';
+        const accent = stack.isHuman ? 'rgba(100,180,255,0.65)' : rgbaFromHex(stack.factionColor, 0.85);
 
         return (
           <group key={stack.key} position={[x, h + 1.15, z]}>
-            <Html transform sprite scale={0.4}
+            <Html
+              transform
+              sprite
+              scale={0.4}
+              zIndexRange={[20, 40]}
               pointerEvents="none"
-              style={{ pointerEvents: 'none', userSelect: 'none' }}>
+              style={{ pointerEvents: 'none', userSelect: 'none' }}
+            >
               <div style={{
                 display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1px',
                 whiteSpace: 'nowrap',
+                borderBottom: `2px solid ${accent}`,
+                paddingBottom: '2px',
               }}>
                 <span style={{
                   fontSize: '11px', fontWeight: 800, fontFamily: 'monospace',
@@ -1297,7 +1670,7 @@ function UnitHpBars({ units, tiles, cities }: { units: Unit[]; tiles: Map<string
                 </span>
                 <div style={{
                   width: '40px', height: '5px', background: '#111', borderRadius: '3px',
-                  overflow: 'hidden', border: '1px solid rgba(255,255,255,0.2)',
+                  overflow: 'hidden', border: `1px solid ${stack.isHuman ? 'rgba(255,255,255,0.22)' : rgbaFromHex(stack.factionColor, 0.45)}`,
                 }}>
                   <div style={{
                     width: `${ratio * 100}%`, height: '100%',
@@ -1366,6 +1739,7 @@ function MarchProgressStack({
         transform
         sprite
         scale={0.38}
+        zIndexRange={[20, 40]}
         pointerEvents="none"
         style={{ pointerEvents: 'none', userSelect: 'none' }}
       >
@@ -1727,7 +2101,200 @@ function BowUnitSprite({
   );
 }
 
-/** Naval units: gentle water bob when idle; stronger roll + sway + bob when marching. */
+/* ─── Procedural textures for ship FX (created once, shared) ─── */
+
+let _wakeTexture: THREE.Texture | null = null;
+function getWakeTexture(): THREE.Texture {
+  if (_wakeTexture) return _wakeTexture;
+  const sz = 64;
+  const c = document.createElement('canvas');
+  c.width = sz; c.height = sz;
+  const ctx = c.getContext('2d')!;
+  const g = ctx.createRadialGradient(sz / 2, sz / 2, 0, sz / 2, sz / 2, sz / 2);
+  g.addColorStop(0, 'rgba(210,235,255,0.7)');
+  g.addColorStop(0.35, 'rgba(180,220,255,0.35)');
+  g.addColorStop(0.7, 'rgba(140,200,255,0.12)');
+  g.addColorStop(1, 'rgba(100,180,255,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, sz, sz);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  _wakeTexture = t;
+  return t;
+}
+
+let _sprayTexture: THREE.Texture | null = null;
+function getSprayTexture(): THREE.Texture {
+  if (_sprayTexture) return _sprayTexture;
+  const sz = 32;
+  const c = document.createElement('canvas');
+  c.width = sz; c.height = sz;
+  const ctx = c.getContext('2d')!;
+  const g = ctx.createRadialGradient(sz / 2, sz / 2, 0, sz / 2, sz / 2, sz / 2);
+  g.addColorStop(0, 'rgba(255,255,255,0.9)');
+  g.addColorStop(0.4, 'rgba(220,240,255,0.5)');
+  g.addColorStop(1, 'rgba(200,230,255,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, sz, sz);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  _sprayTexture = t;
+  return t;
+}
+
+let _rippleTexture: THREE.Texture | null = null;
+function getRippleTexture(): THREE.Texture {
+  if (_rippleTexture) return _rippleTexture;
+  const sz = 64;
+  const c = document.createElement('canvas');
+  c.width = sz; c.height = sz;
+  const ctx = c.getContext('2d')!;
+  ctx.lineWidth = 2;
+  for (let ring = 0; ring < 3; ring++) {
+    const r = 10 + ring * 9;
+    const alpha = 0.35 - ring * 0.1;
+    ctx.strokeStyle = `rgba(190,220,255,${alpha})`;
+    ctx.beginPath();
+    ctx.arc(sz / 2, sz / 2, r, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  _rippleTexture = t;
+  return t;
+}
+
+const SPRAY_COUNT = 6;
+const WAKE_DOT_COUNT = 8;
+
+/** Idle water ripple: concentric rings that pulse outward around a stationary ship. */
+function ShipIdleRipple({ x, y, z, phase }: { x: number; y: number; z: number; phase: number }) {
+  const ref = useRef<THREE.Sprite>(null);
+  const tex = useMemo(getRippleTexture, []);
+
+  useFrame(({ clock }) => {
+    if (!ref.current) return;
+    const t = clock.getElapsedTime();
+    const pulse = (Math.sin(t * 0.9 + phase) + 1) * 0.5;
+    const sc = 0.65 + pulse * 0.35;
+    ref.current.scale.set(sc, sc * 0.45, 1);
+    (ref.current.material as THREE.SpriteMaterial).opacity = 0.18 + pulse * 0.14;
+  });
+
+  return (
+    <sprite ref={ref} position={[x, y - 0.35, z]} renderOrder={MAP_ENTITY_RENDER_ORDER - 1}>
+      <spriteMaterial map={tex} transparent depthWrite={false} opacity={0.25} />
+    </sprite>
+  );
+}
+
+/** Bow spray: small white particles flung upward and outward from the ship prow. */
+function ShipBowSpray({ x, y, z, phase }: { x: number; y: number; z: number; phase: number }) {
+  const refs = useRef<THREE.Sprite[]>([]);
+  const tex = useMemo(getSprayTexture, []);
+  const seeds = useMemo(() => {
+    const arr: { a: number; spd: number; drift: number; sz: number }[] = [];
+    for (let i = 0; i < SPRAY_COUNT; i++) {
+      arr.push({
+        a: (i / SPRAY_COUNT) * Math.PI * 2,
+        spd: 0.7 + Math.sin(phase + i * 2.13) * 0.35,
+        drift: (Math.sin(phase + i * 1.7) - 0.5) * 0.15,
+        sz: 0.06 + Math.sin(phase + i * 3.1) * 0.03,
+      });
+    }
+    return arr;
+  }, [phase]);
+
+  useFrame(({ clock }) => {
+    const t = clock.getElapsedTime();
+    for (let i = 0; i < SPRAY_COUNT; i++) {
+      const sp = refs.current[i];
+      if (!sp) continue;
+      const s = seeds[i];
+      const life = ((t * s.spd + s.a + phase) % 1.3) / 1.3;
+      const arc = life;
+      const spread = (life - 0.5) * 0.35;
+      sp.position.set(
+        x + spread + s.drift * life,
+        y + 0.12 * arc * (1 - arc) * 4 - 0.08,
+        z - 0.15 * life + s.drift * 0.3,
+      );
+      const fade = life < 0.15 ? life / 0.15 : life > 0.7 ? (1 - life) / 0.3 : 1;
+      (sp.material as THREE.SpriteMaterial).opacity = fade * 0.55;
+      const sc = s.sz * (0.6 + life * 0.6);
+      sp.scale.set(sc, sc, 1);
+    }
+  });
+
+  return (
+    <group>
+      {seeds.map((_, i) => (
+        <sprite
+          key={i}
+          ref={el => { if (el) refs.current[i] = el; }}
+          renderOrder={MAP_ENTITY_RENDER_ORDER + 1}
+        >
+          <spriteMaterial map={tex} transparent depthWrite={false} opacity={0} />
+        </sprite>
+      ))}
+    </group>
+  );
+}
+
+/** V-shaped wake trail of translucent dots fading behind a moving ship. */
+function ShipWakeTrail({ x, y, z, phase }: { x: number; y: number; z: number; phase: number }) {
+  const refs = useRef<THREE.Sprite[]>([]);
+  const tex = useMemo(getWakeTexture, []);
+  const seeds = useMemo(() => {
+    const arr: { side: number; idx: number }[] = [];
+    for (let i = 0; i < WAKE_DOT_COUNT; i++) {
+      arr.push({ side: i % 2 === 0 ? -1 : 1, idx: Math.floor(i / 2) });
+    }
+    return arr;
+  }, []);
+
+  useFrame(({ clock }) => {
+    const t = clock.getElapsedTime();
+    for (let i = 0; i < WAKE_DOT_COUNT; i++) {
+      const sp = refs.current[i];
+      if (!sp) continue;
+      const s = seeds[i];
+      const prog = s.idx / (WAKE_DOT_COUNT / 2);
+      const wobble = Math.sin(t * 3.8 + phase + i * 1.1) * 0.012;
+      const vSpread = prog * 0.22 * s.side + wobble;
+      const behind = prog * 0.48;
+      sp.position.set(x + vSpread, y - 0.32, z + behind);
+      const fade = 1 - prog;
+      (sp.material as THREE.SpriteMaterial).opacity = fade * 0.38;
+      const sc = 0.08 + prog * 0.14;
+      sp.scale.set(sc, sc * 0.5, 1);
+    }
+  });
+
+  return (
+    <group>
+      {seeds.map((_, i) => (
+        <sprite
+          key={i}
+          ref={el => { if (el) refs.current[i] = el; }}
+          renderOrder={MAP_ENTITY_RENDER_ORDER - 1}
+        >
+          <spriteMaterial map={tex} transparent depthWrite={false} opacity={0} />
+        </sprite>
+      ))}
+    </group>
+  );
+}
+
+/**
+ * Naval unit sprite with detailed water interaction:
+ * - Multi-axis oscillation (roll, pitch, bob, sway) with wave harmonics
+ * - Speed-dependent forward lean
+ * - Scale breathing (gentle size pulse on idle, stronger surge on moving)
+ * - Combat pulse flash
+ * - Idle ripple rings
+ * - Moving wake trail + bow spray particles
+ */
 function ShipUnitSprite({
   id,
   q,
@@ -1756,6 +2323,8 @@ function ShipUnitSprite({
   const groupRef = useRef<THREE.Group>(null);
   const spriteRef = useRef<THREE.Sprite>(null);
   const selectHex = useGameStore(s => s.selectHex);
+  const lastFxAt = useGameStore(s => s.lastCombatFxAtMs);
+
   const phase = useMemo(() => {
     let h = 0;
     for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) | 0;
@@ -1766,15 +2335,50 @@ function ShipUnitSprite({
     if (!groupRef.current || !spriteRef.current) return;
     const t = clock.getElapsedTime();
     const mv = moving;
-    const freq = mv ? 5.1 : 1.55;
-    const rollAmp = mv ? 0.13 : 0.038;
-    const bobAmp = mv ? 0.062 : 0.024;
-    const swayAmp = mv ? 0.045 : 0.014;
-    const roll = Math.sin(t * freq + phase) * rollAmp;
-    const bob = Math.sin(t * freq * 1.67 + phase * 1.2) * bobAmp;
-    const sway = Math.sin(t * freq * 0.88 + phase * 0.7) * swayAmp;
+
+    // Primary wave: slower, bigger ocean swell
+    const f1 = mv ? 4.2 : 1.3;
+    // Secondary harmonic: quicker chop on top of the swell
+    const f2 = mv ? 7.6 : 2.8;
+    const harmonic = 0.3;
+
+    // Roll (rotation around forward axis)
+    const rollAmp = mv ? 0.14 : 0.04;
+    const roll = Math.sin(t * f1 + phase) * rollAmp
+               + Math.sin(t * f2 + phase * 1.4) * rollAmp * harmonic;
+
+    // Pitch (simulated forward/back tilt via vertical offset of top vs bottom)
+    const pitchAmp = mv ? 0.025 : 0.008;
+    const pitch = Math.sin(t * f1 * 0.72 + phase * 0.9) * pitchAmp;
+
+    // Vertical bob (ocean heave)
+    const bobAmp = mv ? 0.07 : 0.026;
+    const bob = Math.sin(t * f1 * 1.67 + phase * 1.2) * bobAmp
+              + Math.sin(t * f2 * 1.3 + phase * 0.6) * bobAmp * harmonic;
+
+    // Lateral sway (side-to-side drift)
+    const swayAmp = mv ? 0.05 : 0.016;
+    const sway = Math.sin(t * f1 * 0.88 + phase * 0.7) * swayAmp
+               + Math.cos(t * f2 * 0.55 + phase * 1.1) * swayAmp * harmonic;
+
+    // Forward lean when sailing
+    const lean = mv ? -0.06 : 0;
+
+    // Scale breathing: gentle rhythmic size pulse
+    const breathAmp = mv ? 0.035 : 0.015;
+    const breath = 1 + Math.sin(t * (mv ? 2.5 : 0.9) + phase * 0.8) * breathAmp;
+
+    // Combat hit flash: brief scale punch on damage
+    const combatAge = Date.now() - lastFxAt;
+    const combatPulse = lastFxAt > 0 && combatAge < 350
+      ? 1 + 0.12 * Math.sin(Math.min(combatAge / 350, 1) * Math.PI)
+      : 1;
+
+    const finalScale = breath * combatPulse;
+
     spriteRef.current.rotation.z = roll;
-    groupRef.current.position.set(x + sway, y + bob, z);
+    spriteRef.current.scale.set(sx * finalScale, sy * finalScale, 1);
+    groupRef.current.position.set(x + sway, y + bob + pitch + lean, z);
   });
 
   return (
@@ -1790,6 +2394,15 @@ function ShipUnitSprite({
       >
         <spriteMaterial map={tex} {...MAP_ENTITY_SPRITE_MAT} color={tint} />
       </sprite>
+      {/* Idle: concentric water ripples; Moving: wake trail + bow spray */}
+      {moving ? (
+        <>
+          <ShipWakeTrail x={0} y={0} z={0} phase={phase} />
+          <ShipBowSpray x={0} y={0.1} z={0} phase={phase} />
+        </>
+      ) : (
+        <ShipIdleRipple x={0} y={0} z={0} phase={phase} />
+      )}
     </group>
   );
 }
@@ -1812,7 +2425,7 @@ const UNIT_SPRITE_SCALE: Record<string, [number, number]> = {
   crusader_knight: [1.15, 1.15],
 };
 
-function UnitMarkers({ units, tiles, cities }: { units: Unit[]; tiles: Map<string, Tile>; cities: City[] }) {
+function UnitMarkers({ units, tiles, cities, players }: { units: Unit[]; tiles: Map<string, Tile>; cities: City[]; players: Player[] }) {
   const textures = useGameTextures([
     'infantry', 'cavalry', 'archer', 'horse_archer', 'crusader_knight', 'builder', 'trebuchet', 'defender',
     'scout_ship', 'warship', 'transport_ship', 'fisher_transport', 'capital_ship',
@@ -1830,25 +2443,38 @@ function UnitMarkers({ units, tiles, cities }: { units: Unit[]; tiles: Map<strin
       const [x, z] = axialToWorld(u.q, u.r, HEX_RADIUS);
       const offset = idx * 0.18;
 
-      let tintColor = '#ffffff';
-      if (u.status === 'starving') tintColor = '#cc6600';
-      else if (u.status === 'fighting') tintColor = '#ff8888';
-      else if (!u.ownerId.includes('human')) tintColor = '#ff7777';
+      let wx = x + offset * 0.3;
+      let wz = z - offset * 0.2;
+      if (u.defendCityId && u.cityDefenseMode === 'auto_engage') {
+        const city = cities.find(c => c.id === u.defendCityId);
+        if (city && u.q === city.q && u.r === city.r) {
+          const ring = HEX_RADIUS * 0.62;
+          const angle = (idx * 2.513274 + (u.id.charCodeAt(0) % 7) * 0.31) % (Math.PI * 2);
+          wx = x + Math.cos(angle) * ring + offset * 0.08;
+          wz = z + Math.sin(angle) * ring - offset * 0.06;
+        }
+      }
+
+      const tintColor = unitSpriteTint(players, u.ownerId, u.status);
+      const ownerColor = playerColorOrDefault(players, u.ownerId);
 
       return {
         id: u.id,
         type: u.type,
         q: u.q,
         r: u.r,
-        x: x + offset * 0.3,
+        x: wx,
         y: h + 0.55,
-        z: z - offset * 0.2,
+        z: wz,
         tint: tintColor,
         moving: u.status === 'moving',
+        ownerId: u.ownerId,
+        ownerColor,
       };
     });
-  }, [units, tiles, cities]);
+  }, [units, tiles, cities, players]);
 
+  const ownerRingTex = useMemo(getOwnerRingTexture, []);
   if (positioned.length === 0) return null;
   return (
     <group>
@@ -1856,44 +2482,64 @@ function UnitMarkers({ units, tiles, cities }: { units: Unit[]; tiles: Map<strin
         const spriteKey = UNIT_SPRITE_KEY[u.type] ?? u.type;
         const tex = textures[spriteKey];
         const [sx, sy] = UNIT_SPRITE_SCALE[u.type] ?? [1.0, 1.0];
+        const isEnemy = u.ownerId !== PLAYER_HUMAN_ID;
+        const ring = isEnemy ? (
+          <sprite
+            key={`ring_${u.id}`}
+            position={[u.x, u.y - 0.38, u.z]}
+            scale={[sx * 1.15, sy * 0.35, 1]}
+            raycast={() => null}
+            renderOrder={MAP_ENTITY_RENDER_ORDER - 1}
+          >
+            <spriteMaterial map={ownerRingTex} transparent depthWrite={false} color={u.ownerColor} opacity={0.7} />
+          </sprite>
+        ) : null;
+
         if (isBowUnitMarkerType(u.type)) {
           return (
-            <BowUnitSprite
-              key={u.id}
-              id={u.id}
-              type={u.type}
-              x={u.x}
-              y={u.y}
-              z={u.z}
-              tint={u.tint}
-              sx={sx}
-              sy={sy}
-              tex={tex}
-            />
+            <Fragment key={u.id}>
+              {ring}
+              <BowUnitSprite
+                id={u.id}
+                type={u.type}
+                x={u.x}
+                y={u.y}
+                z={u.z}
+                tint={u.tint}
+                sx={sx}
+                sy={sy}
+                tex={tex}
+              />
+            </Fragment>
           );
         }
         if (isNavalUnitType(u.type)) {
           return (
-            <ShipUnitSprite
-              key={u.id}
-              id={u.id}
-              q={u.q}
-              r={u.r}
-              x={u.x}
-              y={u.y}
-              z={u.z}
-              tint={u.tint}
-              sx={sx}
-              sy={sy}
-              tex={tex}
-              moving={u.moving}
-            />
+            <Fragment key={u.id}>
+              {ring}
+              <ShipUnitSprite
+                id={u.id}
+                q={u.q}
+                r={u.r}
+                x={u.x}
+                y={u.y}
+                z={u.z}
+                tint={u.tint}
+                sx={sx}
+                sy={sy}
+                tex={tex}
+                moving={u.moving}
+              />
+            </Fragment>
           );
         }
         return (
-          <sprite key={u.id} position={[u.x, u.y, u.z]} scale={[sx, sy, 1]} raycast={() => null} renderOrder={MAP_ENTITY_RENDER_ORDER}>
-            <spriteMaterial map={tex} {...MAP_ENTITY_SPRITE_MAT} color={u.tint} />
-          </sprite>
+          <Fragment key={u.id}>
+            {ring}
+            <sprite position={[u.x, u.y, u.z]} scale={[sx, sy, 1]} raycast={() => null} renderOrder={MAP_ENTITY_RENDER_ORDER}>
+              <spriteMaterial map={tex} {...MAP_ENTITY_SPRITE_MAT} color={u.tint} />
+            </sprite>
+          </Fragment>
         );
       })}
     </group>
@@ -1901,9 +2547,19 @@ function UnitMarkers({ units, tiles, cities }: { units: Unit[]; tiles: Map<strin
 }
 
 /** Single badge on city hex for garrisoned land armies (individual sprites hidden). */
-function GarrisonBadges({ cities, units, tiles }: { cities: City[]; units: Unit[]; tiles: Map<string, Tile> }) {
+function GarrisonBadges({ cities, units, tiles, players }: { cities: City[]; units: Unit[]; tiles: Map<string, Tile>; players: Player[] }) {
   const badges = useMemo(() => {
-    const out: { key: string; q: number; r: number; count: number; totalHp: number; totalMax: number; isHuman: boolean }[] = [];
+    const out: {
+      key: string;
+      q: number;
+      r: number;
+      count: number;
+      totalHp: number;
+      totalMax: number;
+      isHuman: boolean;
+      factionColor: string;
+      defenseLabel: string;
+    }[] = [];
     for (const city of cities) {
       const garr = units.filter(u => isGarrisonedAtCity(u, city) && u.hp > 0);
       if (garr.length === 0) continue;
@@ -1912,6 +2568,9 @@ function GarrisonBadges({ cities, units, tiles }: { cities: City[]; units: Unit[
         totalHp += u.hp;
         totalMax += u.maxHp;
       }
+      const stagnant = garr.some(u => u.cityDefenseMode === 'stagnant');
+      const isHuman = city.ownerId === PLAYER_HUMAN_ID;
+      const factionColor = playerColorOrDefault(players, city.ownerId);
       out.push({
         key: city.id,
         q: city.q,
@@ -1919,11 +2578,13 @@ function GarrisonBadges({ cities, units, tiles }: { cities: City[]; units: Unit[
         count: garr.length,
         totalHp,
         totalMax,
-        isHuman: city.ownerId.includes('human'),
+        isHuman,
+        factionColor,
+        defenseLabel: stagnant ? 'Hold (walls)' : 'Garrison',
       });
     }
     return out;
-  }, [cities, units]);
+  }, [cities, units, players]);
 
   if (badges.length === 0) return null;
 
@@ -1935,20 +2596,30 @@ function GarrisonBadges({ cities, units, tiles }: { cities: City[]; units: Unit[
         const [x, z] = axialToWorld(b.q, b.r, HEX_RADIUS);
         const ratio = b.totalMax > 0 ? b.totalHp / b.totalMax : 0;
         const barColor = ratio > 0.6 ? '#22c55e' : ratio > 0.3 ? '#eab308' : '#ef4444';
+        const borderCol = b.isHuman ? 'rgba(100,180,255,0.55)' : rgbaFromHex(b.factionColor, 0.72);
+        const bgCol = b.isHuman ? 'rgba(20,40,60,0.88)' : rgbaFromHex(b.factionColor, 0.22);
         return (
           <group key={b.key} position={[x, h + 1.05, z]}>
-            <Html transform sprite scale={0.42} pointerEvents="none" style={{ pointerEvents: 'none', userSelect: 'none' }}>
+            <Html
+              transform
+              sprite
+              scale={0.42}
+              zIndexRange={[20, 40]}
+              pointerEvents="none"
+              style={{ pointerEvents: 'none', userSelect: 'none' }}
+            >
               <div style={{
                 display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2px',
                 padding: '2px 6px', borderRadius: '6px',
-                background: b.isHuman ? 'rgba(20,40,60,0.85)' : 'rgba(60,20,20,0.85)',
-                border: `1px solid ${b.isHuman ? 'rgba(100,180,255,0.5)' : 'rgba(255,120,100,0.5)'}`,
+                background: bgCol,
+                border: `2px solid ${borderCol}`,
+                boxShadow: b.isHuman ? undefined : `0 0 0 1px ${rgbaFromHex(b.factionColor, 0.35)}`,
               }}>
                 <span style={{
                   fontSize: '11px', fontWeight: 800, fontFamily: 'system-ui,sans-serif',
                   color: '#f5e6c8', textShadow: '0 1px 2px #000',
                 }}>
-                  Garrison {b.count}
+                  {b.defenseLabel} {b.count}
                 </span>
                 <span style={{ fontSize: '9px', fontWeight: 700, color: barColor, fontFamily: 'monospace' }}>
                   {b.totalHp} HP
@@ -1967,28 +2638,6 @@ function GarrisonBadges({ cities, units, tiles }: { cities: City[]; units: Unit[
   );
 }
 
-// ─── Hero Sprites ──────────────────────────────────────────────────
-
-function HeroMarkers({ heroes, tiles }: { heroes: Hero[]; tiles: Map<string, Tile> }) {
-  const tex = useMemo(() => getSpriteTexture('hero'), []);
-
-  if (heroes.length === 0) return null;
-  return (
-    <group>
-      {heroes.map(h => {
-        const tile = tiles.get(tileKey(h.q, h.r));
-        const ht = tile?.height ?? 0.3;
-        const [x, z] = axialToWorld(h.q, h.r, HEX_RADIUS);
-        return (
-          <sprite key={h.id} position={[x, ht + 0.75, z]} scale={[1.2, 1.2, 1]} raycast={() => null} renderOrder={MAP_ENTITY_RENDER_ORDER}>
-            <spriteMaterial map={tex} {...MAP_ENTITY_SPRITE_MAT} />
-          </sprite>
-        );
-      })}
-    </group>
-  );
-}
-
 function CommanderMarkers({ commanders, tiles }: { commanders: Commander[]; tiles: Map<string, Tile> }) {
   if (commanders.length === 0) return null;
   return (
@@ -1999,7 +2648,15 @@ function CommanderMarkers({ commanders, tiles }: { commanders: Commander[]; tile
         const [x, z] = axialToWorld(c.q, c.r, HEX_RADIUS);
         return (
           <group key={c.id} position={[x + 0.42, ht + 0.88, z - 0.15]}>
-            <Html transform sprite scale={0.38} pointerEvents="none" center style={{ pointerEvents: 'none' }}>
+            <Html
+              transform
+              sprite
+              scale={0.38}
+              zIndexRange={[20, 40]}
+              pointerEvents="none"
+              center
+              style={{ pointerEvents: 'none' }}
+            >
               <div
                 style={{
                   width: 44,
@@ -2153,16 +2810,17 @@ function ConstructionMarkers({ sites, tiles }: { sites: ConstructionSite[]; tile
 
   if (sites.length === 0) return null;
   return (
-    <instancedMesh ref={meshRef} args={[geometry, material, sites.length]} renderOrder={MAP_ENTITY_RENDER_ORDER} />
+    <instancedMesh ref={meshRef} args={[geometry, material, sites.length]} renderOrder={MAP_BUILDING_RENDER_ORDER} />
   );
 }
 
 // ─── Builder at Construction Sites ──────────────────────────────────
 
-function BuilderAtSiteMarkers({ sites, roadSites, tiles }: {
+function BuilderAtSiteMarkers({ sites, roadSites, tiles, cities }: {
   sites: ConstructionSite[];
   roadSites: RoadConstructionSite[];
   tiles: Map<string, Tile>;
+  cities: City[];
 }) {
   const tex = useMemo(() => getSpriteTexture('builder'), []);
   const allHexes = useMemo(() => {
@@ -2170,14 +2828,23 @@ function BuilderAtSiteMarkers({ sites, roadSites, tiles }: {
     const out: { q: number; r: number }[] = [];
     for (const s of sites) {
       const k = tileKey(s.q, s.r);
-      if (!seen.has(k)) { seen.add(k); out.push(s); }
+      if (seen.has(k)) continue;
+      if (s.type === 'trebuchet' || s.type === 'scout_tower' || s.type === 'city_defense') {
+        seen.add(k); out.push(s); continue;
+      }
+      const city = s.cityId ? cities.find(c => c.id === s.cityId) : undefined;
+      if (city) {
+        const task = getCityUniversityTask(city);
+        if (!universityTaskMatchesSiteType(task, s.type)) continue;
+      }
+      seen.add(k); out.push(s);
     }
     for (const r of roadSites) {
       const k = tileKey(r.q, r.r);
       if (!seen.has(k)) { seen.add(k); out.push(r); }
     }
     return out;
-  }, [sites, roadSites]);
+  }, [sites, roadSites, cities]);
 
   if (allHexes.length === 0) return null;
   return (
@@ -2416,55 +3083,34 @@ function RoadPathOverlay({ path, tiles }: { path: { q: number; r: number }[]; ti
   );
 }
 
-// ─── Supply Connection Overlay (cluster health: green = food surplus, red = deficit) ─
+// ─── Supply view: empire food health (green = surplus, red = deficit) at each city hex ─
 
-const SUPPLY_LINE_GREEN = 0x22c55e;
-const SUPPLY_LINE_RED = 0xef4444;
+const EMPIRE_SUPPLY_GREEN = '#22c55e';
+const EMPIRE_SUPPLY_RED = '#ef4444';
 
-function SupplyConnectionOverlay({ clustersWithHealth, tiles }: {
-  clustersWithHealth: { paths: { q: number; r: number }[][]; foodSurplus: boolean }[];
+function EmpireSupplyHealthOverlay({ cities, foodSurplus, tiles }: {
+  cities: City[];
+  foodSurplus: boolean;
   tiles: Map<string, Tile>;
 }) {
-  const materials = useMemo(() => ({
-    green: new THREE.MeshBasicMaterial({
-      color: SUPPLY_LINE_GREEN,
-      transparent: true,
-      opacity: 0.9,
-      depthWrite: false,
-    }),
-    red: new THREE.MeshBasicMaterial({
-      color: SUPPLY_LINE_RED,
-      transparent: true,
-      opacity: 0.9,
-      depthWrite: false,
-    }),
-  }), []);
-
-  const items = useMemo(() => {
-    const result: { geo: THREE.TubeGeometry; foodSurplus: boolean }[] = [];
-    for (const { paths, foodSurplus } of clustersWithHealth) {
-      for (const path of paths) {
-        if (path.length < 2) continue;
-        const linePoints = path.map(h => {
-          const [x, z] = axialToWorld(h.q, h.r, HEX_RADIUS);
-          const tile = tiles.get(tileKey(h.q, h.r));
-          const hgt = tile?.height ?? 0.3;
-          return new THREE.Vector3(x, hgt + 0.12, z);
-        });
-        const curve = new THREE.CatmullRomCurve3(linePoints);
-        result.push({ geo: new THREE.TubeGeometry(curve, linePoints.length * 2, 0.1, 4, false), foodSurplus });
-      }
-    }
-    return result;
-  }, [clustersWithHealth, tiles]);
-
-  if (items.length === 0) return null;
-
+  const color = foodSurplus ? EMPIRE_SUPPLY_GREEN : EMPIRE_SUPPLY_RED;
   return (
     <group>
-      {items.map(({ geo, foodSurplus }, i) => (
-        <mesh key={i} geometry={geo} material={foodSurplus ? materials.green : materials.red} />
-      ))}
+      {cities.map(city => {
+        const tile = tiles.get(tileKey(city.q, city.r));
+        if (!tile) return null;
+        const [x, z] = axialToWorld(city.q, city.r, HEX_RADIUS);
+        return (
+          <mesh
+            key={city.id}
+            position={[x, tile.height + 0.11, z]}
+            rotation={[-Math.PI / 2, 0, Math.PI / 6]}
+          >
+            <ringGeometry args={[HEX_RADIUS * 0.82, HEX_RADIUS * 0.94, 6]} />
+            <meshBasicMaterial color={color} transparent opacity={0.75} depthWrite={false} side={THREE.DoubleSide} />
+          </mesh>
+        );
+      })}
     </group>
   );
 }
@@ -2743,7 +3389,6 @@ export default function HexGrid() {
   const tiles = useGameStore(s => s.tiles);
   const cities = useGameStore(s => s.cities);
   const units = useGameStore(s => s.units);
-  const heroes = useGameStore(s => s.heroes);
   const commanders = useGameStore(s => s.commanders);
   const territory = useGameStore(s => s.territory);
   const selectedHex = useGameStore(s => s.selectedHex);
@@ -2756,24 +3401,29 @@ export default function HexGrid() {
   const roadConstructions = useGameStore(s => s.roadConstructions);
   const pendingCityHex = useGameStore(s => s.pendingCityHex);
   const activeWeather = useGameStore(s => s.activeWeather);
+  const heroes = useGameStore(s => s.heroes);
   const roadPathSelection = useGameStore(s => s.roadPathSelection);
   const wallSections = useGameStore(s => s.wallSections);
   const scoutTowers = useGameStore(s => s.scoutTowers);
   const defenseInstallations = useGameStore(s => s.defenseInstallations);
   const supplyViewTab = useGameStore(s => s.supplyViewTab);
-  const getSupplyClustersWithHealth = useGameStore(s => s.getSupplyClustersWithHealth);
+  const getEmpireIncomeStatement = useGameStore(s => s.getEmpireIncomeStatement);
   const assigningTacticalForStack = useGameStore(s => s.assigningTacticalForStack);
   const assigningTacticalForSelectedStacks = useGameStore(s => s.assigningTacticalForSelectedStacks);
+  const tacticalPatrolPaintHexKeys = useGameStore(s => s.tacticalPatrolPaintHexKeys);
   const pendingTacticalOrders = useGameStore(s => s.pendingTacticalOrders);
   const contestedZoneHexKeys = useGameStore(s => s.contestedZoneHexKeys);
   const territoryDisplayStyle = useGameStore(s => s.territoryDisplayStyle);
 
   const visionActive = phase === 'playing';
 
-  const supplyClustersWithHealth = useMemo(() => {
-    if (supplyViewTab !== 'supply') return [];
-    return getSupplyClustersWithHealth();
-  }, [supplyViewTab, getSupplyClustersWithHealth, cities, units]);
+  const empireSupplyOverlay = useMemo(() => {
+    if (supplyViewTab !== 'supply') return null;
+    const humanCities = cities.filter(c => c.ownerId === PLAYER_HUMAN_ID);
+    if (humanCities.length === 0) return null;
+    const stmt = getEmpireIncomeStatement();
+    return { cities: humanCities, foodSurplus: stmt?.foodSurplus ?? true };
+  }, [supplyViewTab, cities, getEmpireIncomeStatement, units, tiles, territory, activeWeather, heroes]);
 
   const biomeGroups = useMemo(() => {
     const groups: Record<Biome, Tile[]> = {
@@ -2829,7 +3479,7 @@ export default function HexGrid() {
   }, [players]);
 
   // Two-tier vision: everything is always visible (terrain, cities, buildings, territory).
-  // Only ENEMY UNITS and HEROES are hidden unless within active vision range.
+  // Enemy land units are hidden unless within active vision range.
   const visibleUnits = useMemo(() => {
     const noPassengers = units.filter(u => !u.aboardShipId);
     if (!visionActive) return noPassengers;
@@ -2846,14 +3496,6 @@ export default function HexGrid() {
     );
     return stack.length > 0 && stack.every(u => isNavalUnitType(u.type));
   }, [uiMode, selectedHex, units]);
-
-  const visibleHeroes = useMemo(() => {
-    if (!visionActive) return heroes;
-    return heroes.filter(h => {
-      if (h.ownerId.includes('human')) return true;
-      return visibleHexes.has(tileKey(h.q, h.r));
-    });
-  }, [heroes, visionActive, visibleHexes]);
 
   const visibleCommanders = useMemo(() => {
     if (!visionActive) return commanders;
@@ -2894,6 +3536,24 @@ export default function HexGrid() {
       .filter((t): t is Tile => !!t);
   }, [assigningTacticalForSelectedStacks, cities, tiles]);
 
+  const tacticalRaidBuildingHintTiles = useMemo(() => {
+    if (assigningTacticalForSelectedStacks?.orderType !== 'attack_building_pick') return [];
+    const out: Tile[] = [];
+    const seen = new Set<string>();
+    for (const city of cities) {
+      if (city.ownerId === PLAYER_HUMAN_ID) continue;
+      for (const b of city.buildings) {
+        if (!isCityBuildingOperational(ensureCityBuildingHp(b))) continue;
+        const k = tileKey(b.q, b.r);
+        if (seen.has(k)) continue;
+        seen.add(k);
+        const t = tiles.get(k);
+        if (t && t.biome !== 'water') out.push(t);
+      }
+    }
+    return out;
+  }, [assigningTacticalForSelectedStacks, cities, tiles]);
+
   const tacticalPendingAttackTiles = useMemo(() => {
     if (!pendingTacticalOrders) return [];
     const seen = new Set<string>();
@@ -2912,19 +3572,33 @@ export default function HexGrid() {
   }, [pendingTacticalOrders, cities, tiles]);
 
   const tacticalDefendHintTiles = useMemo(() => {
-    if (assigningTacticalForSelectedStacks?.orderType !== 'defend_pick') return [];
+    const ot = assigningTacticalForSelectedStacks?.orderType;
+    if (ot !== 'defend_pick' && ot !== 'city_defense_pick') return [];
     return cities
       .filter(c => c.ownerId === PLAYER_HUMAN_ID)
       .map(c => tiles.get(tileKey(c.q, c.r)))
       .filter((t): t is Tile => !!t);
   }, [assigningTacticalForSelectedStacks, cities, tiles]);
 
+  const tacticalPatrolPaintTiles = useMemo(() => {
+    const keys = tacticalPatrolPaintHexKeys ?? [];
+    if (keys.length === 0) return [];
+    const out: Tile[] = [];
+    for (const k of keys) {
+      const t = tiles.get(k);
+      if (t) out.push(t);
+    }
+    return out;
+  }, [tacticalPatrolPaintHexKeys, tiles]);
+
   const tacticalPendingDefendTiles = useMemo(() => {
     if (!pendingTacticalOrders) return [];
     const seen = new Set<string>();
     const out: Tile[] = [];
     for (const o of Object.values(pendingTacticalOrders)) {
-      if (!o || o.type !== 'defend' || !o.cityId) continue;
+      if (!o) continue;
+      if (o.type !== 'defend' && o.type !== 'city_defense') continue;
+      if (!o.cityId) continue;
       const c = cities.find(x => x.id === o.cityId);
       if (!c || c.ownerId !== PLAYER_HUMAN_ID) continue;
       const k = tileKey(c.q, c.r);
@@ -2948,7 +3622,12 @@ export default function HexGrid() {
         <TerrainLayer key={biome} tiles={bTiles} biome={biome} />
       ))}
       <DeepWaterVariantLayers tiles={mapShoreline.deepWater} />
-      <BiomeTextureLayer tiles={mapShoreline.coastalWater} textureKey="biome_water_coast" />
+      <BiomeTextureLayer
+        tiles={mapShoreline.coastalWater}
+        textureKey="biome_water_coast"
+        transparentMap
+        alphaTest={0.04}
+      />
       <LandBiomeVariantLayers tiles={biomeGroups.groups.plains} biome="plains" />
       <LandBiomeVariantLayers tiles={biomeGroups.groups.forest} biome="forest" />
       <LandBiomeVariantLayers tiles={biomeGroups.groups.mountain} biome="mountain" />
@@ -2973,50 +3652,52 @@ export default function HexGrid() {
         </>
       )}
 
-      {/* Territory overlays (always visible); human drawn last for clearer borders */}
-      {playersTerritoryRenderOrder.map(p => (
-        territoryByPlayer[p.id] && (
-          territoryDisplayStyle === 'fill' ? (
+      {/* Territory: faction-colored fill on every controlled hex; dashed style adds edge lines on top */}
+      {playersTerritoryRenderOrder.map(p =>
+        territoryByPlayer[p.id] ? (
+          <Fragment key={p.id}>
             <TerritoryOverlay
-              key={p.id}
               playerColor={p.color}
               tileKeys={territoryByPlayer[p.id]}
               tiles={tiles}
               isHuman={p.id === PLAYER_HUMAN_ID}
             />
-          ) : (
-            <TerritoryDashedBorder
-              key={p.id}
-              playerColor={p.color}
-              tileKeys={territoryByPlayer[p.id]}
-              tiles={tiles}
-              isHuman={p.id === PLAYER_HUMAN_ID}
-            />
-          )
-        )
-      ))}
+            {territoryDisplayStyle === 'dashed' && (
+              <TerritoryDashedBorder
+                playerColor={p.color}
+                tileKeys={territoryByPlayer[p.id]}
+                tiles={tiles}
+                isHuman={p.id === PLAYER_HUMAN_ID}
+              />
+            )}
+          </Fragment>
+        ) : null,
+      )}
 
       {contestedZoneHexKeys.length > 0 && phase === 'playing' && (
         <ContestedZoneOverlay zoneKeys={contestedZoneHexKeys} tiles={tiles} />
       )}
 
       <VillageLayer tiles={biomeGroups.villageTiles} />
-      <ForestTreeLayer tiles={biomeGroups.groups.forest} />
+      <ForestTreeLayer tiles={biomeGroups.groups.forest} cities={cities} />
       <MountainPeakLayer tiles={biomeGroups.groups.mountain} />
+      <MapDetailLayer tiles={[...biomeGroups.groups.plains, ...biomeGroups.groups.forest]} cities={cities} />
 
-      {/* Game entities — cities/buildings always visible, units/heroes vision-filtered */}
-      <CityMarkers cities={cities} tiles={tiles} />
+      {/* Game entities — cities/buildings always visible; enemy units vision-filtered */}
+      <CityMarkers cities={cities} tiles={tiles} players={players} />
       <BuildingMarkers cities={cities} tiles={tiles} />
       <ConstructionMarkers sites={constructions} tiles={tiles} />
-      <BuilderAtSiteMarkers sites={constructions} roadSites={roadConstructions} tiles={tiles} />
+      <BuilderAtSiteMarkers sites={constructions} roadSites={roadConstructions} tiles={tiles} cities={cities} />
       <ScoutTowerMarkers scoutTowers={scoutTowers} tiles={tiles} players={players} />
       <CityDefenseMarkers installations={defenseInstallations} tiles={tiles} players={players} />
       <CombatShotEffects tiles={tiles} />
-      <UnitMarkers units={visibleUnits} tiles={tiles} cities={cities} />
-      <GarrisonBadges cities={cities} units={visibleUnits} tiles={tiles} />
-      <UnitHpBars units={visibleUnits} tiles={tiles} cities={cities} />
+      <UnitMarkers units={visibleUnits} tiles={tiles} cities={cities} players={players} />
+      <GarrisonBadges cities={cities} units={visibleUnits} tiles={tiles} players={players} />
+      <UnitHpBars units={visibleUnits} tiles={tiles} cities={cities} players={players} />
       <MovementProgressBars units={visibleUnits} tiles={tiles} cities={cities} />
-      <HeroMarkers heroes={visibleHeroes} tiles={tiles} />
+      {assigningTacticalForSelectedStacks?.orderType === 'patrol_paint' && tacticalPatrolPaintTiles.length > 0 && (
+        <OverlayLayer tiles={tacticalPatrolPaintTiles} color="#2dd4bf" yOffset={0.08} radiusScale={0.52} height={0.07} />
+      )}
       <CommanderMarkers commanders={visibleCommanders} tiles={tiles} />
       <BattleIcons units={visibleUnits} tiles={tiles} />
 
@@ -3052,6 +3733,13 @@ export default function HexGrid() {
           color="#e4b44c"
         />
       )}
+      {assigningTacticalForSelectedStacks?.orderType === 'attack_building_pick' && (
+        <MultiStackMoveRangeOverlay
+          stackKeys={assigningTacticalForSelectedStacks.stackKeys}
+          tiles={tiles}
+          color="#fb923c"
+        />
+      )}
       {tacticalIncorporateHintTiles.length > 0 && (
         <TacticalOrderTilesOverlay tiles={tacticalIncorporateHintTiles} color="#66ff99" opacity={0.22} />
       )}
@@ -3060,6 +3748,9 @@ export default function HexGrid() {
       )}
       {tacticalAttackHintTiles.length > 0 && (
         <TacticalOrderTilesOverlay tiles={tacticalAttackHintTiles} color="#ff8888" opacity={0.22} />
+      )}
+      {tacticalRaidBuildingHintTiles.length > 0 && (
+        <TacticalOrderTilesOverlay tiles={tacticalRaidBuildingHintTiles} color="#fdba74" opacity={0.26} />
       )}
       {tacticalPendingAttackTiles.length > 0 && (
         <TacticalOrderTilesOverlay tiles={tacticalPendingAttackTiles} color="#cc2222" opacity={0.42} />
@@ -3096,9 +3787,13 @@ export default function HexGrid() {
         <RoadPathOverlay path={roadPathSelection} tiles={tiles} />
       )}
 
-      {/* Supply view: logistics connection lines (green = food surplus, red = deficit) */}
-      {supplyViewTab === 'supply' && supplyClustersWithHealth.length > 0 && (
-        <SupplyConnectionOverlay clustersWithHealth={supplyClustersWithHealth} tiles={tiles} />
+      {/* Supply view: empire pooled food — green = surplus, red = deficit (per city ring) */}
+      {empireSupplyOverlay && (
+        <EmpireSupplyHealthOverlay
+          cities={empireSupplyOverlay.cities}
+          foodSurplus={empireSupplyOverlay.foodSurplus}
+          tiles={tiles}
+        />
       )}
 
       {/* Selection + defense tower weapon range (selected hex) */}

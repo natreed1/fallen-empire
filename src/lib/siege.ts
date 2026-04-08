@@ -10,6 +10,18 @@ import {
 } from '@/types/game';
 import { withDeployFlags, isLandMilitaryUnit, marchHexDistanceAtOrder } from '@/lib/garrison';
 
+/** Land military types that can appear in tactical unit-type filters (excludes builder, naval). */
+export const TACTICAL_FILTER_LAND_TYPES: UnitType[] = [
+  'infantry',
+  'cavalry',
+  'ranged',
+  'horse_archer',
+  'crusader_knight',
+  'trebuchet',
+  'battering_ram',
+  'defender',
+];
+
 /** March target + flags for the first wave of an attack-city order. */
 export function getAttackMarchParams(
   attackStyle: AttackCityStyle,
@@ -100,6 +112,13 @@ function sortLandMilitaryById(stackUnits: Unit[]): Unit[] {
     .sort((a, b) => a.id.localeCompare(b.id));
 }
 
+/** All land military units whose type is in `types`, stable order by id. */
+export function unitIdsMatchingTypes(stackUnits: Unit[], types: UnitType[]): string[] {
+  if (types.length === 0) return [];
+  const set = new Set(types);
+  return sortLandMilitaryById(stackUnits.filter(u => set.has(u.type))).map(u => u.id);
+}
+
 /** Pick up to `counts[type]` units per type, optionally skipping ids in `exclude`. */
 export function selectUnitIdsByTypeCounts(
   stackUnits: Unit[],
@@ -122,6 +141,32 @@ export function selectUnitIdsByTypeCounts(
 function wave1Arrived(w: Unit | undefined, rallyQ: number, rallyR: number): boolean {
   if (!w || w.hp <= 0) return true;
   return hexDistance(w.q, w.r, rallyQ, rallyR) === 0;
+}
+
+/** When prior wave reaches the rally hex (or all gone), start next echelon movement to dest. */
+export function releaseMarchEchelonHolds(units: Unit[], cities: City[]): void {
+  const byId = new Map(units.map(u => [u.id, u]));
+  for (const u of units) {
+    const hold = u.marchEchelonHold;
+    if (!hold || u.hp <= 0) continue;
+    const released = hold.waitForUnitIds.every(wid => {
+      const w = byId.get(wid);
+      return wave1Arrived(w, hold.rallyQ, hold.rallyR);
+    });
+    if (!released) continue;
+
+    delete u.marchEchelonHold;
+    const deployed = withDeployFlags(u, hold.destQ, hold.destR, cities);
+    Object.assign(u, {
+      ...deployed,
+      targetQ: hold.destQ,
+      targetR: hold.destR,
+      status: 'moving' as const,
+      assaulting: false,
+      marchInitialHexDistance: marchHexDistanceAtOrder(u, hold.destQ, hold.destR),
+    });
+    delete u.siegingCityId;
+  }
 }
 
 /** When wave-1 units reach the rally (or die), start wave-2 movement. */

@@ -152,13 +152,15 @@ export interface ScrollItem {
   kind: ScrollKind;
 }
 
-/** A scroll assigned to a unit; the whole stack at that hex shares bonuses. */
+/** A scroll assigned to a carrier unit; optionally tagged to an {@link OperationalArmy} so the whole army shares bonuses on that hex. */
 export interface ScrollAttachment {
   id: string;
   scrollId: string;
   kind: ScrollKind;
   carrierUnitId: string;
   ownerId: string;
+  /** When set, any land unit on this hex with matching {@link Unit.armyId} receives scroll bonuses. */
+  armyId?: string;
 }
 
 /** Legacy disk radius (no longer used for generation; kept for tools/docs). */
@@ -293,7 +295,7 @@ export type BuildingType =
   | 'city_center' | 'farm' | 'banana_farm' | 'factory' | 'barracks' | 'academy' | 'market' | 'quarry' | 'mine' | 'gold_mine'
   | 'sawmill' | 'port' | 'shipyard' | 'fishery' | 'logging_hut';
 /** Construction site type: buildings (in city) or field-built siege/scout/defense (builder on hex). */
-export type ConstructionSiteType = BuildingType | 'trebuchet' | 'scout_tower' | 'city_defense';
+export type ConstructionSiteType = BuildingType | 'trebuchet' | 'scout_tower' | 'city_defense' | 'wall_section';
 export type UnitType =
   | 'infantry' | 'cavalry' | 'ranged' | 'horse_archer' | 'crusader_knight' | 'builder' | 'trebuchet' | 'battering_ram' | 'defender'
   | 'scout_ship' | 'warship' | 'transport_ship' | 'fisher_transport' | 'capital_ship';
@@ -307,8 +309,24 @@ export function isNavalUnitType(type: UnitType): boolean {
   return NAVAL_UNIT_TYPES.has(type);
 }
 export type UnitStatus = 'idle' | 'moving' | 'fighting' | 'starving';
-export type ArmyStance = 'aggressive' | 'defensive' | 'passive';
+export type ArmyStance = 'aggressive' | 'defensive' | 'passive' | 'skirmish' | 'hold_the_line';
+
+/** Legacy type — heroes are not spawned; APIs still accept `heroes: []`. */
 export type HeroType = 'general' | 'logistician';
+export interface Hero {
+  id: string;
+  name: string;
+  type: HeroType;
+  q: number;
+  r: number;
+  ownerId: string;
+  hp?: number;
+  maxHp?: number;
+}
+
+export const HERO_BASE_HP = 100;
+/** Legacy — combat still references this if heroes ever exist; not spawned in play. */
+export const HERO_ATTACK = 25;
 
 /** Human tactical attack plan vs an enemy city. */
 export type AttackCityStyle = 'siege' | 'direct' | 'assault';
@@ -329,6 +347,9 @@ export interface Player {
 
 // ─── City ──────────────────────────────────────────────────────────
 
+/** City building under siege: intact vs burned shell (cheaper repair than new build). */
+export type BuildingState = 'normal' | 'ruins';
+
 export interface CityBuilding {
   type: BuildingType;
   q: number;
@@ -337,6 +358,10 @@ export interface CityBuilding {
   assignedWorkers?: number;  // all job buildings; employment tracked separately from population
   /** Port: ship unit ids currently assigned to this port (docked / home). */
   dockedShipIds?: string[];
+  /** Structural HP (siege); defaults applied via {@link ensureCityBuildingHp}. */
+  hp?: number;
+  maxHp?: number;
+  buildingState?: BuildingState;
 }
 
 /** University workforce directive — drives automated builds and which sites get extra BP. */
@@ -371,6 +396,16 @@ export interface City {
   frontierCity?: number;
   /** Hex steps from center included in this city's territory; default {@link TERRITORY_RADIUS}. */
   territoryRadius?: number;
+  /**
+   * When true, garrisoned bow units (ranged / horse archer) fire at enemies in this city's territory
+   * within {@link garrisonPatrolRadius} hex steps of the city center (combat tick).
+   */
+  garrisonPatrol?: boolean;
+  /**
+   * Patrol depth from city center; only tiles at most this far from the center are valid patrol targets.
+   * Default {@link TERRITORY_RADIUS}; clamped to {@link GARRISON_PATROL_RADIUS_MIN}..{@link GARRISON_PATROL_RADIUS_MAX}.
+   */
+  garrisonPatrolRadius?: number;
   /** Last cycle: natural growth (births − deaths) */
   lastNaturalGrowth?: number;
   /** Last cycle: migration (positive = immigrants, negative = emigrants) */
@@ -378,6 +413,58 @@ export interface City {
   /** Smoothed carrying capacity (population expectations); lags actual production by ~2–4 cycles */
   expectedCarryingCapacity?: number;
 }
+
+// ─── Unit stack (training template + optional auto-replenish) ─────
+
+/** One row in a stack’s desired composition (type + arms tier × count). */
+export interface StackCompositionEntry {
+  unitType: UnitType;
+  armsLevel: 1 | 2 | 3;
+  count: number;
+}
+
+/** @deprecated Use StackCompositionEntry */
+export type DivisionCompositionEntry = StackCompositionEntry;
+export type ArmyCompositionEntry = StackCompositionEntry;
+
+/** Named stack created when you train units; replenishment targets this template. */
+export interface UnitStack {
+  id: string;
+  ownerId: string;
+  homeCityId: string;
+  name: string;
+  composition: StackCompositionEntry[];
+  autoReplenish: boolean;
+  rallyQ: number;
+  rallyR: number;
+}
+
+/** @deprecated Use UnitStack */
+export type Division = UnitStack;
+/** @deprecated Use UnitStack */
+export type Army = UnitStack;
+
+/**
+ * Field army: created in the Army panel. Map hex stacks + unit stacks can receive orders.
+ * Units link via {@link Unit.armyId}; trained stacks link via {@link OperationalArmy.stackIds}.
+ */
+export interface OperationalArmy {
+  id: string;
+  ownerId: string;
+  name: string;
+  stance: ArmyStance;
+  /** Unit stacks (training groups) attached to this army for org/replenish. */
+  stackIds: string[];
+  targetQ?: number;
+  targetR?: number;
+  /** Shared inter-hex cadence when movement is driven at army level (optional until loop migrates). */
+  nextMoveAt?: number;
+  marchInitialHexDistance?: number;
+  moveLegMs?: number;
+}
+
+/** @deprecated Renamed to {@link OperationalArmy} — same shape. */
+export type FieldArmy = OperationalArmy;
 
 // ─── Unit ──────────────────────────────────────────────────────────
 
@@ -421,35 +508,51 @@ export interface Unit {
     centerR: number;
     attackStyle: AttackCityStyle;
   };
+  /** Echelon march (non-siege): wait until prior wave reaches rally hex, then march to destination. */
+  marchEchelonHold?: {
+    waitForUnitIds: string[];
+    rallyQ: number;
+    rallyR: number;
+    destQ: number;
+    destR: number;
+  };
   /** Land units carried by a transport/scout ship; excluded from combat/map stack until unloaded. */
   aboardShipId?: string;
   /** Naval: ids of carried land units (capacity limits apply). */
   cargoUnitIds?: string[];
   /** When set, land military unit is in this city's garrison (shown as badge on city hex until deployed). */
   garrisonCityId?: string;
+  /** Unit stack this unit was trained into (replenishment / template). */
+  stackId?: string;
+  /** Operational field army this unit belongs to (shared orders / commander / scroll layer). */
+  armyId?: string;
+  /**
+   * City defense order: auto_engage roams territory to intercept; stagnant stays on city center.
+   * Only meaningful when {@link defendCityId} is set.
+   */
+  cityDefenseMode?: 'auto_engage' | 'stagnant';
+  /** Patrol mission: wander within this disk, engage spotted enemies. */
+  patrolCenterQ?: number;
+  patrolCenterR?: number;
+  patrolRadius?: number;
+  /** When set, patrol is limited to these hexes (from tactical paint); overrides disk wander. */
+  patrolHexKeys?: string[];
   /** When set, land military will auto-incorporate this neutral village on arrival (tactical order). */
   incorporateVillageAt?: { q: number; r: number };
-  /** Unit was ordered to interdict this supply cluster (MVP: move to cluster path hex). */
-  interdictClusterKey?: string;
-  /** Unit is defending trade routes for this cluster (tag for engagement). */
-  tradeDefenseClusterKey?: string;
-}
-
-// ─── Hero ──────────────────────────────────────────────────────────
-
-export const HERO_BASE_HP = 100;
-export const HERO_ATTACK = 15;
-
-export interface Hero {
-  id: string;
-  name: string;
-  type: HeroType;
-  q: number;
-  r: number;
-  ownerId: string;
-  /** Combat HP; when <= 0 hero is removed. Defaults to HERO_BASE_HP when missing. */
-  hp?: number;
-  maxHp?: number;
+  /** Auto-chase this enemy land unit (retaliation / close into range). Cleared when target dies. */
+  retaliateUnitId?: string;
+  /** Auto-chase this enemy defense tower. Cleared when destroyed. */
+  retaliateDefenseId?: string;
+  /** Tactical/build focus: damage this enemy city building until ruined. */
+  attackBuildingTarget?: { cityId: string; q: number; r: number };
+  /** Active ability state: whether active and when cooldown expires. */
+  abilityActive?: boolean;
+  /** Timestamp (ms) when the active ability expires. */
+  abilityActiveUntil?: number;
+  /** Timestamp (ms) after which the ability can be activated again. */
+  abilityCooldownUntil?: number;
+  /** Cavalry charge: true on the first tick of contact, auto-clears after. */
+  chargeReady?: boolean;
 }
 
 // ─── Commander (assign to city defense or a field army anchor unit) ─
@@ -506,7 +609,9 @@ export const COMMANDER_TRAIT_INFO: Record<
 
 export type CommanderAssignment =
   | { kind: 'city_defense'; cityId: string }
-  | { kind: 'field'; anchorUnitId: string };
+  /** @deprecated Prefer `field_army` (see {@link OperationalArmy}) for new field assignments. */
+  | { kind: 'field'; anchorUnitId: string }
+  | { kind: 'field_army'; armyId: string };
 
 /** Land commanders lead armies; naval commanders lead ship stacks (~25% roll on recruit). */
 export type CommanderKind = 'land' | 'naval';
@@ -546,9 +651,6 @@ export const COMMANDER_STARTING_PICK = 5;
 
 /** Additional commanders after the starting five (not limited by barracks). */
 export const COMMANDER_RECRUIT_GOLD = 50;
-
-/** Total population across your cities required before recruiting heroes (no starting hero). */
-export const HERO_POPULATION_UNLOCK = 300;
 
 // ─── Road construction (builder-built; free, takes builder time) ───
 
@@ -634,6 +736,8 @@ export interface ConstructionSite {
   defenseTowerTargetLevel?: DefenseTowerLevel;
   /** When type === 'city_defense': also count builders here (site may differ when placing from a pending move). */
   cityDefenseBuilderBpHex?: { q: number; r: number };
+  /** When type === 'wall_section': originating city/ring for grouped wall projects. */
+  wallBuildRing?: 1 | 2;
 }
 
 // ─── Wall Sections (block enemy movement; built with stone) ───────
@@ -649,6 +753,42 @@ export interface WallSection {
 
 /** Default HP for a new wall section (low so it must be defended). */
 export const WALL_SECTION_HP = 50;
+/** Builder BP needed to complete one wall section project. */
+export const WALL_SECTION_BP_COST = 38;
+
+/** Passive heal per economy cycle for land units not in combat (fraction of maxHp). */
+export const UNIT_HP_REGEN_FRACTION_PER_CYCLE = 0.04;
+
+/** Default patrol radius (hex steps) when assigning a patrol mission from the tactical bar. */
+export const PATROL_DEFAULT_RADIUS = 4;
+
+/** Gold multiplier vs building fresh cost to repair a ruined building. */
+export const RUINS_REPAIR_GOLD_RATIO = 0.4;
+
+/** Base max HP for city buildings under siege (scaled by level for job buildings). */
+export function defaultCityBuildingMaxHp(type: BuildingType, level: number = 1): number {
+  const lv = Math.max(1, level);
+  if (type === 'city_center') return 200;
+  if (type === 'barracks' || type === 'academy' || type === 'factory') return 70 * lv;
+  if (type === 'market' || type === 'port' || type === 'shipyard') return 55 * lv;
+  return 45 * lv;
+}
+
+/** Ensure hp/maxHp exist for buildings (migration + new builds). */
+export function ensureCityBuildingHp(b: CityBuilding): CityBuilding {
+  const lvl = b.level ?? 1;
+  const maxHp = b.maxHp ?? defaultCityBuildingMaxHp(b.type, lvl);
+  const hp = b.hp !== undefined ? b.hp : b.buildingState === 'ruins' ? 0 : maxHp;
+  return { ...b, maxHp, hp, buildingState: b.buildingState ?? 'normal' };
+}
+
+/** True if this building contributes to production / jobs (not ruins / destroyed). */
+export function isCityBuildingOperational(b: CityBuilding): boolean {
+  if (b.buildingState === 'ruins') return false;
+  const maxHp = b.maxHp ?? defaultCityBuildingMaxHp(b.type, b.level ?? 1);
+  if (b.hp !== undefined && b.hp <= 0 && maxHp > 0) return false;
+  return true;
+}
 
 // ─── Scout Towers (field-built by builders; vision only) ───────────
 export interface ScoutTower {
@@ -708,6 +848,9 @@ export interface TerritoryInfo {
 // ─── Game Constants ────────────────────────────────────────────────
 
 export const TERRITORY_RADIUS = 3;
+/** Garrison patrol depth slider (hex steps from city center). */
+export const GARRISON_PATROL_RADIUS_MIN = 1;
+export const GARRISON_PATROL_RADIUS_MAX = 6;
 /** Incorporated villages use the same territory radius as starting capitals. */
 export const VILLAGE_CITY_TERRITORY_RADIUS = TERRITORY_RADIUS;
 /** If a move destination is within this many hexes of your territory, you may issue orders up to MOVE_ORDER_MAX_IN_TERRITORY_BAND hexes; otherwise cap is MOVE_ORDER_MAX_OUTSIDE_BAND. */
@@ -715,8 +858,8 @@ export const MOVE_ORDER_TERRITORY_BAND_HEXES = 20;
 export const MOVE_ORDER_MAX_IN_TERRITORY_BAND = 20;
 export const MOVE_ORDER_MAX_OUTSIDE_BAND = 10;
 
-/** Rough max hexes a unit can move in one sim cycle (30s) at speed 1. Supply radius should be >= this so movement and supply are aligned. */
-export const MOVEMENT_HEXES_PER_CYCLE_ESTIMATE = 24;
+/** Rough max hexes a unit can move in one economy cycle (30s) at speed 1 after UNIT_MOVEMENT_DELAY_MULT (~1.7). Informational only. Supply radius should stay >= this. */
+export const MOVEMENT_HEXES_PER_CYCLE_ESTIMATE = 20;
 /** Units/builders get supply when within this hex distance of any friendly city. No roads required.
  *  >= MOVEMENT_HEXES_PER_CYCLE_ESTIMATE so one cycle of movement doesn't leave supply. */
 export const SUPPLY_VICINITY_RADIUS = 24;
@@ -815,7 +958,7 @@ export const BUILDING_PRODUCTION: Record<BuildingType, BuildingProduction> = {
   academy:     { food: 0, goods: 0, guns: 0 },
   market:      { food: 0, goods: 0, guns: 0 },
   quarry:      { food: 0, goods: 0, guns: 0, stone: 3 },
-  mine:        { food: 0, goods: 0, guns: 0, iron: 1 },
+  mine:        { food: 0, goods: 0, guns: 0, iron: 1.5 },
   gold_mine:   { food: 0, goods: 0, guns: 0, gold: 7 },
   sawmill:     { food: 0, goods: 0, guns: 0, refinedWood: 1 },
   port:        { food: 0, goods: 0, guns: 0 },
@@ -829,6 +972,9 @@ export const FACTORY_L2_IRON_PER_CYCLE = 1;
 export const FACTORY_L2_ARMS_PER_CYCLE = 6;
 
 export const MARKET_GOLD_PER_CYCLE = 1;
+
+/** Market gold: per incorporated village hex in the owning player's territory (empire-wide pool). */
+export const MARKET_GOLD_PER_VILLAGE = 2;
 
 /** Storage cap provided by city center (1 per city, required) */
 export const CITY_CENTER_STORAGE = { food: 100, goods: 100, guns: 100, gunsL2: 100, iron: 50, stone: 50, wood: 50, refinedWood: 50 };
@@ -1031,16 +1177,6 @@ export function getUnitStats(u: { type: UnitType; armsLevel?: 1 | 2 | 3 }) {
   return UNIT_BASE_STATS[u.type];
 }
 
-export const HERO_BUFFS: Record<HeroType, { label: string; desc: string }> = {
-  general:     { label: 'General', desc: '+10% Attack' },
-  logistician: { label: 'Logistician', desc: '-50% Food Upkeep' },
-};
-
-export const HERO_NAMES = [
-  'Marcus the Bold', 'Helena Ironside', 'Kael Stormborn', 'Lyra the Wise',
-  'Theron Blackwood', 'Vala of the East', 'Orion the Cunning', 'Sera Flameheart',
-];
-
 export const TERRAIN_FOOD_YIELD: Record<Biome, number> = {
   water: 0, plains: 1.5, forest: 0.5, mountain: 0, desert: 0.25,
 };
@@ -1122,7 +1258,7 @@ export const COMBAT_TICK_MS = 1000;           // combat resolution every 1s
  * Multiplier on time between hex steps (1 = legacy pace). Above 1 slows armies (better for multiplayer readability).
  * Applied in movement tick: moveDelay = (1000 / effectiveSpeed) * this factor.
  */
-export const UNIT_MOVEMENT_DELAY_MULT = 1.45;
+export const UNIT_MOVEMENT_DELAY_MULT = 1.7;
 /**
  * Multiplier on unit-vs-unit combat damage (melee same-hex, ranged/counter, hero vs unit).
  * Tuned with {@link COMBAT_KILL_XP} and hit/glance rolls so a typical same-hex fight (e.g. 5v5 L1 infantry)
@@ -1142,6 +1278,18 @@ export const COMBAT_HIT_FULL_CHANCE = 0.72;
 export const COMBAT_HIT_GLANCE_CHANCE = 0.18;
 export const COMBAT_GLANCE_DAMAGE_MULT = 0.42;
 
+/** Major engagement: each side’s engaged stack must be at least this fraction of the enemy’s global land army (sum maxHp). */
+export const MAJOR_ENGAGEMENT_ARMY_FRACTION = 0.2;
+
+/** Player-chosen doctrine for a major engagement (modifiers in majorEngagement.ts). */
+export type MajorEngagementDoctrine =
+  | 'balanced'
+  | 'shield_wall'
+  | 'volley_focus'
+  | 'flank_emphasis'
+  | 'hold_the_line'
+  | 'cavalry_push';
+
 /** Battleship shore bombardment: max hex distance from ship (on water) to aim point on land. */
 export const COASTAL_BOMBARD_RANGE = 3;
 /** Chance the shell centers on the aimed hex; otherwise scatters to a random adjacent land hex. */
@@ -1154,6 +1302,112 @@ export const COASTAL_BOMBARD_UNIT_BASE = 11;
 export const COASTAL_BOMBARD_SPLASH_FULL_CHANCE = 0.32;
 export const COASTAL_BOMBARD_SPLASH_GLANCE_CHANCE = 0.22;
 export const COASTAL_BOMBARD_SPLASH_GLANCE_MULT = 0.45;
+
+// ─── Terrain Combat Modifiers ─────────────────────────────────────
+export const TERRAIN_DEFENSE_BONUS: Partial<Record<Biome, number>> = {
+  forest: 0.15,
+  mountain: 0.20,
+};
+export const TERRAIN_RANGED_ATTACK_BONUS: Partial<Record<Biome, number>> = {
+  mountain: 0.10,
+};
+export const TERRAIN_CAVALRY_PENALTY: Partial<Record<Biome, number>> = {
+  forest: 0.10,
+  mountain: 0.15,
+};
+/** Attacking units adjacent to water get a fording penalty. */
+export const RIVER_CROSSING_ATTACK_PENALTY = 0.20;
+
+// ─── Unit Counter Multipliers (rock-paper-scissors) ──────────────
+export const COUNTER_MULTIPLIER: Partial<Record<UnitType, Partial<Record<UnitType, number>>>> = {
+  cavalry:        { ranged: 1.30, horse_archer: 1.20 },
+  ranged:         { infantry: 1.20, crusader_knight: 1.15 },
+  infantry:       { cavalry: 1.25 },
+  horse_archer:   { infantry: 1.30, ranged: 1.10 },
+  crusader_knight:{ cavalry: 1.25, infantry: 1.15 },
+  battering_ram:  { defender: 1.20 },
+};
+
+// ─── Morale System ────────────────────────────────────────────────
+export const MORALE_MAX = 100;
+export const MORALE_START = 100;
+export const MORALE_ALLY_DEATH_DROP = 6;
+export const MORALE_HERO_DEATH_DROP = 25;
+export const MORALE_COMMANDER_DEATH_DROP = 20;
+export const MORALE_KILL_BOOST = 4;
+export const MORALE_COMMANDER_PRESENCE_BOOST = 2;
+export const MORALE_HOME_TERRITORY_BOOST = 1;
+export const MORALE_OUTNUMBER_DRAIN_PER_TICK = 1;
+export const MORALE_WAVER_THRESHOLD = 30;
+export const MORALE_WAVER_ATTACK_PENALTY = 0.25;
+export const MORALE_ROUT_THRESHOLD = 15;
+
+// ─── Flanking Bonus ───────────────────────────────────────────────
+export const FLANK_2_HEX_BONUS = 0.15;
+export const FLANK_3_HEX_BONUS = 0.25;
+
+// ─── Stance Combat Modifiers ─────────────────────────────────────
+export const STANCE_AGGRESSIVE_ATTACK_BONUS = 0.15;
+export const STANCE_AGGRESSIVE_DEFENSE_PENALTY = 0.15;
+export const STANCE_DEFENSIVE_DEFENSE_BONUS = 0.15;
+export const STANCE_DEFENSIVE_ATTACK_PENALTY = 0.15;
+export const STANCE_HOLD_DEFENSE_BONUS = 0.25;
+
+// ─── Active Abilities ─────────────────────────────────────────────
+export type AbilityId = 'shield_wall' | 'charge' | 'volley_fire' | 'barrage' | 'holy_zeal';
+
+export const ABILITY_DEFS: Record<AbilityId, {
+  label: string;
+  desc: string;
+  unitTypes: UnitType[];
+  durationMs: number;
+  cooldownMs: number;
+  toggle?: boolean;
+}> = {
+  shield_wall: {
+    label: 'Shield Wall',
+    desc: '+40% defense, -50% attack, immobile',
+    unitTypes: ['infantry'],
+    durationMs: 0,
+    cooldownMs: 0,
+    toggle: true,
+  },
+  charge: {
+    label: 'Charge',
+    desc: '2x damage on first contact',
+    unitTypes: ['cavalry'],
+    durationMs: 1000,
+    cooldownMs: 30000,
+  },
+  volley_fire: {
+    label: 'Volley Fire',
+    desc: '+50% ranged damage for 3s',
+    unitTypes: ['ranged', 'horse_archer'],
+    durationMs: 3000,
+    cooldownMs: 20000,
+  },
+  barrage: {
+    label: 'Barrage',
+    desc: 'Area damage to all in target hex for 5s',
+    unitTypes: ['trebuchet'],
+    durationMs: 5000,
+    cooldownMs: 60000,
+  },
+  holy_zeal: {
+    label: 'Holy Zeal',
+    desc: 'Immune to morale loss for 10s',
+    unitTypes: ['crusader_knight'],
+    durationMs: 10000,
+    cooldownMs: 45000,
+  },
+};
+
+export function getAbilityForUnit(type: UnitType): AbilityId | null {
+  for (const [id, def] of Object.entries(ABILITY_DEFS)) {
+    if (def.unitTypes.includes(type)) return id as AbilityId;
+  }
+  return null;
+}
 
 /** Retreat command: delay before retreat executes (design §5, 30). */
 export const RETREAT_DELAY_MS = 2000;

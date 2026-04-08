@@ -5,6 +5,7 @@ import {
   CommanderKind,
   CommanderTraitId,
   COMMANDER_TRAIT_INFO,
+  OperationalArmy,
   Unit,
   generateId,
   isNavalUnitType,
@@ -47,6 +48,13 @@ export function commanderAppliesToUnit(
       unit.q === city.q &&
       unit.r === city.r
     );
+  }
+
+  if (a.kind === 'field_army') {
+    if (kind === 'naval') return false;
+    if (!unit.armyId || unit.armyId !== a.armyId) return false;
+    if (unit.aboardShipId || isNavalUnitType(unit.type) || unit.type === 'builder') return false;
+    return unit.q === commander.q && unit.r === commander.r;
   }
 
   const anchor = units.find(u => u.id === a.anchorUnitId);
@@ -115,6 +123,22 @@ export function syncCommandersToAssignments(
       }
       continue;
     }
+    if (a.kind === 'field_army') {
+      const lead = units.find(
+        u =>
+          u.ownerId === c.ownerId &&
+          u.armyId === a.armyId &&
+          u.hp > 0 &&
+          !u.aboardShipId &&
+          !isNavalUnitType(u.type) &&
+          u.type !== 'builder',
+      );
+      if (lead) {
+        c.q = lead.q;
+        c.r = lead.r;
+      }
+      continue;
+    }
     const anchor = units.find(u => u.id === a.anchorUnitId);
     if (anchor && anchor.hp > 0 && !anchor.aboardShipId) {
       c.q = anchor.q;
@@ -123,19 +147,45 @@ export function syncCommandersToAssignments(
   }
 }
 
-export function clearInvalidCommanderAssignments(commanders: Commander[], cities: City[]): void {
+export function clearInvalidCommanderAssignments(
+  commanders: Commander[],
+  cities: City[],
+  operationalArmies?: OperationalArmy[],
+): void {
   for (const c of commanders) {
     const a = c.assignment;
-    if (!a || a.kind !== 'city_defense') continue;
-    const city = cities.find(ct => ct.id === a.cityId);
-    if (!city || city.ownerId !== c.ownerId) c.assignment = null;
+    if (!a) continue;
+    if (a.kind === 'city_defense') {
+      const city = cities.find(ct => ct.id === a.cityId);
+      if (!city || city.ownerId !== c.ownerId) c.assignment = null;
+      continue;
+    }
+    if (a.kind === 'field_army' && operationalArmies?.length) {
+      if (!operationalArmies.some(o => o.id === a.armyId && o.ownerId === c.ownerId)) {
+        c.assignment = null;
+      }
+    }
   }
 }
 
 export function unassignCommandersWithDeadAnchors(commanders: Commander[], units: Unit[]): void {
   for (const c of commanders) {
     const a = c.assignment;
-    if (!a || a.kind !== 'field') continue;
+    if (!a) continue;
+    if (a.kind === 'field_army') {
+      const anyAlive = units.some(
+        u =>
+          u.ownerId === c.ownerId &&
+          u.armyId === a.armyId &&
+          u.hp > 0 &&
+          !u.aboardShipId &&
+          !isNavalUnitType(u.type) &&
+          u.type !== 'builder',
+      );
+      if (!anyAlive) c.assignment = null;
+      continue;
+    }
+    if (a.kind !== 'field') continue;
     const anchor = units.find(u => u.id === a.anchorUnitId);
     if (!anchor || anchor.hp <= 0) c.assignment = null;
   }

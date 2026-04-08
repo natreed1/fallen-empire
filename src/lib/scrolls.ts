@@ -43,6 +43,18 @@ export function hexHasScrollKind(
 ): boolean {
   for (const a of attachments) {
     if (a.kind !== kind || a.ownerId !== ownerId) continue;
+    if (a.armyId) {
+      const onHex = units.some(
+        u =>
+          u.hp > 0 &&
+          u.armyId === a.armyId &&
+          u.q === q &&
+          u.r === r &&
+          !u.aboardShipId,
+      );
+      if (onHex) return true;
+      continue;
+    }
     const carrier = units.find(u => u.id === a.carrierUnitId);
     if (!carrier || carrier.hp <= 0) continue;
     if (carrier.q === q && carrier.r === r) return true;

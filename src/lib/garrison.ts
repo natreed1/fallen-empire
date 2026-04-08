@@ -38,10 +38,17 @@ function shouldClearIncorporateForMove(u: Unit, targetQ: number, targetR: number
 export function applyDeployFlagsForMoveMutable(u: Unit, targetQ: number, targetR: number, cities: City[]): void {
   if (shouldClearGarrisonForMove(u, targetQ, targetR, cities)) {
     delete u.garrisonCityId;
-    if (u.interdictClusterKey) delete u.interdictClusterKey;
   }
-  if (shouldClearDefendCityForMove(u, targetQ, targetR, cities)) delete u.defendCityId;
+  if (shouldClearDefendCityForMove(u, targetQ, targetR, cities)) {
+    delete u.defendCityId;
+    delete u.cityDefenseMode;
+  }
   if (shouldClearIncorporateForMove(u, targetQ, targetR)) delete u.incorporateVillageAt;
+  if (u.patrolCenterQ !== undefined && (targetQ !== u.q || targetR !== u.r)) {
+    delete u.patrolCenterQ;
+    delete u.patrolCenterR;
+    delete u.patrolRadius;
+  }
 }
 
 /** When issuing movement to targetQ,targetR, strip garrison if leaving the garrison city hex; clear defend if destination is not that city. */
@@ -56,6 +63,8 @@ export function withDeployFlags(u: Unit, targetQ: number, targetR: number, citie
 export function tryReGarrisonIdleUnit(u: Unit, cities: City[]): void {
   if (u.hp <= 0 || !isLandMilitaryUnit(u) || u.aboardShipId) return;
   if (u.status !== 'idle') return;
+  if (u.cityDefenseMode === 'auto_engage') return;
+  if (u.patrolCenterQ !== undefined) return;
   const city = cities.find(c => c.q === u.q && c.r === u.r && c.ownerId === u.ownerId);
   if (!city) return;
   u.garrisonCityId = city.id;
