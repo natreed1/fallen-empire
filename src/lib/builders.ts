@@ -11,8 +11,40 @@ import {
   hexDistance,
 } from '@/types/game';
 
+/** Resolved task list for each University workforce slot (length = slot count). */
+export function getUniversitySlotTasks(city: City, academy: CityBuilding | undefined | null): BuilderTask[] {
+  const slots = getUniversityBuilderSlots(academy);
+  if (slots <= 0) return [];
+  const legacy = city.universityBuilderTask ?? DEFAULT_BUILDER_TASK;
+  const stored = city.universityBuilderSlotTasks;
+  if (stored && stored.length === slots) return [...stored];
+  const out: BuilderTask[] = [];
+  for (let i = 0; i < slots; i++) {
+    out.push(stored?.[i] ?? legacy);
+  }
+  return out;
+}
+
+/** Fill every workforce slot with the same task (AI / bulk UI). */
+export function fillUniversitySlotTasks(
+  city: City,
+  academy: CityBuilding | undefined | null,
+  task: BuilderTask,
+): BuilderTask[] {
+  const n = getUniversityBuilderSlots(academy);
+  return Array.from({ length: n }, () => task);
+}
+
 export function getCityUniversityTask(city: City): BuilderTask {
-  return city.universityBuilderTask ?? DEFAULT_BUILDER_TASK;
+  const academy = city.buildings.find(b => b.type === 'academy');
+  const tasks = getUniversitySlotTasks(city, academy);
+  return tasks[0] ?? city.universityBuilderTask ?? DEFAULT_BUILDER_TASK;
+}
+
+/** True if at least one workforce slot is assigned this task. */
+export function cityUniversityHasSlotTask(city: City, task: BuilderTask): boolean {
+  const academy = city.buildings.find(b => b.type === 'academy');
+  return getUniversitySlotTasks(city, academy).some(t => t === task);
 }
 
 /** Builder workforce size from University (academy) level — 1 slot per level, max 5. */
@@ -88,10 +120,12 @@ export function computeConstructionAvailableBp(
   const slots = getUniversityBuilderSlots(academy);
   if (slots <= 0) return avail;
 
-  const task = getCityUniversityTask(city);
-  if (universityTaskMatchesSiteType(task, site.type)) {
-    avail += slots * BUILDER_POWER;
+  const slotTasks = getUniversitySlotTasks(city, academy);
+  let matching = 0;
+  for (const t of slotTasks) {
+    if (universityTaskMatchesSiteType(t, site.type)) matching++;
   }
+  if (matching > 0) avail += matching * BUILDER_POWER;
   return avail;
 }
 

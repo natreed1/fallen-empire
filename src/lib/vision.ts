@@ -1,7 +1,11 @@
 import {
   Tile, City, Unit, Hero, ScoutTower, Commander,
   VISION_RANGE, CITY_VISION_RANGE, BUILDING_VISION_RANGE, SCOUT_TOWER_VISION_RANGE,
-  hexDistance, tileKey,
+  TERRITORY_BORDER_VISION_RANGE,
+  hexDistance, tileKey, parseTileKey,
+  type MapQuadrantId,
+  type MapQuadrantsRevealed,
+  type TerritoryInfo,
 } from '@/types/game';
 
 interface VisionSource {
@@ -10,9 +14,65 @@ interface VisionSource {
   range: number;
 }
 
+function tileBounds(tiles: Map<string, Tile>): { midQ: number; midR: number } {
+  let minQ = Infinity;
+  let maxQ = -Infinity;
+  let minR = Infinity;
+  let maxR = -Infinity;
+  for (const t of tiles.values()) {
+    minQ = Math.min(minQ, t.q);
+    maxQ = Math.max(maxQ, t.q);
+    minR = Math.min(minR, t.r);
+    maxR = Math.max(maxR, t.r);
+  }
+  return { midQ: (minQ + maxQ) / 2, midR: (minR + maxR) / 2 };
+}
+
+function quadrantForTile(q: number, r: number, midQ: number, midR: number): MapQuadrantId {
+  const west = q <= midQ;
+  const north = r <= midR;
+  if (north && west) return 'nw';
+  if (north && !west) return 'ne';
+  if (!north && west) return 'sw';
+  return 'se';
+}
+
+/** Add all hexes in revealed quadrants (trade menu “map pieces”) for full enemy-unit intel there. */
+export function mergeMapQuadrantVision(
+  base: Set<string>,
+  tiles: Map<string, Tile>,
+  revealed: MapQuadrantsRevealed | undefined | null,
+): Set<string> {
+  if (!revealed || (!revealed.nw && !revealed.ne && !revealed.sw && !revealed.se)) {
+    return base;
+  }
+  const { midQ, midR } = tileBounds(tiles);
+  const out = new Set(base);
+  for (const [k, t] of tiles) {
+    const qid = quadrantForTile(t.q, t.r, midQ, midR);
+    if (revealed[qid]) out.add(k);
+  }
+  return out;
+}
+
+function addVisionFromOwnedTerritory(
+  territory: Map<string, TerritoryInfo>,
+  playerId: string,
+  tiles: Map<string, Tile>,
+  extraRange: number,
+  into: Set<string>,
+) {
+  for (const [key, info] of territory) {
+    if (info.playerId !== playerId) continue;
+    const [q, r] = parseTileKey(key);
+    addHexesInRange(q, r, extraRange, tiles, into);
+  }
+}
+
 /**
- * Compute the set of hex keys currently visible to the given player.
- * Vision sources: units, cities, buildings, heroes, scout towers.
+ * Current line-of-sight for the player: units, buildings, cities, heroes, towers,
+ * plus {@link TERRITORY_BORDER_VISION_RANGE} beyond every owned territory hex,
+ * plus optional trade-menu map quadrants (enemy intel + terrain reveal for those tiles).
  */
 export function computeVisibleHexes(
   playerId: string,
@@ -22,6 +82,8 @@ export function computeVisibleHexes(
   tiles: Map<string, Tile>,
   scoutTowers: ScoutTower[] = [],
   commanders: Commander[] = [],
+  mapQuadrantReveal?: MapQuadrantsRevealed | null,
+  territory?: Map<string, TerritoryInfo> | null,
 ): Set<string> {
   const sources: VisionSource[] = [];
 
@@ -70,7 +132,11 @@ export function computeVisibleHexes(
     addHexesInRange(src.q, src.r, src.range, tiles, visible);
   }
 
-  return visible;
+  if (territory?.size) {
+    addVisionFromOwnedTerritory(territory, playerId, tiles, TERRITORY_BORDER_VISION_RANGE, visible);
+  }
+
+  return mergeMapQuadrantVision(visible, tiles, mapQuadrantReveal);
 }
 
 function addHexesInRange(

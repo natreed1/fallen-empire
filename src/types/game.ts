@@ -293,7 +293,7 @@ export const DEFAULT_KINGDOM_ID: KingdomId = 'traders';
 
 export type BuildingType =
   | 'city_center' | 'farm' | 'banana_farm' | 'factory' | 'barracks' | 'academy' | 'market' | 'quarry' | 'mine' | 'gold_mine'
-  | 'sawmill' | 'port' | 'shipyard' | 'fishery' | 'logging_hut';
+  | 'sawmill' | 'port' | 'shipyard' | 'fishery' | 'logging_hut' | 'social_bar';
 /** Construction site type: buildings (in city) or field-built siege/scout/defense (builder on hex). */
 export type ConstructionSiteType = BuildingType | 'trebuchet' | 'scout_tower' | 'city_defense' | 'wall_section';
 export type UnitType =
@@ -333,6 +333,49 @@ export type AttackCityStyle = 'siege' | 'direct' | 'assault';
 
 // ─── Player ────────────────────────────────────────────────────────
 
+/** Empire trade: cartographer’s quarters — reveals enemy land units in that map quarter (fog of war). */
+export type MapQuadrantId = 'nw' | 'ne' | 'sw' | 'se';
+
+export interface MapQuadrantsRevealed {
+  nw: boolean;
+  ne: boolean;
+  sw: boolean;
+  se: boolean;
+}
+
+export const EMPTY_MAP_QUADRANTS: MapQuadrantsRevealed = {
+  nw: false,
+  ne: false,
+  sw: false,
+  se: false,
+};
+
+/** Gold per single quadrant map sheet from the trade menu. */
+export const TRADE_MAP_QUADRANT_GOLD = 85;
+/** Buy all four at once (slight discount vs 4× single). */
+export const TRADE_MAP_FULL_ATLAS_GOLD = 280;
+
+/** Premium resource packs (empire pool — split across your cities into storage, capped per city). */
+export const TRADE_RESOURCE_PACK_GOLD: Record<
+  'food' | 'goods' | 'stone' | 'iron' | 'wood' | 'refinedWood' | 'guns' | 'gunsL2',
+  { gold: number; amount: number }
+> = {
+  food: { gold: 10, amount: 24 },
+  goods: { gold: 14, amount: 14 },
+  stone: { gold: 16, amount: 10 },
+  iron: { gold: 22, amount: 8 },
+  wood: { gold: 12, amount: 14 },
+  refinedWood: { gold: 28, amount: 6 },
+  guns: { gold: 18, amount: 10 },
+  gunsL2: { gold: 42, amount: 5 },
+};
+
+export const TRADE_MORALE_FESTIVAL_GOLD = 48;
+export const TRADE_MORALE_FESTIVAL_DELTA = 10;
+export const TRADE_ROYAL_SURVEY_GOLD = 36;
+/** +cycles toward scroll discovery on all lines (flavor + small mechanical boost). */
+export const TRADE_ROYAL_SURVEY_SCROLL_CYCLES = 2;
+
 export interface Player {
   id: string;
   name: string;
@@ -343,6 +386,8 @@ export interface Player {
   isHuman: boolean;
   /** Chosen kingdom (human); 1v1 AI rival uses {@link pickAiKingdom}. */
   kingdomId?: KingdomId;
+  /** Trade menu: which map quarters show enemy land units through the fog. */
+  mapQuadrantsRevealed?: MapQuadrantsRevealed;
 }
 
 // ─── City ──────────────────────────────────────────────────────────
@@ -379,6 +424,21 @@ export const BUILDER_TASK_LABELS: Record<BuilderTask, string> = {
 /** Gold to upgrade University (academy) one level; L1→L2 … L4→L5. */
 export const UNIVERSITY_UPGRADE_COSTS: [number, number, number, number] = [22, 32, 42, 52];
 
+/** Social hall: one per city; boosts natural population growth by level. */
+export const SOCIAL_BAR_BUILD_GOLD = 28;
+export const SOCIAL_BAR_BP = 82;
+/** L1→L2 and L2→L3 (max building level 3). */
+export const SOCIAL_BAR_UPGRADE_COSTS: [number, number] = [22, 30];
+/** Per level ≥1: multiply birth count by (1 + level × this). L1 ×1.08, L2 ×1.16, L3 ×1.24. */
+export const SOCIAL_BAR_BIRTH_MULT_PER_LEVEL = 0.08;
+
+export const MAP_QUADRANT_LABELS: Record<MapQuadrantId, string> = {
+  nw: 'Northwest',
+  ne: 'Northeast',
+  sw: 'Southwest',
+  se: 'Southeast',
+};
+
 export interface City {
   id: string;
   name: string;
@@ -392,6 +452,11 @@ export interface City {
   buildings: CityBuilding[];
   /** Workforce priority for this city's University — automation + extra BP on matching sites. */
   universityBuilderTask?: BuilderTask;
+  /**
+   * Per–builder-slot task at the University (length matches academy level slots).
+   * When absent, {@link universityBuilderTask} is repeated for each slot.
+   */
+  universityBuilderSlotTasks?: BuilderTask[];
   /** Cycles remaining as frontier city (+25% migration); only for incorporated villages */
   frontierCity?: number;
   /** Hex steps from center included in this city's territory; default {@link TERRITORY_RADIUS}. */
@@ -444,6 +509,9 @@ export type Division = UnitStack;
 /** @deprecated Use UnitStack */
 export type Army = UnitStack;
 
+/** Per-field-army march shape: inherit session default, force spread, or force stacked. */
+export type ArmyMarchSpreadMode = 'inherit' | 'spread' | 'stack';
+
 /**
  * Field army: created in the Army panel. Map hex stacks + unit stacks can receive orders.
  * Units link via {@link Unit.armyId}; trained stacks link via {@link OperationalArmy.stackIds}.
@@ -461,6 +529,11 @@ export interface OperationalArmy {
   nextMoveAt?: number;
   marchInitialHexDistance?: number;
   moveLegMs?: number;
+  /**
+   * Land march formation override for units with this {@link Unit.armyId}.
+   * `inherit` uses the session “Default formation & tactics” toggle.
+   */
+  marchSpread?: ArmyMarchSpreadMode;
 }
 
 /** @deprecated Renamed to {@link OperationalArmy} — same shape. */
@@ -770,7 +843,7 @@ export function defaultCityBuildingMaxHp(type: BuildingType, level: number = 1):
   const lv = Math.max(1, level);
   if (type === 'city_center') return 200;
   if (type === 'barracks' || type === 'academy' || type === 'factory') return 70 * lv;
-  if (type === 'market' || type === 'port' || type === 'shipyard') return 55 * lv;
+  if (type === 'market' || type === 'port' || type === 'shipyard' || type === 'social_bar') return 55 * lv;
   return 45 * lv;
 }
 
@@ -815,7 +888,7 @@ export const SCOUT_MISSION_DURATION_SEC = 30;
 
 export const BUILDING_BP_COST: Record<BuildingType, number> = {
   city_center: 0, farm: 75, banana_farm: 75, factory: 75, barracks: 150, academy: 110, market: 45, quarry: 75, mine: 75, gold_mine: 90,
-  sawmill: 70, port: 120, shipyard: 135, fishery: 75, logging_hut: 75,
+  sawmill: 70, port: 120, shipyard: 135, fishery: 75, logging_hut: 75, social_bar: SOCIAL_BAR_BP,
 };
 
 /** BP required for builder to build a trebuchet in the field (on the hex). */
@@ -863,13 +936,13 @@ export const MOVEMENT_HEXES_PER_CYCLE_ESTIMATE = 20;
 /** Units/builders get supply when within this hex distance of any friendly city. No roads required.
  *  >= MOVEMENT_HEXES_PER_CYCLE_ESTIMATE so one cycle of movement doesn't leave supply. */
 export const SUPPLY_VICINITY_RADIUS = 24;
-export const STARTING_GOLD = 120;
+export const STARTING_GOLD = 600;
 
 export const STARTING_CITY_TEMPLATE: Omit<City, 'id' | 'name' | 'q' | 'r' | 'ownerId'> = {
-  population: 50,
+  population: 150,
   morale: 75,
-  storage: { food: 35, goods: 15, guns: 5, gunsL2: 0, iron: 0, stone: 0, wood: 0, refinedWood: 0 },
-  storageCap: { food: 100, goods: 100, guns: 100, gunsL2: 100, iron: 50, stone: 50, wood: 50, refinedWood: 50 },
+  storage: { food: 150, goods: 45, guns: 5, gunsL2: 0, iron: 0, stone: 0, wood: 0, refinedWood: 0 },
+  storageCap: { food: 1000, goods: 100, guns: 100, gunsL2: 100, iron: 50, stone: 50, wood: 50, refinedWood: 50 },
   buildings: [],
 };
 
@@ -900,11 +973,13 @@ export const BUILDING_COLORS: Record<BuildingType, string> = {
   shipyard:    '#1e3a5f', // dock gray-blue
   fishery:     '#0d9488', // teal
   logging_hut: '#365314', // forest green
+  social_bar: '#c084fc', // violet (gathering place)
 };
 
 export const BUILDING_COSTS: Record<BuildingType, number> = {
   city_center: 0, farm: 15, banana_farm: 15, factory: 25, barracks: 50, academy: 35, market: 2, quarry: 10, mine: 10, gold_mine: 20,
-  sawmill: 20, port: 40, shipyard: 45, fishery: 18, logging_hut: 12,
+  sawmill: 20, port: 40, shipyard: 45, fishery: 18,   logging_hut: 12,
+  social_bar: SOCIAL_BAR_BUILD_GOLD,
 };
 
 /** Iron cost for buildings that require it (e.g. gold_mine). Others are 0. */
@@ -915,7 +990,8 @@ export const BUILDING_IRON_COSTS: Partial<Record<BuildingType, number>> = {
 /** Jobs per building (flat 2 for production, 2 for barracks/academy, 1 for city_center). Use getBuildingJobs(b) for level-aware count. */
 export const BUILDING_JOBS: Record<BuildingType, number> = {
   city_center: 1, farm: 2, banana_farm: 2, factory: 2, barracks: 2, academy: 2, market: 2, quarry: 2, mine: 2, gold_mine: 2,
-  sawmill: 2, port: 1, shipyard: 2, fishery: 2, logging_hut: 2,
+  sawmill: 2, port: 1, shipyard: 2, fishery: 2,   logging_hut: 2,
+  social_bar: 2,
 };
 
 /** Farms and Fishers banana farms share production rules. */
@@ -936,7 +1012,7 @@ export const BARACKS_L3_UPGRADE_COST = 40;
 export const FACTORY_UPGRADE_COST = 15;
 export const FARM_UPGRADE_COST = 20;
 /** L2 farm total food per cycle (higher productivity per job than L1). */
-export const FARM_L2_FOOD_PER_CYCLE = 40;
+export const FARM_L2_FOOD_PER_CYCLE = 60;
 export const WALL_SECTION_STONE_COST = 5;
 export const WORKERS_PER_LEVEL = 5;
 export const MIN_STAFFING_RATIO = 0.4;
@@ -951,8 +1027,8 @@ export const SAWMILL_WOOD_PER_REFINED = 2;
 
 export const BUILDING_PRODUCTION: Record<BuildingType, BuildingProduction> = {
   city_center: { food: 0, goods: 0, guns: 0 },
-  farm:        { food: 18, goods: 0, guns: 0 },
-  banana_farm: { food: 18, goods: 0, guns: 0 },
+  farm:        { food: 27, goods: 0, guns: 0 },
+  banana_farm: { food: 27, goods: 0, guns: 0 },
   factory:     { food: 0, goods: 0, guns: 1 },
   barracks:    { food: 0, goods: 0, guns: 0 },
   academy:     { food: 0, goods: 0, guns: 0 },
@@ -963,8 +1039,9 @@ export const BUILDING_PRODUCTION: Record<BuildingType, BuildingProduction> = {
   sawmill:     { food: 0, goods: 0, guns: 0, refinedWood: 1 },
   port:        { food: 0, goods: 0, guns: 0 },
   shipyard:    { food: 0, goods: 0, guns: 0 },
-  fishery:     { food: 15, goods: 0, guns: 0 },
+  fishery:     { food: 23, goods: 0, guns: 0 },
   logging_hut: { food: 0, goods: 0, guns: 0, wood: 2 },
+  social_bar: { food: 0, goods: 0, guns: 0 },
 };
 
 // L2 factory: 1 iron -> 10 gunsL2 per cycle
@@ -974,10 +1051,13 @@ export const FACTORY_L2_ARMS_PER_CYCLE = 6;
 export const MARKET_GOLD_PER_CYCLE = 1;
 
 /** Market gold: per incorporated village hex in the owning player's territory (empire-wide pool). */
-export const MARKET_GOLD_PER_VILLAGE = 2;
+export const MARKET_GOLD_PER_VILLAGE = 5;
+
+/** Multiplier on census tax gold: floor(pop × taxRate × this). */
+export const POPULATION_TAX_GOLD_MULT = 1.5;
 
 /** Storage cap provided by city center (1 per city, required) */
-export const CITY_CENTER_STORAGE = { food: 100, goods: 100, guns: 100, gunsL2: 100, iron: 50, stone: 50, wood: 50, refinedWood: 50 };
+export const CITY_CENTER_STORAGE = { food: 1000, goods: 100, guns: 100, gunsL2: 100, iron: 50, stone: 50, wood: 50, refinedWood: 50 };
 
 /** Extra food multiplier for farms on plains biome (design: fertile soil). */
 export const PLAINS_FARM_FOOD_MULT = 1.2;
@@ -1189,6 +1269,13 @@ export const POP_CARRYING_CAPACITY_PER_FOOD = 4;  // K = foodProduced * this
 export const POP_EXPECTED_K_ALPHA = 0.25;
 /** Extra deaths per cycle when city has no food in storage (starvation) */
 export const STARVATION_DEATHS = 2;
+/**
+ * Logistic births floor to 0 when P is tiny; allow 1 birth/cycle if empire grain can support it
+ * (recover from collapse while farms restaff).
+ */
+export const POP_RECOVERY_BIRTH_MAX_P = 8;
+/** Empire pooled grain must be at least this × civilian demand for that city to allow a recovery birth */
+export const POP_RECOVERY_BIRTH_FOOD_MULT = 5;
 
 export const PLAYER_COLORS = {
   human: '#55aaee',
@@ -1419,6 +1506,8 @@ export const VISION_RANGE = 5;                // units reveal 5-hex radius
 export const CITY_VISION_RANGE = 4;           // cities reveal 4-hex radius
 export const BUILDING_VISION_RANGE = 2;       // buildings reveal 2-hex radius
 export const SCOUT_VISION_RANGE = 5;          // scout towers reveal 5-hex radius
+/** Extra hex radius from every territory hex you own (line-of-sight for enemies + terrain reveal tick). */
+export const TERRITORY_BORDER_VISION_RANGE = 2;
 export const ROAD_SPEED_BONUS = 1.5;          // +50% speed on roads
 
 export const CITY_NAMES = [

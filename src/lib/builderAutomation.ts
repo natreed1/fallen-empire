@@ -20,6 +20,7 @@ import {
   hexTouchesBiome,
   type BuilderTask,
   DEFAULT_BUILDER_TASK,
+  getHexRing,
 } from '@/types/game';
 import { getUniversityBuilderSlots } from '@/lib/builders';
 
@@ -78,6 +79,75 @@ function canStartResourceBuild(args: {
     if (!hexTouchesBiome(tiles, q, r, 'water')) return false;
   }
   return true;
+}
+
+const MAX_REMOTE_RESOURCE_RING = 40;
+
+/** Allow workforce automation on valid deposits in your empire (any city) or neutral land — not enemy territory. */
+function canStartRemoteResourceBuild(args: {
+  type: BuildingType;
+  q: number;
+  r: number;
+  city: City;
+  player: Player;
+  tiles: Map<string, Tile>;
+  territory: Map<string, { cityId: string; playerId: string }>;
+  constructions: ConstructionSite[];
+  cities: City[];
+}): boolean {
+  const { type, q, r, city, player, tiles, territory, constructions, cities } = args;
+  if (player.gold < BUILDING_COSTS[type]) return false;
+  const ironCost = BUILDING_IRON_COSTS[type] ?? 0;
+  if (ironCost > 0 && (city.storage.iron ?? 0) < ironCost) return false;
+  if (city.population < 10) return false;
+  const tile = tiles.get(tileKey(q, r));
+  if (!tile || tile.biome === 'water' || tile.biome === 'mountain') return false;
+  if (cities.some(c => c.q === q && c.r === r)) return false;
+  if (constructions.some(cs => cs.q === q && cs.r === r)) return false;
+  const hexKey = tileKey(q, r);
+  if (occupiedByBuilding(q, r, cities)) return false;
+  const terr = territory.get(hexKey);
+  if (terr && terr.playerId !== player.id) return false;
+  if (type === 'quarry' && !tile.hasQuarryDeposit) return false;
+  if (type === 'mine' && !tile.hasMineDeposit) return false;
+  if (type === 'gold_mine' && !tile.hasGoldMineDeposit) return false;
+  if (type === 'logging_hut' && tile.biome !== 'forest') return false;
+  if (type === 'fishery' || type === 'port' || type === 'shipyard') {
+    if (!hexTouchesBiome(tiles, q, r, 'water')) return false;
+  }
+  return true;
+}
+
+function findNearestRemoteResourceHex(
+  type: BuildingType,
+  city: City,
+  player: Player,
+  tiles: Map<string, Tile>,
+  territory: Map<string, { cityId: string; playerId: string }>,
+  constructions: ConstructionSite[],
+  cities: City[],
+): { q: number; r: number } | null {
+  for (let ring = 0; ring <= MAX_REMOTE_RESOURCE_RING; ring++) {
+    const hexes = ring === 0 ? [{ q: city.q, r: city.r }] : getHexRing(city.q, city.r, ring);
+    for (const h of hexes) {
+      if (
+        canStartRemoteResourceBuild({
+          type,
+          q: h.q,
+          r: h.r,
+          city,
+          player,
+          tiles,
+          territory,
+          constructions,
+          cities,
+        })
+      ) {
+        return { q: h.q, r: h.r };
+      }
+    }
+  }
+  return null;
 }
 
 function pickHexForCityDefense(args: {
@@ -268,6 +338,13 @@ export function planHumanBuilderAutomation(input: {
           break;
         }
       }
+      if (!buildType) {
+        const rh = findNearestRemoteResourceHex('quarry', city, player, tiles, territory, constructions, cities);
+        if (rh) {
+          buildType = 'quarry';
+          targetHex = rh;
+        }
+      }
     } else if (task === 'expand_iron_mines') {
       for (const h of withDist) {
         if (
@@ -286,6 +363,13 @@ export function planHumanBuilderAutomation(input: {
           buildType = 'mine';
           targetHex = { q: h.q, r: h.r };
           break;
+        }
+      }
+      if (!buildType) {
+        const rm = findNearestRemoteResourceHex('mine', city, player, tiles, territory, constructions, cities);
+        if (rm) {
+          buildType = 'mine';
+          targetHex = rm;
         }
       }
       if (!buildType) {
@@ -309,6 +393,13 @@ export function planHumanBuilderAutomation(input: {
           }
         }
       }
+      if (!buildType) {
+        const rg = findNearestRemoteResourceHex('gold_mine', city, player, tiles, territory, constructions, cities);
+        if (rg) {
+          buildType = 'gold_mine';
+          targetHex = rg;
+        }
+      }
     } else if (task === 'expand_forestry') {
       for (const h of withDist) {
         if (
@@ -327,6 +418,13 @@ export function planHumanBuilderAutomation(input: {
           buildType = 'logging_hut';
           targetHex = { q: h.q, r: h.r };
           break;
+        }
+      }
+      if (!buildType) {
+        const rl = findNearestRemoteResourceHex('logging_hut', city, player, tiles, territory, constructions, cities);
+        if (rl) {
+          buildType = 'logging_hut';
+          targetHex = rl;
         }
       }
       if (!buildType) {
@@ -350,6 +448,16 @@ export function planHumanBuilderAutomation(input: {
               targetHex = { q: h.q, r: h.r };
               break;
             }
+          }
+        }
+      }
+      if (!buildType) {
+        const hasSawmill = city.buildings.some(b => b.type === 'sawmill');
+        if (!hasSawmill) {
+          const rs = findNearestRemoteResourceHex('sawmill', city, player, tiles, territory, constructions, cities);
+          if (rs) {
+            buildType = 'sawmill';
+            targetHex = rs;
           }
         }
       }

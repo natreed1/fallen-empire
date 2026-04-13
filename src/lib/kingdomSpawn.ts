@@ -267,6 +267,31 @@ export function findBestStartHex(
   return { q: pick.q, r: pick.r };
 }
 
+/**
+ * Pick a random valid starting hex for the kingdom.
+ * Uses map seed + current time so each new run can start in a different area.
+ */
+export function findRandomStartHex(
+  kingdom: KingdomId,
+  tiles: Map<string, Tile>,
+  config: MapConfigLike,
+): { q: number; r: number } | null {
+  const seedMix = (Date.now() ^ config.seed ^ kingdom.length * 2654435761) >>> 0;
+  const rng = mulberry32(seedMix);
+  const candidates: { q: number; r: number }[] = [];
+
+  tiles.forEach((tile) => {
+    const { q, r } = tile;
+    if (!isCapitalStartHex(tile)) return;
+    if (kingdom === 'fishers' && !canFishersStartHere(tiles, q, r)) return;
+    candidates.push({ q, r });
+  });
+
+  if (candidates.length === 0) return null;
+  const pick = candidates[Math.floor(rng() * candidates.length)]!;
+  return { q: pick.q, r: pick.r };
+}
+
 /** Land tiles in this city's territory (from map), excluding city center, suitable for placing a building. */
 function territoryLandKeys(
   city: City,

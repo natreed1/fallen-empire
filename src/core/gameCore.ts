@@ -49,7 +49,7 @@ import type { MoraleState } from '../lib/combat';
 import { releaseAttackWaveHolds, releaseMarchEchelonHolds } from '../lib/siege';
 import { applyDeployFlagsForMoveMutable, marchHexDistanceAtOrder } from '../lib/garrison';
 import { rollForWeatherEvent, tickWeatherEvent, getWeatherHarvestMultiplier } from '../lib/weather';
-import { computeConstructionAvailableBp } from '../lib/builders';
+import { computeConstructionAvailableBp, fillUniversitySlotTasks } from '../lib/builders';
 import { computeContestedZoneHexKeys, applyContestedZonePayout } from '../lib/contestedZone';
 import { rollCommanderIdentity, createCommanderRecord, syncCommandersToAssignments, unassignCommandersWithDeadAnchors, clearInvalidCommanderAssignments } from '../lib/commanders';
 import { tickScrollRegionSearch, returnScrollsForDeadCarriers } from '../lib/scrolls';
@@ -936,10 +936,13 @@ export function stepSimulation(
       if (cityStone < totalCost) continue;
       const cityIdx = cities.indexOf(city);
       if (cityIdx >= 0) {
+        const c0 = cities[cityIdx];
+        const acad = c0.buildings.find(b => b.type === 'academy');
         cities[cityIdx] = {
-          ...cities[cityIdx],
+          ...c0,
           universityBuilderTask: 'city_defenses',
-          storage: { ...cities[cityIdx].storage, stone: Math.max(0, cityStone - totalCost) },
+          universityBuilderSlotTasks: fillUniversitySlotTasks(c0, acad, 'city_defenses'),
+          storage: { ...c0.storage, stone: Math.max(0, cityStone - totalCost) },
         };
       }
       for (const { q, r } of validHexes) {
@@ -996,7 +999,13 @@ export function stepSimulation(
     for (const ut of aiPlan.universityTasks ?? []) {
       const cityIdx = cities.findIndex(c => c.id === ut.cityId && c.ownerId === aiPlayerId);
       if (cityIdx >= 0) {
-        cities[cityIdx] = { ...cities[cityIdx], universityBuilderTask: ut.task };
+        const c0 = cities[cityIdx];
+        const acad = c0.buildings.find(b => b.type === 'academy');
+        cities[cityIdx] = {
+          ...c0,
+          universityBuilderTask: ut.task,
+          universityBuilderSlotTasks: fillUniversitySlotTasks(c0, acad, ut.task),
+        };
       }
     }
   }
@@ -1036,7 +1045,7 @@ export function stepSimulation(
         const city = updatedCities.find((c) => c.id === site.cityId);
         if (city) {
           const b: CityBuilding = { type: site.type as BuildingType, q: site.q, r: site.r };
-          if (['quarry', 'mine', 'gold_mine', 'barracks', 'factory', 'academy', 'farm', 'banana_farm', 'market', 'sawmill', 'port', 'shipyard', 'fishery', 'logging_hut'].includes(site.type)) b.level = 1;
+          if (['quarry', 'mine', 'gold_mine', 'barracks', 'factory', 'academy', 'farm', 'banana_farm', 'market', 'sawmill', 'port', 'shipyard', 'fishery', 'logging_hut', 'social_bar'].includes(site.type)) b.level = 1;
           const jobs = BUILDING_JOBS[site.type as BuildingType] ?? 0;
           if (jobs > 0) {
             const totalEmployed = city.buildings.reduce((s, x) => s + ((x as CityBuilding).assignedWorkers ?? 0), 0);

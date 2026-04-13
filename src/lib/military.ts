@@ -5,7 +5,7 @@ import {
   PATROL_DEFAULT_RADIUS,
   DefenseInstallation,
   getUnitStats, ROAD_SPEED_BONUS,
-  hexDistance, hexNeighbors, tileKey, generateId,
+  hexDistance, hexNeighbors, tileKey, parseTileKey, generateId,
   RETREAT_DELAY_MS, ASSAULT_ATTACK_DEBUFF, HERO_BASE_HP, HERO_ATTACK,
   isNavalUnitType, getShipMaxCargo,
   DEFENSE_TOWER_MORTAR_RANGE,
@@ -79,7 +79,7 @@ function applyTowerDefense(damage: number, targetQ: number, targetR: number, cit
 }
 
 function landTargetableByDefenseTower(u: Unit): boolean {
-  return u.hp > 0 && !u.aboardShipId && !isNavalUnitType(u.type) && u.type !== 'builder';
+  return u.hp > 0 && !u.aboardShipId && !isNavalUnitType(u.type);
 }
 
 function hasEnemyLandInSameHex(u: Unit, units: Unit[]): boolean {
@@ -91,8 +91,7 @@ function hasEnemyLandInSameHex(u: Unit, units: Unit[]): boolean {
       o.q === u.q &&
       o.r === u.r &&
       !o.aboardShipId &&
-      !isNavalUnitType(o.type) &&
-      o.type !== 'builder',
+      !isNavalUnitType(o.type),
   );
 }
 
@@ -103,7 +102,8 @@ function maybeApplyRetaliation(
   defenseInstallations?: DefenseInstallation[],
 ): void {
   if (victim.hp <= 0) return;
-  if (!isLandMilitaryUnit(victim) || victim.type === 'builder' || isNavalUnitType(victim.type)) return;
+  if (!isLandMilitaryUnit(victim) && victim.type !== 'builder') return;
+  if (isNavalUnitType(victim.type)) return;
   if (victim.retreatAt) return;
   if (hasEnemyLandInSameHex(victim, units)) return;
 
@@ -216,7 +216,8 @@ function archerTowerShotDamage(level: number): number {
 }
 
 function ballistaShotDamage(level: number): number {
-  return Math.max(1, Math.floor(3.5 * (0.8 + 0.12 * level)));
+  // Tuned so L1 ballista can kill several L1 infantry at range before they close (still scaled by COMBAT_UNIT_DAMAGE_SCALE).
+  return Math.max(1, Math.floor(11 * (0.82 + 0.11 * level)));
 }
 
 /** Scale damage for land/naval unit-vs-unit combat (not static defenses). */
@@ -292,7 +293,7 @@ function isBombardShipType(type: Unit['type']): boolean {
 }
 
 function landTargetableByBombardment(u: Unit): boolean {
-  return u.hp > 0 && !u.aboardShipId && !isNavalUnitType(u.type) && u.type !== 'builder';
+  return u.hp > 0 && !u.aboardShipId && !isNavalUnitType(u.type);
 }
 
 function applyDefenseDamageToUnit(
@@ -2096,6 +2097,138 @@ function isScoutShipEmbarkWaterHex(
   return cap > n;
 }
 
+/** Enemy walls keyed by hex (intact enemy wall blocks land move onto that hex). */
+function wallSectionByHex(wallSections: WallSection[]): Map<string, WallSection> {
+  const wallByKey = new Map<string, WallSection>();
+  for (const w of wallSections) {
+    wallByKey.set(tileKey(w.q, w.r), w);
+  }
+  return wallByKey;
+}
+
+/**
+ * Whether land may step from (fromQ,fromR) onto (nq,nr) toward final goal (toQ,toR).
+ * Mirrors previous greedy-step rules (water/embark, ZOC, enemy walls).
+ */
+function isLandNeighborStepAllowed(
+  fromQ: number,
+  fromR: number,
+  nq: number,
+  nr: number,
+  toQ: number,
+  toR: number,
+  tiles: Map<string, Tile>,
+  allUnits: Unit[],
+  ownerId: string,
+  wallByKey: Map<string, WallSection>,
+): boolean {
+  const tile = tiles.get(tileKey(nq, nr));
+  if (!tile) return false;
+  const embarkWater = tile.biome === 'water' && isScoutShipEmbarkWaterHex(nq, nr, toQ, toR, allUnits, ownerId);
+  if (tile.biome === 'water' && !embarkWater) return false;
+  const hasEnemy = allUnits.some(
+    u => !u.aboardShipId && u.q === nq && u.r === nr && u.ownerId !== ownerId && u.hp > 0,
+  );
+  if (hasEnemy) return false;
+  const enemyMovingTowardUs = allUnits.some(
+    u =>
+      !u.aboardShipId &&
+      u.q === nq &&
+      u.r === nr &&
+      u.ownerId !== ownerId &&
+      u.hp > 0 &&
+      u.targetQ === fromQ &&
+      u.targetR === fromR,
+  );
+  if (enemyMovingTowardUs) return false;
+  const wallSection = wallByKey.get(tileKey(nq, nr));
+  if (wallSection && wallSection.ownerId !== ownerId) {
+    const hp = wallSection.hp ?? 1;
+    if (hp > 0) return false;
+  }
+  return true;
+}
+
+/**
+ * First step of a shortest passable land path (BFS). Handles coasts, wall gaps, and
+ * narrow channels where greedy "always decrease hex distance" gets stuck or wanders.
+ */
+function findNextStepLandBfs(
+  fromQ: number,
+  fromR: number,
+  toQ: number,
+  toR: number,
+  tiles: Map<string, Tile>,
+  allUnits: Unit[],
+  ownerId: string,
+  wallByKey: Map<string, WallSection>,
+): [number, number] | null {
+  const startKey = tileKey(fromQ, fromR);
+  const goalKey = tileKey(toQ, toR);
+  if (startKey === goalKey) return null;
+
+  const straight = hexDistance(fromQ, fromR, toQ, toR);
+  // Detours (e.g. long coast) can visit far more hexes than straight-line distance.
+  const maxVisited = Math.min(10000, Math.max(350, (straight + 28) * (straight + 28)));
+
+  const visited = new Set<string>([startKey]);
+  const parent = new Map<string, string>();
+  const q: string[] = [startKey];
+  let qi = 0;
+
+  while (qi < q.length && visited.size <= maxVisited) {
+    const curKey = q[qi++]!;
+    if (curKey === goalKey) {
+      let node = goalKey;
+      for (;;) {
+        const p = parent.get(node);
+        if (!p) return null;
+        if (p === startKey) return parseTileKey(node);
+        node = p;
+      }
+    }
+    const [cq, cr] = parseTileKey(curKey);
+    for (const [nq, nr] of hexNeighbors(cq, cr)) {
+      const nk = tileKey(nq, nr);
+      if (visited.has(nk)) continue;
+      if (!isLandNeighborStepAllowed(cq, cr, nq, nr, toQ, toR, tiles, allUnits, ownerId, wallByKey)) {
+        continue;
+      }
+      visited.add(nk);
+      parent.set(nk, curKey);
+      q.push(nk);
+    }
+  }
+  return null;
+}
+
+function stepTowardZOCGreedy(
+  fromQ: number,
+  fromR: number,
+  toQ: number,
+  toR: number,
+  tiles: Map<string, Tile>,
+  allUnits: Unit[],
+  ownerId: string,
+  wallByKey: Map<string, WallSection>,
+): [number, number] {
+  const neighbors = hexNeighbors(fromQ, fromR);
+  let best: [number, number] = [fromQ, fromR];
+  let bestDist = Infinity;
+
+  for (const [nq, nr] of neighbors) {
+    if (!isLandNeighborStepAllowed(fromQ, fromR, nq, nr, toQ, toR, tiles, allUnits, ownerId, wallByKey)) {
+      continue;
+    }
+    const d = hexDistance(nq, nr, toQ, toR);
+    if (d < bestDist) {
+      bestDist = d;
+      best = [nq, nr];
+    }
+  }
+  return best;
+}
+
 function stepTowardZOC(
   fromQ: number, fromR: number,
   toQ: number, toR: number,
@@ -2105,43 +2238,24 @@ function stepTowardZOC(
   wallSections: WallSection[] = [],
   _cities: City[] = [],
 ): [number, number] {
-  // Enemy wall blocks movement unless broken (hp <= 0). Friendly walls do not block.
-  const wallByKey = new Map<string, WallSection>();
-  for (const w of wallSections) {
-    wallByKey.set(tileKey(w.q, w.r), w);
+  const wallByKey = wallSectionByHex(wallSections);
+  const dist = hexDistance(fromQ, fromR, toQ, toR);
+  if (dist === 0) return [fromQ, fromR];
+
+  const greedy = stepTowardZOCGreedy(fromQ, fromR, toQ, toR, tiles, allUnits, ownerId, wallByKey);
+  const moved = greedy[0] !== fromQ || greedy[1] !== fromR;
+  const dGreedy = moved ? hexDistance(greedy[0], greedy[1], toQ, toR) : dist;
+  // Open ground: one step closer is enough (avoids BFS cost on long marches).
+  if (moved && dGreedy < dist) return greedy;
+
+  // Coastline / walls / cul-de-sacs: greedy stalls or only tangents — take first step of a shortest path.
+  const bfsMaxGoalDist = 112;
+  if (dist <= bfsMaxGoalDist) {
+    const bfsStep = findNextStepLandBfs(fromQ, fromR, toQ, toR, tiles, allUnits, ownerId, wallByKey);
+    if (bfsStep) return bfsStep;
   }
 
-  const neighbors = hexNeighbors(fromQ, fromR);
-  let best: [number, number] = [fromQ, fromR];
-  let bestDist = Infinity;
-
-  for (const [nq, nr] of neighbors) {
-    const tile = tiles.get(tileKey(nq, nr));
-    if (!tile) continue;
-    const embarkWater = tile.biome === 'water' && isScoutShipEmbarkWaterHex(nq, nr, toQ, toR, allUnits, ownerId);
-    if (tile.biome === 'water' && !embarkWater) continue;
-    const hasEnemy = allUnits.some(
-      u => !u.aboardShipId && u.q === nq && u.r === nr && u.ownerId !== ownerId && u.hp > 0,
-    );
-    if (hasEnemy) continue;
-    // Force engagement when paths cross: enemy at (nq,nr) moving toward us (design §26)
-    const enemyMovingTowardUs = allUnits.some(
-      u => !u.aboardShipId && u.q === nq && u.r === nr && u.ownerId !== ownerId && u.hp > 0 &&
-        u.targetQ === fromQ && u.targetR === fromR
-    );
-    if (enemyMovingTowardUs) continue;
-    const wallSection = wallByKey.get(tileKey(nq, nr));
-    if (wallSection && wallSection.ownerId !== ownerId) {
-      const hp = wallSection.hp ?? 1;
-      if (hp > 0) continue; // intact enemy wall blocks
-    }
-    const d = hexDistance(nq, nr, toQ, toR);
-    if (d < bestDist) {
-      bestDist = d;
-      best = [nq, nr];
-    }
-  }
-  return best;
+  return greedy;
 }
 
 /** When land units share a water hex with a friendly scout ship, board if there is cargo room. */
@@ -2248,7 +2362,20 @@ export function landUnitBuildingDamageTick(cities: City[], units: Unit[]): void 
       let total = 0;
       for (const u of units) {
         if (u.hp <= 0 || u.ownerId === city.ownerId || u.aboardShipId) continue;
-        if (!isLandMilitaryUnit(u) || u.type === 'builder') continue;
+        if (isNavalUnitType(u.type)) continue;
+        if (u.type === 'builder') {
+          const dist = hexDistance(u.q, u.r, b.q, b.r);
+          const ordered =
+            u.attackBuildingTarget &&
+            u.attackBuildingTarget.cityId === city.id &&
+            u.attackBuildingTarget.q === b.q &&
+            u.attackBuildingTarget.r === b.r;
+          const raid = dist === 0;
+          if (!ordered && !raid) continue;
+          total += 1;
+          continue;
+        }
+        if (!isLandMilitaryUnit(u)) continue;
         if (SIEGE_UNIT_TYPES_FOR_BUILDING.has(u.type)) continue;
 
         const dist = hexDistance(u.q, u.r, b.q, b.r);

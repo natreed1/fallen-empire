@@ -22,7 +22,7 @@ import {
   type Player,
 } from '@/types/game';
 import { isGarrisonedAtCity } from '@/lib/garrison';
-import { universityTaskMatchesSiteType, getCityUniversityTask } from '@/lib/builders';
+import { universityTaskMatchesSiteType, getUniversitySlotTasks } from '@/lib/builders';
 import { createTerrainHexTopGeometry, defaultBiomePaintRadius } from '@/lib/hexTopGeometry';
 import type { DefenseVolleyFx, RangedShotFx } from '@/lib/military';
 
@@ -138,6 +138,7 @@ const SPRITE_PATHS: Record<string, string> = {
   shipyard: '/sprites/buildings/shipyard.png',
   fishery: '/sprites/buildings/fishery.png',
   logging_hut: '/sprites/buildings/logging_hut.png',
+  social_bar: '/sprites/buildings/market.png',
   wall:     '/sprites/buildings/wall.png',
   defense_mortar: '/sprites/buildings/mortar_battery.png',
   defense_archer_tower: '/sprites/buildings/archer_tower_defense.png',
@@ -1317,6 +1318,75 @@ function SpecialRegionHexTint({ tiles: regionTiles, color }: { tiles: Tile[]; co
   );
 }
 
+function ScrollLocationBeacons({ tiles }: { tiles: Map<string, Tile> }) {
+  const texAncient = useMemo(() => getSpriteTexture('deposit_ancient'), []);
+  const texMountain = useMemo(() => getSpriteTexture('mountain'), []);
+  const texForest = useMemo(() => getSpriteTexture('tree'), []);
+  const texIsle = useMemo(() => getSpriteTexture('ruins'), []);
+  const marked = useMemo(() => {
+    const out: { key: string; tex: THREE.Texture; color: string; q: number; r: number; h: number }[] = [];
+    for (const t of tiles.values()) {
+      if (!t.specialTerrainKind) continue;
+      const key = tileKey(t.q, t.r);
+      if (t.specialTerrainKind === 'mexca') out.push({ key, tex: texAncient, color: '#f59e0b', q: t.q, r: t.r, h: t.height });
+      else if (t.specialTerrainKind === 'hills_lost') out.push({ key, tex: texMountain, color: '#93c5fd', q: t.q, r: t.r, h: t.height });
+      else if (t.specialTerrainKind === 'forest_secrets') out.push({ key, tex: texForest, color: '#34d399', q: t.q, r: t.r, h: t.height });
+      else out.push({ key, tex: texIsle, color: '#22d3ee', q: t.q, r: t.r, h: t.height });
+    }
+    return out;
+  }, [tiles, texAncient, texMountain, texForest, texIsle]);
+  if (marked.length === 0) return null;
+  return (
+    <group>
+      {marked.map((m) => {
+        const [x, z] = axialToWorld(m.q, m.r, HEX_RADIUS);
+        return (
+          <group key={`scroll_marker_${m.key}`}>
+            <mesh position={[x, m.h + 0.08, z]} renderOrder={9} raycast={() => null}>
+              <cylinderGeometry args={[0.45, 0.45, 0.05, 6]} />
+              <meshBasicMaterial color={m.color} transparent opacity={0.45} depthWrite={false} />
+            </mesh>
+            <sprite position={[x, m.h + 0.72, z]} scale={[0.9, 0.9, 1]} raycast={() => null} renderOrder={10}>
+              <spriteMaterial map={m.tex} {...MAP_ENTITY_SPRITE_MAT} />
+            </sprite>
+          </group>
+        );
+      })}
+    </group>
+  );
+}
+
+function UnknownFogOverlay({ tiles }: { tiles: Tile[] }) {
+  const meshRef = useRef<THREE.InstancedMesh>(null);
+  const geometry = useMemo(() => makeHexGeo(HEX_RADIUS * 1.01, 0.12), []);
+  const material = useMemo(
+    () =>
+      new THREE.MeshBasicMaterial({
+        color: '#06070d',
+        transparent: true,
+        opacity: 0.93,
+        depthWrite: false,
+      }),
+    [],
+  );
+  useEffect(() => {
+    if (!meshRef.current || tiles.length === 0) return;
+    const mesh = meshRef.current;
+    const dummy = new THREE.Object3D();
+    for (let i = 0; i < tiles.length; i++) {
+      const t = tiles[i]!;
+      const [x, z] = axialToWorld(t.q, t.r, HEX_RADIUS);
+      dummy.position.set(x, t.height + 0.12, z);
+      dummy.scale.set(1, 1, 1);
+      dummy.updateMatrix();
+      mesh.setMatrixAt(i, dummy.matrix);
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+  }, [tiles]);
+  if (tiles.length === 0) return null;
+  return <instancedMesh ref={meshRef} args={[geometry, material, tiles.length]} renderOrder={999} raycast={() => null} />;
+}
+
 // ─── Territory Overlay ─────────────────────────────────────────────
 
 /** Per-hex brightness jitter so faction tint reads as a light wash, not a flat sheet. */
@@ -1546,6 +1616,7 @@ const BUILDING_SPRITE_SCALE: Record<BuildingType, [number, number]> = {
   shipyard:    [1.1, 1.1],
   fishery:     [1.1, 1.1],
   logging_hut: [1.0, 1.0],
+  social_bar: [1.1, 1.1],
 };
 
 const BUILDING_Y_OFFSET: Record<BuildingType, number> = {
@@ -1564,10 +1635,11 @@ const BUILDING_Y_OFFSET: Record<BuildingType, number> = {
   shipyard:    0.42,
   fishery:     0.45,
   logging_hut: 0.40,
+  social_bar: 0.44,
 };
 
 function BuildingMarkers({ cities, tiles }: { cities: City[]; tiles: Map<string, Tile> }) {
-  const textures = useGameTextures(['farm', 'banana_farm', 'factory', 'city_center', 'barracks', 'academy', 'market', 'quarry', 'mine', 'gold_mine', 'sawmill', 'port', 'shipyard', 'fishery', 'logging_hut']);
+  const textures = useGameTextures(['farm', 'banana_farm', 'factory', 'city_center', 'barracks', 'academy', 'market', 'quarry', 'mine', 'gold_mine', 'sawmill', 'port', 'shipyard', 'fishery', 'logging_hut', 'social_bar']);
 
   const allBuildings = useMemo(() => {
     const result: { key: string; type: BuildingType; q: number; r: number; x: number; y: number; z: number }[] = [];
@@ -2834,8 +2906,9 @@ function BuilderAtSiteMarkers({ sites, roadSites, tiles, cities }: {
       }
       const city = s.cityId ? cities.find(c => c.id === s.cityId) : undefined;
       if (city) {
-        const task = getCityUniversityTask(city);
-        if (!universityTaskMatchesSiteType(task, s.type)) continue;
+        const academy = city.buildings.find(b => b.type === 'academy');
+        const slotTasks = getUniversitySlotTasks(city, academy);
+        if (!slotTasks.some(t => universityTaskMatchesSiteType(t, s.type))) continue;
       }
       seen.add(k); out.push(s);
     }
@@ -3397,6 +3470,8 @@ export default function HexGrid() {
   const uiMode = useGameStore(s => s.uiMode);
   const pendingMove = useGameStore(s => s.pendingMove);
   const visibleHexes = useGameStore(s => s.visibleHexes);
+  const exploredHexes = useGameStore(s => s.exploredHexes);
+  const scoutedHexes = useGameStore(s => s.scoutedHexes);
   const constructions = useGameStore(s => s.constructions);
   const roadConstructions = useGameStore(s => s.roadConstructions);
   const pendingCityHex = useGameStore(s => s.pendingCityHex);
@@ -3416,6 +3491,24 @@ export default function HexGrid() {
   const territoryDisplayStyle = useGameStore(s => s.territoryDisplayStyle);
 
   const visionActive = phase === 'playing';
+  const discoveredHexes = useMemo(() => {
+    if (!visionActive) return new Set<string>(Array.from(tiles.keys()));
+    const s = new Set<string>(exploredHexes);
+    for (const k of scoutedHexes) s.add(k);
+    return s;
+  }, [visionActive, tiles, exploredHexes, scoutedHexes]);
+  const discoveredTilesMap = useMemo(() => {
+    if (!visionActive) return tiles;
+    const out = new Map<string, Tile>();
+    for (const [k, t] of tiles) {
+      if (discoveredHexes.has(k)) out.set(k, t);
+    }
+    return out;
+  }, [visionActive, tiles, discoveredHexes]);
+  const undiscoveredTiles = useMemo(
+    () => (visionActive ? Array.from(tiles.values()).filter(t => !discoveredHexes.has(tileKey(t.q, t.r))) : []),
+    [visionActive, tiles, discoveredHexes],
+  );
 
   const empireSupplyOverlay = useMemo(() => {
     if (supplyViewTab !== 'supply') return null;
@@ -3433,29 +3526,29 @@ export default function HexGrid() {
     const ruinTiles: Tile[] = [];
     const villageTiles: Tile[] = [];
 
-    Array.from(tiles.values()).forEach(tile => {
+    Array.from(discoveredTilesMap.values()).forEach(tile => {
       groups[tile.biome].push(tile);
       if (tile.hasRoad) roadTiles.push(tile);
       if (tile.hasRuins) ruinTiles.push(tile);
       if (tile.hasVillage) villageTiles.push(tile);
     });
     return { groups, roadTiles, ruinTiles, villageTiles };
-  }, [tiles]);
+  }, [discoveredTilesMap]);
 
   const mapShoreline = useMemo(() => {
     const coastalWater: Tile[] = [];
     const deepWater: Tile[] = [];
     const beachLand: Tile[] = [];
-    for (const t of tiles.values()) {
+    for (const t of discoveredTilesMap.values()) {
       if (t.biome === 'water') {
-        if (isCoastalWaterTile(t, tiles)) coastalWater.push(t);
+        if (isCoastalWaterTile(t, discoveredTilesMap)) coastalWater.push(t);
         else deepWater.push(t);
-      } else if (isBeachLandTile(t, tiles)) {
+      } else if (isBeachLandTile(t, discoveredTilesMap)) {
         beachLand.push(t);
       }
     }
     return { coastalWater, deepWater, beachLand };
-  }, [tiles]);
+  }, [discoveredTilesMap]);
 
   // Territory by player
   const territoryByPlayer = useMemo(() => {
@@ -3478,8 +3571,8 @@ export default function HexGrid() {
     return list;
   }, [players]);
 
-  // Two-tier vision: everything is always visible (terrain, cities, buildings, territory).
-  // Enemy land units are hidden unless within active vision range.
+  // Two-tier vision: terrain/map objects are hidden under fog until discovered (active vision or scout intel).
+  // Enemy land units still require active visibility unless map quadrants were bought.
   const visibleUnits = useMemo(() => {
     const noPassengers = units.filter(u => !u.aboardShipId);
     if (!visionActive) return noPassengers;
@@ -3633,22 +3726,23 @@ export default function HexGrid() {
       <LandBiomeVariantLayers tiles={biomeGroups.groups.mountain} biome="mountain" />
       <LandBiomeVariantLayers tiles={biomeGroups.groups.desert} biome="desert" />
       <BeachSandLayer tiles={mapShoreline.beachLand} />
-      <MedievalHexOutlineLayer tiles={Array.from(tiles.values())} />
-      <MountainSnowLayer tiles={biomeGroups.groups.mountain} tilesMap={tiles} />
+      <MedievalHexOutlineLayer tiles={Array.from(discoveredTilesMap.values())} />
+      <MountainSnowLayer tiles={biomeGroups.groups.mountain} tilesMap={discoveredTilesMap} />
 
       {/* Map features */}
       <RoadOverlay tiles={biomeGroups.roadTiles} />
-      <RoadConstructionOverlay sites={roadConstructions} tiles={tiles} />
-      <WallOverlay wallSections={wallSections} tiles={tiles} players={players} />
+      <RoadConstructionOverlay sites={roadConstructions} tiles={discoveredTilesMap} />
+      <WallOverlay wallSections={wallSections} tiles={discoveredTilesMap} players={players} />
       <RuinSpriteLayer tiles={biomeGroups.ruinTiles} />
 
       {/* Resource deposits — billboard sprites above terrain */}
-      <DepositSpriteLayer tiles={tiles} />
+      <DepositSpriteLayer tiles={discoveredTilesMap} />
       {phase === 'playing' && (
         <>
           {/* Tint below PNG decals (renderOrder); sprites/units use MAP_ENTITY_RENDER_ORDER above both */}
-          <SpecialRegionOverlay tiles={tiles} />
-          <SpecialRegionTextureDecals tiles={tiles} />
+          <SpecialRegionOverlay tiles={discoveredTilesMap} />
+          <SpecialRegionTextureDecals tiles={discoveredTilesMap} />
+          <ScrollLocationBeacons tiles={discoveredTilesMap} />
         </>
       )}
 
@@ -3659,14 +3753,14 @@ export default function HexGrid() {
             <TerritoryOverlay
               playerColor={p.color}
               tileKeys={territoryByPlayer[p.id]}
-              tiles={tiles}
+              tiles={discoveredTilesMap}
               isHuman={p.id === PLAYER_HUMAN_ID}
             />
             {territoryDisplayStyle === 'dashed' && (
               <TerritoryDashedBorder
                 playerColor={p.color}
                 tileKeys={territoryByPlayer[p.id]}
-                tiles={tiles}
+                tiles={discoveredTilesMap}
                 isHuman={p.id === PLAYER_HUMAN_ID}
               />
             )}
@@ -3675,7 +3769,7 @@ export default function HexGrid() {
       )}
 
       {contestedZoneHexKeys.length > 0 && phase === 'playing' && (
-        <ContestedZoneOverlay zoneKeys={contestedZoneHexKeys} tiles={tiles} />
+        <ContestedZoneOverlay zoneKeys={contestedZoneHexKeys} tiles={discoveredTilesMap} />
       )}
 
       <VillageLayer tiles={biomeGroups.villageTiles} />
@@ -3683,32 +3777,33 @@ export default function HexGrid() {
       <MountainPeakLayer tiles={biomeGroups.groups.mountain} />
       <MapDetailLayer tiles={[...biomeGroups.groups.plains, ...biomeGroups.groups.forest]} cities={cities} />
 
-      {/* Game entities — cities/buildings always visible; enemy units vision-filtered */}
-      <CityMarkers cities={cities} tiles={tiles} players={players} />
-      <BuildingMarkers cities={cities} tiles={tiles} />
-      <ConstructionMarkers sites={constructions} tiles={tiles} />
-      <BuilderAtSiteMarkers sites={constructions} roadSites={roadConstructions} tiles={tiles} cities={cities} />
-      <ScoutTowerMarkers scoutTowers={scoutTowers} tiles={tiles} players={players} />
-      <CityDefenseMarkers installations={defenseInstallations} tiles={tiles} players={players} />
-      <CombatShotEffects tiles={tiles} />
-      <UnitMarkers units={visibleUnits} tiles={tiles} cities={cities} players={players} />
-      <GarrisonBadges cities={cities} units={visibleUnits} tiles={tiles} players={players} />
-      <UnitHpBars units={visibleUnits} tiles={tiles} cities={cities} players={players} />
-      <MovementProgressBars units={visibleUnits} tiles={tiles} cities={cities} />
+      {/* Game entities — map objects hidden by fog until discovered */}
+      <CityMarkers cities={cities} tiles={discoveredTilesMap} players={players} />
+      <BuildingMarkers cities={cities} tiles={discoveredTilesMap} />
+      <ConstructionMarkers sites={constructions} tiles={discoveredTilesMap} />
+      <BuilderAtSiteMarkers sites={constructions} roadSites={roadConstructions} tiles={discoveredTilesMap} cities={cities} />
+      <ScoutTowerMarkers scoutTowers={scoutTowers} tiles={discoveredTilesMap} players={players} />
+      <CityDefenseMarkers installations={defenseInstallations} tiles={discoveredTilesMap} players={players} />
+      <CombatShotEffects tiles={discoveredTilesMap} />
+      <UnitMarkers units={visibleUnits} tiles={discoveredTilesMap} cities={cities} players={players} />
+      <GarrisonBadges cities={cities} units={visibleUnits} tiles={discoveredTilesMap} players={players} />
+      <UnitHpBars units={visibleUnits} tiles={discoveredTilesMap} cities={cities} players={players} />
+      <MovementProgressBars units={visibleUnits} tiles={discoveredTilesMap} cities={cities} />
       {assigningTacticalForSelectedStacks?.orderType === 'patrol_paint' && tacticalPatrolPaintTiles.length > 0 && (
         <OverlayLayer tiles={tacticalPatrolPaintTiles} color="#2dd4bf" yOffset={0.08} radiusScale={0.52} height={0.07} />
       )}
-      <CommanderMarkers commanders={visibleCommanders} tiles={tiles} />
-      <BattleIcons units={visibleUnits} tiles={tiles} />
+      <CommanderMarkers commanders={visibleCommanders} tiles={discoveredTilesMap} />
+      <BattleIcons units={visibleUnits} tiles={discoveredTilesMap} />
 
       {/* Weather visual effects */}
       {activeWeather && (
         <>
-          <WeatherEffectOverlay weatherType={activeWeather.type} tiles={tiles} />
-          {activeWeather.type === 'typhoon' && <TyphoonRainEffect tiles={tiles} />}
-          {activeWeather.type === 'drought' && <DroughtHazeEffect tiles={tiles} />}
+          <WeatherEffectOverlay weatherType={activeWeather.type} tiles={discoveredTilesMap} />
+          {activeWeather.type === 'typhoon' && <TyphoonRainEffect tiles={discoveredTilesMap} />}
+          {activeWeather.type === 'drought' && <DroughtHazeEffect tiles={discoveredTilesMap} />}
         </>
       )}
+      {visionActive && <UnknownFogOverlay tiles={undiscoveredTiles} />}
 
       {/* Move range highlight when unit is selected */}
       {uiMode === 'move' && selectedHex && !assigningTacticalForStack && (

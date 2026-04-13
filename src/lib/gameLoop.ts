@@ -1,11 +1,12 @@
 import {
   City, Unit, Player, Tile, GameNotification, TerritoryInfo, CityBuilding, Hero,
   Biome, TERRAIN_FOOD_YIELD, BUILDING_PRODUCTION, BUILDING_JOBS, CITY_CENTER_STORAGE,
-  MARKET_GOLD_PER_VILLAGE, POP_BIRTH_RATE, POP_NATURAL_DEATHS,   POP_CARRYING_CAPACITY_PER_FOOD, POP_EXPECTED_K_ALPHA, STARVATION_DEATHS,
+  MARKET_GOLD_PER_VILLAGE, POPULATION_TAX_GOLD_MULT, POP_BIRTH_RATE, POP_NATURAL_DEATHS, POP_CARRYING_CAPACITY_PER_FOOD, POP_EXPECTED_K_ALPHA, STARVATION_DEATHS,
+  POP_RECOVERY_BIRTH_MAX_P, POP_RECOVERY_BIRTH_FOOD_MULT, SOCIAL_BAR_BIRTH_MULT_PER_LEVEL,
   FACTORY_L2_IRON_PER_CYCLE, FACTORY_L2_ARMS_PER_CYCLE, UNEMPLOYMENT_MORALE_PENALTY, UNEMPLOYMENT_MORALE_PENALTY_CAP,
   FARM_L2_FOOD_PER_CYCLE,   getBuildingJobs, PRODUCTIVITY_NORMALIZE,
   WORKERS_PER_LEVEL, MIN_STAFFING_RATIO, getUnitStats,
-  isCityBuildingOperational,
+  isCityBuildingOperational, ensureCityBuildingHp,
   generateId, tileKey, parseTileKey, hexDistance,
   FRONTIER_CYCLES, FRONTIER_MIGRATION_BONUS, MIGRATION_BASE_RATE,
   PLAINS_FARM_FOOD_MULT, SAWMILL_WOOD_PER_REFINED, isFarmBuildingType,
@@ -486,6 +487,11 @@ function populationGrowthPhase(
   foodProduced: Record<string, number>,
   notify: (msg: string, type: GameNotification['type']) => void,
 ) {
+  const empireFoodByPlayer = new Map<string, number>();
+  for (const c of cities) {
+    empireFoodByPlayer.set(c.ownerId, (empireFoodByPlayer.get(c.ownerId) ?? 0) + c.storage.food);
+  }
+
   for (const city of cities) {
     const produced = foodProduced[city.id] ?? 0;
     const P = city.population;
@@ -508,17 +514,20 @@ function populationGrowthPhase(
     city.expectedCarryingCapacity = K_expected;
     const K = K_expected;
 
-    // Natural deaths + starvation when no food in storage
+    // Natural deaths + starvation when no food in storage (cannot reduce pop below 1 — avoids fake "−3 pop" loops)
     const naturalDeaths = POP_NATURAL_DEATHS;
     const starvationDeaths = city.storage.food <= 0 ? STARVATION_DEATHS : 0;
-    const deaths = naturalDeaths + starvationDeaths;
+    const rawDeaths = naturalDeaths + starvationDeaths;
+    const deaths = Math.min(rawDeaths, Math.max(0, P - 1));
+
+    const civDemandCity = Math.ceil(P * 0.25);
+    const empireFood = empireFoodByPlayer.get(city.ownerId) ?? 0;
 
     // Births use expected K; when starving (no grain in storage) births = 0 so pop never grows into starvation.
     // Taper births when food buffer is low (not only when storage hits zero) to prevent early boom-bust collapse.
     let births = 0;
     if (P > 0 && K > 0 && city.storage.food > 0) {
       let rawBirths = Math.max(0, Math.floor(POP_BIRTH_RATE * P * (1 - P / K)));
-      const civDemandCity = Math.ceil(P * 0.25);
       if (civDemandCity > 0) {
         const bufferThreshold = 3 * civDemandCity;
         if (city.storage.food < bufferThreshold) {
@@ -528,21 +537,49 @@ function populationGrowthPhase(
       }
       births = rawBirths;
     }
+    // Recovery: logistic floors to 0 for small P; if the empire still has grain, allow +1/cycle up to cap.
+    if (
+      births === 0 &&
+      P > 0 &&
+      P <= POP_RECOVERY_BIRTH_MAX_P &&
+      P < K &&
+      civDemandCity > 0 &&
+      empireFood >= POP_RECOVERY_BIRTH_FOOD_MULT * civDemandCity
+    ) {
+      births = 1;
+    }
+
+    const socialBar = city.buildings.find(
+      b => b.type === 'social_bar' && isCityBuildingOperational(ensureCityBuildingHp(b)),
+    );
+    if (socialBar && births > 0) {
+      const lv = Math.min(3, socialBar.level ?? 1);
+      const mult = 1 + lv * SOCIAL_BAR_BIRTH_MULT_PER_LEVEL;
+      births = Math.max(0, Math.floor(births * mult));
+    }
 
     const netGrowth = births - deaths;
     city.lastNaturalGrowth = netGrowth;
 
     if (netGrowth > 0) {
       city.population += netGrowth;
-      const deathNote = starvationDeaths > 0 ? ` (${naturalDeaths} natural, ${starvationDeaths} starvation)` : ` (${deaths} died)`;
+      const deathNote =
+        deaths > 0
+          ? starvationDeaths > 0 && deaths === rawDeaths
+            ? ` (${naturalDeaths} natural, ${starvationDeaths} starvation)`
+            : ` (${deaths} died)`
+          : '';
       notify(`${city.name}: +${netGrowth} pop (${births} born${deathNote})`, 'success');
     } else if (netGrowth < 0) {
       city.population = Math.max(1, city.population + netGrowth);
-      const deathNote = starvationDeaths > 0 ? ` (${naturalDeaths} natural, ${starvationDeaths} starvation)` : ` (${deaths} died)`;
+      const deathNote =
+        starvationDeaths > 0 && deaths === rawDeaths
+          ? ` (${naturalDeaths} natural, ${starvationDeaths} starvation)`
+          : ` (${deaths} died)`;
       if (netGrowth < -1) {
         notify(`${city.name}: ${netGrowth} pop (${births} born${deathNote})`, 'warning');
       }
-      if (starvationDeaths > 0) {
+      if (starvationDeaths > 0 && deaths > 0) {
         notify(`${city.name}: starvation — no grain in storage`, 'warning');
       }
     }
@@ -663,8 +700,8 @@ function migrationPhase(
 
 // ─── Phase 3: Economics ────────────────────────────────────────────
 //
-// Tax now scales directly with population:
-//   baseTax = floor(population * taxRate)
+// Tax scales with population (boosted for sustain / builder pacing):
+//   baseTax = floor(population * taxRate * POPULATION_TAX_GOLD_MULT)
 //   marketGold = per market: floor(MARKET_GOLD_PER_VILLAGE * empireVillages * moraleMod * staffRatio)
 //   totalGold = baseTax + marketGold + goldMineGold
 
@@ -683,7 +720,7 @@ function economicsPhase(
     let totalGoldMineGold = 0;
 
     for (const city of playerCities) {
-      const baseTax = Math.floor(city.population * player.taxRate);
+      const baseTax = Math.floor(city.population * player.taxRate * POPULATION_TAX_GOLD_MULT);
       totalTax += baseTax;
 
       const moraleMod = city.morale / 100;
