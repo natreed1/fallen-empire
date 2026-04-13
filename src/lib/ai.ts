@@ -5,9 +5,11 @@ import {
   hexDistance, hexNeighbors, tileKey, generateId, getHexRing, parseTileKey,
   STARTING_CITY_TEMPLATE, CITY_CENTER_STORAGE,
   BUILDING_IRON_COSTS, SCOUT_MISSION_COST, VILLAGE_INCORPORATE_COST, DEFENDER_IRON_COST,
-  WALL_SECTION_STONE_COST, WALL_SECTION_HP,
+  WALL_SECTION_STONE_COST, WALL_SECTION_HP, WALL_BUILDER_STONE_PER_CYCLE_PER_SLOT,
   MapConfig,
   Commander, ScrollItem, ScrollAttachment, BuilderTask,
+  SpecialRegionKind,
+  ScrollRelicSite,
   isNavalUnitType,
 } from '@/types/game';
 import { computeCityProductionRate } from '@/lib/gameLoop';
@@ -17,6 +19,7 @@ import {
   isCapitalStartHex,
   clearVillageForCapitalTile,
 } from '@/lib/kingdomSpawn';
+import { countDefensesTaskSlots } from '@/lib/wallBuilding';
 
 // ─── AI Action Types ───────────────────────────────────────────────
 
@@ -382,6 +385,13 @@ export function planAiTurn(
   commanders: Commander[] = [],
   scrollInventory: Record<string, ScrollItem[]> = {},
   scrollAttachments: ScrollAttachment[] = [],
+  scrollRelics: ScrollRelicSite[] = [],
+  scrollRegionClaimed: Record<SpecialRegionKind, string[]> = {
+    mexca: [],
+    hills_lost: [],
+    forest_secrets: [],
+    isle_lost: [],
+  },
 ): AiActions {
   const aiCities = cities.filter(c => c.ownerId === aiPlayerId);
   const aiPlayer = players.find(p => p.id === aiPlayerId);
@@ -411,7 +421,7 @@ export function planAiTurn(
     const farmCount = city.buildings.filter(b => b.type === 'farm').length;
     const hasFactory = city.buildings.some(b => b.type === 'factory');
     const hasBarracks = city.buildings.some(b => b.type === 'barracks');
-    const hasAcademy = city.buildings.some(b => b.type === 'academy');
+    const hasSiegeWorkshop = city.buildings.some(b => b.type === 'siege_workshop');
     const hasQuarry = city.buildings.some(b => b.type === 'quarry');
     const hasMine = city.buildings.some(b => b.type === 'mine');
     const factoryToUpgrade = city.buildings.find(b => b.type === 'factory' && (b.level ?? 1) < 2);
@@ -456,16 +466,14 @@ export function planAiTurn(
       const farmFirst = (params.farmFirstBias ?? 0) >= 0.5;
       if (farmFirst && farmCount < 2 && goldBudget >= BUILDING_COSTS.farm) {
         toBuild = 'farm';
-      } else if (!hasBarracks && goldBudget >= BUILDING_COSTS.barracks) {
-        toBuild = 'barracks';
       } else if (!farmFirst && farmCount < 2 && goldBudget >= BUILDING_COSTS.farm) {
         toBuild = 'farm';
       } else if (!hasFactory && goldBudget >= BUILDING_COSTS.factory) {
         toBuild = 'factory';
+      } else if (!hasSiegeWorkshop && goldBudget >= BUILDING_COSTS.siege_workshop) {
+        toBuild = 'siege_workshop';
       } else if (!hasMarket && goldBudget >= BUILDING_COSTS.market) {
         toBuild = 'market';
-      } else if (!hasAcademy && goldBudget >= BUILDING_COSTS.academy) {
-        toBuild = 'academy';
       } else if (!hasQuarry && quarrySpot && goldBudget >= BUILDING_COSTS.quarry && city.population >= 10) {
         toBuild = 'quarry';
       } else if (!hasMine && mineSpot && goldBudget >= BUILDING_COSTS.mine && city.population >= 10) {
@@ -514,7 +522,7 @@ export function planAiTurn(
       let ironBudget = city.storage.iron ?? 0;
       let refinedWoodBudget = city.storage.refinedWood ?? 0;
       for (let i = 0; i < maxRecruits; i++) {
-        const useSiege = allowSiege && Math.random() < params.siegeChance;
+        const useSiege = allowSiege && hasSiegeWorkshop && Math.random() < params.siegeChance;
         const pick = useSiege
           ? siegeChoices[Math.floor(Math.random() * siegeChoices.length)]
           : unitChoices[Math.floor(Math.random() * unitChoices.length)];
@@ -696,7 +704,9 @@ export function planAiTurn(
     }
     for (const city of aiCities) {
       const stoneAvailable = city.storage.stone ?? 0;
-      if (stoneAvailable < WALL_SECTION_STONE_COST) continue;
+      const defSlots = countDefensesTaskSlots(city);
+      const minStonePerCycle = Math.max(WALL_SECTION_STONE_COST, defSlots * WALL_BUILDER_STONE_PER_CYCLE_PER_SLOT);
+      if (defSlots <= 0 || stoneAvailable < minStonePerCycle) continue;
       const ring1 = getRingTopology(city, 1, tiles, ownerWallByKey);
       const ring2 = getRingTopology(city, 2, tiles, ownerWallByKey);
       // Prefer closing ring 1 first; if closed, consider ring 2 (or repair ring 1 if breached)
@@ -704,15 +714,13 @@ export function planAiTurn(
       const wantRepair = repairPriority >= 0.3;
       let buildRing: 1 | 2 | null = null;
       if (!ring1.isClosed && ring1.missingCount > 0 && wantClosure) {
-        const cost = ring1.missingCount * WALL_SECTION_STONE_COST;
-        if (stoneAvailable >= cost) buildRing = 1;
+        if (stoneAvailable >= minStonePerCycle) buildRing = 1;
       }
-      if (!buildRing && ring1.isClosed && ring1.isBreached && wantRepair && ring1.missingCount > 0 && stoneAvailable >= ring1.missingCount * WALL_SECTION_STONE_COST) {
+      if (!buildRing && ring1.isClosed && ring1.isBreached && wantRepair && ring1.missingCount > 0 && stoneAvailable >= minStonePerCycle) {
         buildRing = 1;
       }
       if (!buildRing && ring1.isClosed && ringTarget >= 2 && !ring2.isClosed && ring2.missingCount > 0 && wantClosure) {
-        const cost = ring2.missingCount * WALL_SECTION_STONE_COST;
-        if (stoneAvailable >= cost) buildRing = 2;
+        if (stoneAvailable >= minStonePerCycle) buildRing = 2;
       }
       if (buildRing && Math.random() < wallPriority + (buildRing === 1 && !ring1.isClosed ? closurePriority : 0) * 0.5) {
         actions.buildWallRings.push({ cityId: city.id, ring: buildRing });
@@ -870,30 +878,52 @@ export function planAiTurn(
     }
   }
 
-  // ── Scroll terrain awareness: divert some units toward special terrain for discovery ──
+  // ── Scroll relics / special terrain: divert units toward unclaimed relic hexes first ──
   const scrollTerrainPriority = Math.max(0, Math.min(1, params.scrollTerrainPriority ?? 0.3));
   const scrollMaxDivert = Math.max(0, Math.round(params.scrollTerrainMaxDivert ?? 2));
   if (scrollTerrainPriority > 0 && scrollMaxDivert > 0) {
-    const specialTiles: Tile[] = [];
+    const unclaimedRelics = scrollRelics.filter(
+      s => !(scrollRegionClaimed[s.regionKind] ?? []).includes(aiPlayerId),
+    );
+    const specialLand: Tile[] = [];
     for (const t of tiles.values()) {
       if (t.specialTerrainKind && t.biome !== 'water' && t.biome !== 'mountain') {
-        specialTiles.push(t);
+        specialLand.push(t);
       }
     }
-    if (specialTiles.length > 0) {
-      const divertable = aiUnits.filter(
-        u => u.hp > 0 && u.type !== 'builder' && !isNavalUnitType(u.type)
-          && !unitIdsAlreadyTargeted.has(u.id) && u.status !== 'fighting',
-      );
+    const targets: { q: number; r: number }[] = [];
+    const seen = new Set<string>();
+    for (const s of unclaimedRelics) {
+      const k = tileKey(s.q, s.r);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      targets.push({ q: s.q, r: s.r });
+    }
+    for (const t of specialLand) {
+      const k = tileKey(t.q, t.r);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      targets.push({ q: t.q, r: t.r });
+    }
+    if (targets.length > 0) {
       let diverted = 0;
-      for (const t of specialTiles) {
+      for (const dest of targets) {
         if (diverted >= scrollMaxDivert) break;
         if (Math.random() > scrollTerrainPriority) continue;
+        const tile = tiles.get(tileKey(dest.q, dest.r));
+        const needShip = tile?.biome === 'water';
+        const divertable = aiUnits.filter(
+          u =>
+            u.hp > 0 &&
+            u.type !== 'builder' &&
+            (needShip ? isNavalUnitType(u.type) : !isNavalUnitType(u.type)) &&
+            !unitIdsAlreadyTargeted.has(u.id) &&
+            u.status !== 'fighting',
+        );
         const nearest = divertable
-          .filter(u => !unitIdsAlreadyTargeted.has(u.id))
-          .sort((a, b) => hexDistance(a.q, a.r, t.q, t.r) - hexDistance(b.q, b.r, t.q, t.r))[0];
-        if (nearest && hexDistance(nearest.q, nearest.r, t.q, t.r) > 1) {
-          actions.moveTargets.push({ unitId: nearest.id, toQ: t.q, toR: t.r });
+          .sort((a, b) => hexDistance(a.q, a.r, dest.q, dest.r) - hexDistance(b.q, b.r, dest.q, dest.r))[0];
+        if (nearest && hexDistance(nearest.q, nearest.r, dest.q, dest.r) > 1) {
+          actions.moveTargets.push({ unitId: nearest.id, toQ: dest.q, toR: dest.r });
           unitIdsAlreadyTargeted.add(nearest.id);
           diverted++;
         }

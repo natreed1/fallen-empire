@@ -93,10 +93,13 @@ function isBuildableLand(t: Tile | undefined): boolean {
   return !!t && t.biome !== 'water' && t.biome !== 'mountain';
 }
 
-/** Human/AI capitals and scored start — not on scroll regions. Villages are cleared when a capital is placed. */
+/** Human/AI capitals and scored start — not on scroll regions, province hubs, ruins, or ancient cities. Villages are cleared when a capital is placed. */
 export function isCapitalStartHex(t: Tile | undefined): boolean {
   if (!isBuildableLand(t)) return false;
   if (t!.specialTerrainKind) return false;
+  if (t!.isProvinceCenter) return false;
+  if (t!.hasAncientCity) return false;
+  if (t!.hasRuins) return false;
   return true;
 }
 
@@ -290,6 +293,28 @@ export function findRandomStartHex(
   if (candidates.length === 0) return null;
   const pick = candidates[Math.floor(rng() * candidates.length)]!;
   return { q: pick.q, r: pick.r };
+}
+
+/**
+ * Random capital hex for the kingdom; if strict rules (e.g. Fishers island) leave no candidates,
+ * falls back to any {@link isCapitalStartHex} tile so the match can still start.
+ */
+export function findRandomStartHexWithFallback(
+  kingdom: KingdomId,
+  tiles: Map<string, Tile>,
+  config: MapConfigLike,
+): { q: number; r: number } | null {
+  const primary = findRandomStartHex(kingdom, tiles, config);
+  if (primary) return primary;
+  const loose: { q: number; r: number }[] = [];
+  tiles.forEach(tile => {
+    if (!isCapitalStartHex(tile)) return;
+    loose.push({ q: tile.q, r: tile.r });
+  });
+  if (loose.length === 0) return null;
+  const seedMix = (Date.now() ^ config.seed ^ 0xf11bac) >>> 0;
+  const rng = mulberry32(seedMix);
+  return loose[Math.floor(rng() * loose.length)]!;
 }
 
 /** Land tiles in this city's territory (from map), excluding city center, suitable for placing a building. */

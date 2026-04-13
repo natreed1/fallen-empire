@@ -31,7 +31,7 @@ export function computeCityProductionRate(
   let buildingFood = 0, buildingGoods = 0, buildingGuns = 0, buildingStone = 0, buildingIron = 0;
   let buildingWood = 0, buildingRefined = 0;
   for (const b of city.buildings) {
-    if (b.type === 'city_center' || b.type === 'barracks' || b.type === 'academy' || b.type === 'port' || b.type === 'shipyard') continue;
+    if (b.type === 'city_center' || b.type === 'barracks' || b.type === 'academy' || b.type === 'siege_workshop' || b.type === 'port' || b.type === 'shipyard') continue;
     if (!isCityBuildingOperational(b)) continue;
     const prod = BUILDING_PRODUCTION[b.type];
     const lvl = (b as CityBuilding).level ?? 1;
@@ -301,7 +301,7 @@ function productionPhase(
     let sawmillRefined = 0;
     let sawmillWoodUsed = 0;
     for (const b of city.buildings) {
-      if (b.type === 'city_center' || b.type === 'barracks' || b.type === 'academy' || b.type === 'port' || b.type === 'shipyard') continue;
+      if (b.type === 'city_center' || b.type === 'barracks' || b.type === 'academy' || b.type === 'siege_workshop' || b.type === 'port' || b.type === 'shipyard') continue;
       if (!isCityBuildingOperational(b)) continue;
       const prod = BUILDING_PRODUCTION[b.type];
       const lvl = (b as CityBuilding).level ?? 1;

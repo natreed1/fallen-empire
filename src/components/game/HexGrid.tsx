@@ -19,6 +19,7 @@ import {
   ensureCityBuildingHp, isCityBuildingOperational,
   SPECIAL_REGION_OVERLAY_COLORS,
   type SpecialRegionKind,
+  type ScrollRelicSite,
   type Player,
 } from '@/types/game';
 import { isGarrisonedAtCity } from '@/lib/garrison';
@@ -139,6 +140,7 @@ const SPRITE_PATHS: Record<string, string> = {
   fishery: '/sprites/buildings/fishery.png',
   logging_hut: '/sprites/buildings/logging_hut.png',
   social_bar: '/sprites/buildings/market.png',
+  siege_workshop: '/sprites/buildings/factory.png',
   wall:     '/sprites/buildings/wall.png',
   defense_mortar: '/sprites/buildings/mortar_battery.png',
   defense_archer_tower: '/sprites/buildings/archer_tower_defense.png',
@@ -384,6 +386,50 @@ function MedievalHexOutlineLayer({ tiles }: { tiles: Tile[] }) {
 
   if (count === 0) return null;
   return <instancedMesh ref={meshRef} args={[geometry, material, count]} raycast={() => null} renderOrder={5} />;
+}
+
+/** Stronger ring on perimeter hexes so the map boundary reads clearly. */
+const MAP_EDGE_OUTLINE_COLOR = '#c4a35a';
+
+function MapEdgeOutlineLayer({ tiles }: { tiles: Tile[] }) {
+  const meshRef = useRef<THREE.InstancedMesh>(null);
+  const count = tiles.length;
+  const r = HEX_RADIUS * HEX_INNER_RATIO;
+  const geometry = useMemo(
+    () =>
+      new THREE.RingGeometry(r * 0.94, r * 0.998, 6),
+    [r],
+  );
+  const material = useMemo(
+    () =>
+      new THREE.MeshBasicMaterial({
+        color: MAP_EDGE_OUTLINE_COLOR,
+        transparent: true,
+        opacity: 0.55,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      }),
+    [],
+  );
+
+  useEffect(() => {
+    if (!meshRef.current || count === 0) return;
+    const mesh = meshRef.current;
+    const dummy = new THREE.Object3D();
+    tiles.forEach((tile, i) => {
+      const [x, z] = axialToWorld(tile.q, tile.r, HEX_RADIUS);
+      dummy.position.set(x, tile.height + 0.045, z);
+      dummy.rotation.set(-Math.PI / 2, 0, Math.PI / 6);
+      dummy.updateMatrix();
+      mesh.setMatrixAt(i, dummy.matrix);
+    });
+    mesh.instanceMatrix.needsUpdate = true;
+  }, [tiles, count]);
+
+  useEffect(() => () => geometry.dispose(), [geometry]);
+
+  if (count === 0) return null;
+  return <instancedMesh ref={meshRef} args={[geometry, material, count]} raycast={() => null} renderOrder={6} />;
 }
 
 /** Pixel-art biome hex tops: variant texture key + slight scale jitter. Instance Y rotation is identity —
@@ -771,6 +817,83 @@ function OverlayLayer({ tiles, color, yOffset, radiusScale = 0.5, height = 0.07 
 function RoadOverlay({ tiles }: { tiles: Tile[] }) {
   return (
     <OverlayLayer tiles={tiles} color={ROAD_COLOR} yOffset={0.05} radiusScale={0.58} height={0.07} />
+  );
+}
+
+/** In-progress wall sections: rising wall sprite + pulse while BP accumulates (inner ring builds before outer in game logic). */
+function WallSectionBuildProgress({
+  sites,
+  tiles,
+  players,
+}: {
+  sites: ConstructionSite[];
+  tiles: Map<string, Tile>;
+  players: { id: string; color: string }[];
+}) {
+  const wallSites = useMemo(
+    () => sites.filter(s => s.type === 'wall_section' && s.bpRequired > 0),
+    [sites],
+  );
+  const wallTex = useMemo(() => getSpriteTexture('wall'), []);
+  const colorOf = useMemo(() => new Map(players.map(p => [p.id, p.color])), [players]);
+
+  if (wallSites.length === 0) return null;
+  return (
+    <group>
+      {wallSites.map(site => (
+        <WallBuildSpriteAnim
+          key={site.id}
+          site={site}
+          tiles={tiles}
+          tex={wallTex}
+          color={colorOf.get(site.ownerId) ?? '#a89880'}
+        />
+      ))}
+    </group>
+  );
+}
+
+function WallBuildSpriteAnim({
+  site,
+  tiles,
+  tex,
+  color,
+}: {
+  site: ConstructionSite;
+  tiles: Map<string, Tile>;
+  tex: THREE.Texture;
+  color: string;
+}) {
+  const spriteRef = useRef<THREE.Sprite>(null);
+  const tile = tiles.get(tileKey(site.q, site.r));
+  const h = tile?.height ?? 0.3;
+  const [x, z] = useMemo(() => axialToWorld(site.q, site.r, HEX_RADIUS), [site.q, site.r]);
+  const p = Math.min(1, site.bpAccumulated / Math.max(1, site.bpRequired));
+
+  useFrame((state) => {
+    const spr = spriteRef.current;
+    if (!spr) return;
+    const pulse = 1 + Math.sin(state.clock.elapsedTime * 2.8) * 0.045;
+    const s = (0.32 + 0.68 * p) * pulse;
+    spr.scale.set(s, s, 1);
+  });
+
+  return (
+    <sprite
+      ref={spriteRef}
+      position={[x, h + 0.48, z]}
+      scale={[0.35 + 0.65 * p, 0.35 + 0.65 * p, 1]}
+      renderOrder={MAP_ENTITY_RENDER_ORDER - 2}
+      raycast={() => null}
+    >
+      <spriteMaterial
+        map={tex}
+        {...MAP_ENTITY_SPRITE_MAT}
+        color={color}
+        transparent
+        opacity={0.38 + 0.5 * p}
+      />
+    </sprite>
   );
 }
 
@@ -1318,36 +1441,50 @@ function SpecialRegionHexTint({ tiles: regionTiles, color }: { tiles: Tile[]; co
   );
 }
 
-function ScrollLocationBeacons({ tiles }: { tiles: Map<string, Tile> }) {
-  const texAncient = useMemo(() => getSpriteTexture('deposit_ancient'), []);
-  const texMountain = useMemo(() => getSpriteTexture('mountain'), []);
-  const texForest = useMemo(() => getSpriteTexture('tree'), []);
-  const texIsle = useMemo(() => getSpriteTexture('ruins'), []);
+/** One marker per relic site — only on discovered hexes; hidden after the human claims that region. */
+function ScrollRelicMarkers({
+  scrollRelics,
+  tiles,
+  discoveredHexes,
+  scrollRegionClaimed,
+}: {
+  scrollRelics: ScrollRelicSite[];
+  tiles: Map<string, Tile>;
+  discoveredHexes: Set<string>;
+  scrollRegionClaimed: Record<SpecialRegionKind, string[]>;
+}) {
+  const texScroll = useMemo(() => getSpriteTexture('deposit_ancient'), []);
   const marked = useMemo(() => {
-    const out: { key: string; tex: THREE.Texture; color: string; q: number; r: number; h: number }[] = [];
-    for (const t of tiles.values()) {
-      if (!t.specialTerrainKind) continue;
-      const key = tileKey(t.q, t.r);
-      if (t.specialTerrainKind === 'mexca') out.push({ key, tex: texAncient, color: '#f59e0b', q: t.q, r: t.r, h: t.height });
-      else if (t.specialTerrainKind === 'hills_lost') out.push({ key, tex: texMountain, color: '#93c5fd', q: t.q, r: t.r, h: t.height });
-      else if (t.specialTerrainKind === 'forest_secrets') out.push({ key, tex: texForest, color: '#34d399', q: t.q, r: t.r, h: t.height });
-      else out.push({ key, tex: texIsle, color: '#22d3ee', q: t.q, r: t.r, h: t.height });
+    const out: { key: string; color: string; q: number; r: number; h: number }[] = [];
+    for (const site of scrollRelics) {
+      const key = tileKey(site.q, site.r);
+      if (!discoveredHexes.has(key)) continue;
+      if ((scrollRegionClaimed[site.regionKind] ?? []).includes(PLAYER_HUMAN_ID)) continue;
+      const t = tiles.get(key);
+      const h = t?.height ?? 0;
+      out.push({
+        key,
+        color: SPECIAL_REGION_OVERLAY_COLORS[site.regionKind],
+        q: site.q,
+        r: site.r,
+        h,
+      });
     }
     return out;
-  }, [tiles, texAncient, texMountain, texForest, texIsle]);
+  }, [scrollRelics, tiles, discoveredHexes, scrollRegionClaimed]);
   if (marked.length === 0) return null;
   return (
     <group>
-      {marked.map((m) => {
+      {marked.map(m => {
         const [x, z] = axialToWorld(m.q, m.r, HEX_RADIUS);
         return (
-          <group key={`scroll_marker_${m.key}`}>
+          <group key={`scroll_relic_${m.key}`}>
             <mesh position={[x, m.h + 0.08, z]} renderOrder={9} raycast={() => null}>
-              <cylinderGeometry args={[0.45, 0.45, 0.05, 6]} />
-              <meshBasicMaterial color={m.color} transparent opacity={0.45} depthWrite={false} />
+              <cylinderGeometry args={[0.42, 0.42, 0.06, 6]} />
+              <meshBasicMaterial color={m.color} transparent opacity={0.5} depthWrite={false} />
             </mesh>
-            <sprite position={[x, m.h + 0.72, z]} scale={[0.9, 0.9, 1]} raycast={() => null} renderOrder={10}>
-              <spriteMaterial map={m.tex} {...MAP_ENTITY_SPRITE_MAT} />
+            <sprite position={[x, m.h + 0.78, z]} scale={[0.95, 0.95, 1]} raycast={() => null} renderOrder={10}>
+              <spriteMaterial map={texScroll} {...MAP_ENTITY_SPRITE_MAT} />
             </sprite>
           </group>
         );
@@ -1617,6 +1754,7 @@ const BUILDING_SPRITE_SCALE: Record<BuildingType, [number, number]> = {
   fishery:     [1.1, 1.1],
   logging_hut: [1.0, 1.0],
   social_bar: [1.1, 1.1],
+  siege_workshop: [1.1, 1.1],
 };
 
 const BUILDING_Y_OFFSET: Record<BuildingType, number> = {
@@ -1636,10 +1774,11 @@ const BUILDING_Y_OFFSET: Record<BuildingType, number> = {
   fishery:     0.45,
   logging_hut: 0.40,
   social_bar: 0.44,
+  siege_workshop: 0.40,
 };
 
 function BuildingMarkers({ cities, tiles }: { cities: City[]; tiles: Map<string, Tile> }) {
-  const textures = useGameTextures(['farm', 'banana_farm', 'factory', 'city_center', 'barracks', 'academy', 'market', 'quarry', 'mine', 'gold_mine', 'sawmill', 'port', 'shipyard', 'fishery', 'logging_hut', 'social_bar']);
+  const textures = useGameTextures(['farm', 'banana_farm', 'factory', 'city_center', 'barracks', 'academy', 'siege_workshop', 'market', 'quarry', 'mine', 'gold_mine', 'sawmill', 'port', 'shipyard', 'fishery', 'logging_hut', 'social_bar']);
 
   const allBuildings = useMemo(() => {
     const result: { key: string; type: BuildingType; q: number; r: number; x: number; y: number; z: number }[] = [];
@@ -2811,6 +2950,7 @@ function CityDefenseMarkers({
   players: { id: string; color: string }[];
 }) {
   const textures = useGameTextures(['defense_mortar', 'defense_archer_tower', 'defense_ballista']);
+  const selectHex = useGameStore(s => s.selectHex);
 
   const positioned = useMemo(() => {
     return installations.map(d => {
@@ -2821,6 +2961,9 @@ function CityDefenseMarkers({
       const playerColor = players.find(p => p.id === d.ownerId)?.color ?? '#ffffff';
       return {
         id: d.id,
+        q: d.q,
+        r: d.r,
+        ownerId: d.ownerId,
         type: d.type,
         level: d.level,
         x,
@@ -2840,7 +2983,19 @@ function CityDefenseMarkers({
         const [sx, sy] = DEFENSE_SPRITE_SCALE[d.type];
         const lm = 0.92 + d.level * 0.025;
         return (
-          <sprite key={d.id} position={[d.x, d.y, d.z]} scale={[sx * lm, sy * lm, 1]} raycast={() => null} renderOrder={MAP_ENTITY_RENDER_ORDER}>
+          <sprite
+            key={d.id}
+            position={[d.x, d.y, d.z]}
+            scale={[sx * lm, sy * lm, 1]}
+            renderOrder={MAP_ENTITY_RENDER_ORDER}
+            onClick={e => {
+              e.stopPropagation();
+              const sel = useGameStore.getState().selectedHex;
+              if (!sel || sel.q !== d.q || sel.r !== d.r) {
+                selectHex(d.q, d.r);
+              }
+            }}
+          >
             <spriteMaterial map={tex} {...MAP_ENTITY_SPRITE_MAT} color={d.playerColor} />
           </sprite>
         );
@@ -3488,9 +3643,12 @@ export default function HexGrid() {
   const tacticalPatrolPaintHexKeys = useGameStore(s => s.tacticalPatrolPaintHexKeys);
   const pendingTacticalOrders = useGameStore(s => s.pendingTacticalOrders);
   const contestedZoneHexKeys = useGameStore(s => s.contestedZoneHexKeys);
+  const scrollRelics = useGameStore(s => s.scrollRelics);
+  const scrollRegionClaimed = useGameStore(s => s.scrollRegionClaimed);
   const territoryDisplayStyle = useGameStore(s => s.territoryDisplayStyle);
+  const config = useGameStore(s => s.config);
 
-  const visionActive = phase === 'playing';
+  const visionActive = phase === 'playing' || phase === 'starting_game';
   const discoveredHexes = useMemo(() => {
     if (!visionActive) return new Set<string>(Array.from(tiles.keys()));
     const s = new Set<string>(exploredHexes);
@@ -3505,6 +3663,16 @@ export default function HexGrid() {
     }
     return out;
   }, [visionActive, tiles, discoveredHexes]);
+
+  const mapEdgeOutlineTiles = useMemo(() => {
+    const w = config.width;
+    const h = config.height;
+    const out: Tile[] = [];
+    for (const t of discoveredTilesMap.values()) {
+      if (t.q === 0 || t.r === 0 || t.q === w - 1 || t.r === h - 1) out.push(t);
+    }
+    return out;
+  }, [discoveredTilesMap, config.width, config.height]);
   const undiscoveredTiles = useMemo(
     () => (visionActive ? Array.from(tiles.values()).filter(t => !discoveredHexes.has(tileKey(t.q, t.r))) : []),
     [visionActive, tiles, discoveredHexes],
@@ -3704,7 +3872,7 @@ export default function HexGrid() {
   }, [pendingTacticalOrders, cities, tiles]);
 
   const selectedDefenseInstallation = useMemo(() => {
-    if (!selectedHex || phase !== 'playing') return null;
+    if (!selectedHex || (phase !== 'playing' && phase !== 'starting_game')) return null;
     return defenseInstallations.find(d => d.q === selectedHex.q && d.r === selectedHex.r) ?? null;
   }, [selectedHex, defenseInstallations, phase]);
 
@@ -3727,22 +3895,29 @@ export default function HexGrid() {
       <LandBiomeVariantLayers tiles={biomeGroups.groups.desert} biome="desert" />
       <BeachSandLayer tiles={mapShoreline.beachLand} />
       <MedievalHexOutlineLayer tiles={Array.from(discoveredTilesMap.values())} />
+      <MapEdgeOutlineLayer tiles={mapEdgeOutlineTiles} />
       <MountainSnowLayer tiles={biomeGroups.groups.mountain} tilesMap={discoveredTilesMap} />
 
       {/* Map features */}
       <RoadOverlay tiles={biomeGroups.roadTiles} />
       <RoadConstructionOverlay sites={roadConstructions} tiles={discoveredTilesMap} />
+      <WallSectionBuildProgress sites={constructions} tiles={discoveredTilesMap} players={players} />
       <WallOverlay wallSections={wallSections} tiles={discoveredTilesMap} players={players} />
       <RuinSpriteLayer tiles={biomeGroups.ruinTiles} />
 
       {/* Resource deposits — billboard sprites above terrain */}
       <DepositSpriteLayer tiles={discoveredTilesMap} />
-      {phase === 'playing' && (
+      {(phase === 'playing' || phase === 'starting_game') && (
         <>
           {/* Tint below PNG decals (renderOrder); sprites/units use MAP_ENTITY_RENDER_ORDER above both */}
           <SpecialRegionOverlay tiles={discoveredTilesMap} />
           <SpecialRegionTextureDecals tiles={discoveredTilesMap} />
-          <ScrollLocationBeacons tiles={discoveredTilesMap} />
+          <ScrollRelicMarkers
+            scrollRelics={scrollRelics}
+            tiles={tiles}
+            discoveredHexes={discoveredHexes}
+            scrollRegionClaimed={scrollRegionClaimed}
+          />
         </>
       )}
 
@@ -3768,7 +3943,7 @@ export default function HexGrid() {
         ) : null,
       )}
 
-      {contestedZoneHexKeys.length > 0 && phase === 'playing' && (
+      {contestedZoneHexKeys.length > 0 && (phase === 'playing' || phase === 'starting_game') && (
         <ContestedZoneOverlay zoneKeys={contestedZoneHexKeys} tiles={discoveredTilesMap} />
       )}
 
@@ -3780,7 +3955,7 @@ export default function HexGrid() {
       {/* Game entities — map objects hidden by fog until discovered */}
       <CityMarkers cities={cities} tiles={discoveredTilesMap} players={players} />
       <BuildingMarkers cities={cities} tiles={discoveredTilesMap} />
-      <ConstructionMarkers sites={constructions} tiles={discoveredTilesMap} />
+      <ConstructionMarkers sites={constructions.filter(c => c.type !== 'wall_section')} tiles={discoveredTilesMap} />
       <BuilderAtSiteMarkers sites={constructions} roadSites={roadConstructions} tiles={discoveredTilesMap} cities={cities} />
       <ScoutTowerMarkers scoutTowers={scoutTowers} tiles={discoveredTilesMap} players={players} />
       <CityDefenseMarkers installations={defenseInstallations} tiles={discoveredTilesMap} players={players} />

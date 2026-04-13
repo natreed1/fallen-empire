@@ -150,6 +150,8 @@ export interface SpecialRegion {
 export interface ScrollItem {
   id: string;
   kind: ScrollKind;
+  /** Which named region this scroll was taken from; drives title/lore in UI. */
+  sourceRegion?: SpecialRegionKind;
 }
 
 /** A scroll assigned to a carrier unit; optionally tagged to an {@link OperationalArmy} so the whole army shares bonuses on that hex. */
@@ -161,6 +163,8 @@ export interface ScrollAttachment {
   ownerId: string;
   /** When set, any land unit on this hex with matching {@link Unit.armyId} receives scroll bonuses. */
   armyId?: string;
+  /** Mirrored from {@link ScrollItem.sourceRegion} for round-trip when the carrier dies. */
+  sourceRegion?: SpecialRegionKind;
 }
 
 /** Legacy disk radius (no longer used for generation; kept for tools/docs). */
@@ -174,8 +178,15 @@ export const SPECIAL_TERRAIN_NOISE_SCALE = 0.088;
  */
 export const SPECIAL_TERRAIN_CLUSTER_THRESHOLD = 0.72;
 
-/** Economy cycles with military on matching terrain to reveal the scroll (faster than old 5). */
+/** @deprecated Relic pickup is instant; kept for any legacy UI references. */
 export const SCROLL_SEARCH_CYCLES_REQUIRED = 3;
+
+/** Seeded relic site: one per special terrain flavor present on the map. */
+export type ScrollRelicSite = {
+  regionKind: SpecialRegionKind;
+  q: number;
+  r: number;
+};
 
 export const SCROLL_COMBAT_BONUS = 0.1;
 export const SCROLL_DEFENSE_BONUS = 0.1;
@@ -201,6 +212,36 @@ export const SCROLL_DISPLAY_NAME: Record<ScrollKind, string> = {
   defense: 'Scroll of Warding',
   movement: 'Scroll of Celerity',
 };
+
+/** Short title for scrolls tied to a named region (inventory / attach UI). */
+export const SCROLL_REGION_ITEM_NAME: Record<SpecialRegionKind, string> = {
+  mexca: 'Scroll of Mexca',
+  hills_lost: 'Scroll of the Lost Tribes',
+  forest_secrets: 'Scroll of the Forest of Secrets',
+  isle_lost: 'Scroll of the Isle of Lost',
+};
+
+/** Flavor text shown when a relic is claimed. */
+export const SCROLL_RELIC_LORE: Record<SpecialRegionKind, string> = {
+  mexca:
+    'Wind-carved plazas and empty avenues still echo with market-cries. The victor’s path was written here before your empire had a name.',
+  hills_lost:
+    'Stone cairns older than any crown line the ridges. The tribes did not vanish — they became the hills.',
+  forest_secrets:
+    'Sap runs like ink in bark grooves; paths close behind you. What is written here only reveals itself to those who stay.',
+  isle_lost:
+    'Tide draws wreckage into rings like a crown. The drowned keep their counsel, but the scroll remembers their war.',
+};
+
+/** Display name for inventory / notifications: regional title when known, else generic scroll line name. */
+export function scrollItemDisplayName(item: ScrollItem): string {
+  if (item.sourceRegion) return SCROLL_REGION_ITEM_NAME[item.sourceRegion];
+  return SCROLL_DISPLAY_NAME[item.kind];
+}
+
+export function emptyScrollRegionClaimed(): Record<SpecialRegionKind, string[]> {
+  return { mexca: [], hills_lost: [], forest_secrets: [], isle_lost: [] };
+}
 
 /** Which scroll line a terrain flavor feeds (Mexca + Isle both → combat). */
 export function scrollKindForTerrain(kind: SpecialRegionKind): ScrollKind {
@@ -237,6 +278,8 @@ export const SCROLL_SLOT_LABEL: Record<ScrollKind, string> = {
 export type GamePhase =
   | 'setup'
   | 'place_city'
+  /** Brief transition: players reset, capital not placed yet (avoids manual placement UI flicker). */
+  | 'starting_game'
   | 'commander_setup'
   | 'playing'
   | 'victory'
@@ -292,7 +335,7 @@ export const KINGDOM_SETUP_ICONS: Record<KingdomId, string> = {
 export const DEFAULT_KINGDOM_ID: KingdomId = 'traders';
 
 export type BuildingType =
-  | 'city_center' | 'farm' | 'banana_farm' | 'factory' | 'barracks' | 'academy' | 'market' | 'quarry' | 'mine' | 'gold_mine'
+  | 'city_center' | 'farm' | 'banana_farm' | 'factory' | 'barracks' | 'academy' | 'siege_workshop' | 'market' | 'quarry' | 'mine' | 'gold_mine'
   | 'sawmill' | 'port' | 'shipyard' | 'fishery' | 'logging_hut' | 'social_bar';
 /** Construction site type: buildings (in city) or field-built siege/scout/defense (builder on hex). */
 export type ConstructionSiteType = BuildingType | 'trebuchet' | 'scout_tower' | 'city_defense' | 'wall_section';
@@ -418,7 +461,7 @@ export const BUILDER_TASK_LABELS: Record<BuilderTask, string> = {
   expand_quarries: 'Expand quarries',
   expand_iron_mines: 'Expand iron mines',
   expand_forestry: 'Expand forestry',
-  city_defenses: 'City defenses',
+  city_defenses: 'Walls',
 };
 
 /** Gold to upgrade University (academy) one level; L1→L2 … L4→L5. */
@@ -828,6 +871,8 @@ export interface WallSection {
 export const WALL_SECTION_HP = 50;
 /** Builder BP needed to complete one wall section project. */
 export const WALL_SECTION_BP_COST = 38;
+/** Stone consumed per economy cycle per University slot assigned to Defenses while a wall section is building. */
+export const WALL_BUILDER_STONE_PER_CYCLE_PER_SLOT = 3;
 
 /** Passive heal per economy cycle for land units not in combat (fraction of maxHp). */
 export const UNIT_HP_REGEN_FRACTION_PER_CYCLE = 0.04;
@@ -842,7 +887,7 @@ export const RUINS_REPAIR_GOLD_RATIO = 0.4;
 export function defaultCityBuildingMaxHp(type: BuildingType, level: number = 1): number {
   const lv = Math.max(1, level);
   if (type === 'city_center') return 200;
-  if (type === 'barracks' || type === 'academy' || type === 'factory') return 70 * lv;
+  if (type === 'barracks' || type === 'academy' || type === 'factory' || type === 'siege_workshop') return 70 * lv;
   if (type === 'market' || type === 'port' || type === 'shipyard' || type === 'social_bar') return 55 * lv;
   return 45 * lv;
 }
@@ -887,7 +932,7 @@ export const SCOUT_MISSION_COST = 5;
 export const SCOUT_MISSION_DURATION_SEC = 30;
 
 export const BUILDING_BP_COST: Record<BuildingType, number> = {
-  city_center: 0, farm: 75, banana_farm: 75, factory: 75, barracks: 150, academy: 110, market: 45, quarry: 75, mine: 75, gold_mine: 90,
+  city_center: 0, farm: 75, banana_farm: 75, factory: 75, barracks: 150, academy: 110, siege_workshop: 130, market: 45, quarry: 75, mine: 75, gold_mine: 90,
   sawmill: 70, port: 120, shipyard: 135, fishery: 75, logging_hut: 75, social_bar: SOCIAL_BAR_BP,
 };
 
@@ -895,7 +940,7 @@ export const BUILDING_BP_COST: Record<BuildingType, number> = {
 export const TREBUCHET_FIELD_BP_COST = 90;
 /** Gold cost to start field trebuchet construction (same as barracks recruit). */
 export const TREBUCHET_FIELD_GOLD_COST = 8;
-/** Refined wood from city storage (sawmill) for trebuchet — barracks recruit and field build. */
+/** Refined wood from city storage (sawmill) for trebuchet — siege workshop recruit and field build. */
 export const TREBUCHET_REFINED_WOOD_COST = 4;
 
 export const CITY_BUILDING_POWER = 65;
@@ -964,6 +1009,7 @@ export const BUILDING_COLORS: Record<BuildingType, string> = {
   factory:     '#f59e0b', // amber/orange
   barracks:    '#ef4444', // red
   academy:     '#0ea5e9', // sky blue (civilian)
+  siege_workshop: '#b45309', // amber/brown (siege engines)
   market:      '#facc15', // gold/yellow
   quarry:      '#78716c', // stone
   mine:        '#57534e', // iron
@@ -977,7 +1023,7 @@ export const BUILDING_COLORS: Record<BuildingType, string> = {
 };
 
 export const BUILDING_COSTS: Record<BuildingType, number> = {
-  city_center: 0, farm: 15, banana_farm: 15, factory: 25, barracks: 50, academy: 35, market: 2, quarry: 10, mine: 10, gold_mine: 20,
+  city_center: 0, farm: 15, banana_farm: 15, factory: 25, barracks: 50, academy: 35, siege_workshop: 38, market: 2, quarry: 10, mine: 10, gold_mine: 20,
   sawmill: 20, port: 40, shipyard: 45, fishery: 18,   logging_hut: 12,
   social_bar: SOCIAL_BAR_BUILD_GOLD,
 };
@@ -989,7 +1035,7 @@ export const BUILDING_IRON_COSTS: Partial<Record<BuildingType, number>> = {
 
 /** Jobs per building (flat 2 for production, 2 for barracks/academy, 1 for city_center). Use getBuildingJobs(b) for level-aware count. */
 export const BUILDING_JOBS: Record<BuildingType, number> = {
-  city_center: 1, farm: 2, banana_farm: 2, factory: 2, barracks: 2, academy: 2, market: 2, quarry: 2, mine: 2, gold_mine: 2,
+  city_center: 1, farm: 2, banana_farm: 2, factory: 2, barracks: 2, academy: 2, siege_workshop: 2, market: 2, quarry: 2, mine: 2, gold_mine: 2,
   sawmill: 2, port: 1, shipyard: 2, fishery: 2,   logging_hut: 2,
   social_bar: 2,
 };
@@ -1032,6 +1078,7 @@ export const BUILDING_PRODUCTION: Record<BuildingType, BuildingProduction> = {
   factory:     { food: 0, goods: 0, guns: 1 },
   barracks:    { food: 0, goods: 0, guns: 0 },
   academy:     { food: 0, goods: 0, guns: 0 },
+  siege_workshop: { food: 0, goods: 0, guns: 0 },
   market:      { food: 0, goods: 0, guns: 0 },
   quarry:      { food: 0, goods: 0, guns: 0, stone: 3 },
   mine:        { food: 0, goods: 0, guns: 0, iron: 1.5 },

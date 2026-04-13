@@ -204,7 +204,7 @@ function CameraZoomController() {
     if (phase !== 'playing') botZoomSet.current = false;
 
     if (
-      prevPhaseRef.current === 'place_city' &&
+      (prevPhaseRef.current === 'place_city' || prevPhaseRef.current === 'starting_game') &&
       phase === 'playing' &&
       (gameMode === 'human_vs_ai' || gameMode === 'human_solo')
     ) {

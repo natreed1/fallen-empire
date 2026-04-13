@@ -63,7 +63,7 @@ export function universityTaskMatchesSiteType(task: BuilderTask, siteType: Const
     case 'expand_forestry':
       return siteType === 'logging_hut' || siteType === 'sawmill';
     case 'city_defenses':
-      return siteType === 'city_defense' || siteType === 'wall_section';
+      return siteType === 'wall_section';
     default:
       return false;
   }
@@ -101,7 +101,8 @@ export function computeConstructionAvailableBp(
   const key = tileKey(site.q, site.r);
   let avail = 0;
 
-  if (site.type !== 'trebuchet' && site.type !== 'scout_tower' && site.type !== 'city_defense' && site.type !== 'wall_section') {
+  // Territory tile BP: city buildings, and city defense towers (paid with gold; built with base territory power only — not University workforce).
+  if (site.type !== 'trebuchet' && site.type !== 'scout_tower' && site.type !== 'wall_section') {
     const terr = territory.get(key);
     if (terr && terr.playerId === site.ownerId) avail += CITY_BUILDING_POWER;
   }
@@ -110,6 +111,10 @@ export function computeConstructionAvailableBp(
     const nc = findNearestCityWithAcademy(site.q, site.r, cities, site.ownerId);
     const ac = nc?.buildings.find(b => b.type === 'academy');
     avail += getUniversityBuilderSlots(ac) * BUILDER_POWER;
+    return avail;
+  }
+
+  if (site.type === 'city_defense') {
     return avail;
   }
 

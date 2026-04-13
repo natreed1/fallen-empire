@@ -5,33 +5,18 @@ import {
   ScrollItem,
   ScrollAttachment,
   ScrollKind,
+  SpecialRegionKind,
+  ScrollRelicSite,
   GameNotification,
   tileKey,
   generateId,
-  isNavalUnitType,
-  SCROLL_SEARCH_CYCLES_REQUIRED,
-  SCROLL_DISPLAY_NAME,
   scrollKindForTerrain,
+  SCROLL_REGION_ITEM_NAME,
+  emptyScrollRegionClaimed,
 } from '@/types/game';
+import { unitCountsTowardScrollSearch, makeScrollItem } from './scrollsItems';
 
-export function makeScrollItem(kind: ScrollKind): ScrollItem {
-  return { id: generateId('scroll'), kind };
-}
-
-/** Land military (or any ship on isle_lost) counts toward the scroll line for this terrain. */
-export function unitCountsTowardScrollSearch(
-  u: Unit,
-  tileAtUnit: Tile | undefined,
-  targetScroll: ScrollKind,
-): boolean {
-  if (u.hp <= 0 || u.aboardShipId || u.type === 'builder') return false;
-  if (!tileAtUnit?.specialTerrainKind) return false;
-  if (scrollKindForTerrain(tileAtUnit.specialTerrainKind) !== targetScroll) return false;
-  if (tileAtUnit.specialTerrainKind === 'isle_lost') {
-    return true;
-  }
-  return !isNavalUnitType(u.type);
-}
+export { makeScrollItem } from './scrollsItems';
 
 export function hexHasScrollKind(
   q: number,
@@ -73,86 +58,91 @@ export function armyHasMovementScroll(
   return hexHasScrollKind(at.q, at.r, ownerId, 'movement', units, attachments);
 }
 
-const SCROLL_LINES: ScrollKind[] = ['combat', 'defense', 'movement'];
+export type ScrollRelicPickupEvent = {
+  playerId: string;
+  regionKind: SpecialRegionKind;
+  kind: ScrollKind;
+};
 
 /**
- * Advance search progress per scroll line; at threshold, grant scroll to inventory.
- * Keys: scrollSearchProgress[kind][playerId], scrollSearchClaimed[kind] = player ids.
+ * Grant scroll when a qualifying unit enters that region's relic hex (per player, per region).
  */
-export function tickScrollRegionSearch(opts: {
+export function tickScrollRelicPickup(opts: {
   newCycle: number;
   tiles: Map<string, Tile>;
   units: Unit[];
   players: Player[];
-  scrollSearchProgress: Record<string, Record<string, number>>;
-  scrollSearchClaimed: Record<string, string[]>;
+  scrollRelics: ScrollRelicSite[];
+  scrollRegionClaimed: Record<SpecialRegionKind, string[]>;
   scrollInventory: Record<string, ScrollItem[]>;
 }): {
-  scrollSearchProgress: Record<string, Record<string, number>>;
-  scrollSearchClaimed: Record<string, string[]>;
+  scrollRegionClaimed: Record<SpecialRegionKind, string[]>;
   scrollInventory: Record<string, ScrollItem[]>;
   notifications: GameNotification[];
+  scrollRelicPickupEvents: ScrollRelicPickupEvent[];
 } {
   const {
     tiles,
     units,
     players,
-    scrollSearchProgress: prevProg,
-    scrollSearchClaimed: prevClaimed,
+    scrollRelics,
+    scrollRegionClaimed: prevClaimed,
     scrollInventory: prevInv,
   } = opts;
 
   const notifications: GameNotification[] = [];
-  let scrollSearchProgress = { ...prevProg };
-  let scrollSearchClaimed = { ...prevClaimed };
-  const scrollInventory = { ...prevInv };
+  const scrollRelicPickupEvents: ScrollRelicPickupEvent[] = [];
 
+  let scrollRegionClaimed: Record<SpecialRegionKind, string[]> = {
+    ...emptyScrollRegionClaimed(),
+    ...prevClaimed,
+  };
+  for (const k of Object.keys(scrollRegionClaimed) as SpecialRegionKind[]) {
+    scrollRegionClaimed[k] = [...(scrollRegionClaimed[k] ?? [])];
+  }
+
+  const scrollInventory = { ...prevInv };
   for (const p of players) {
     if (!scrollInventory[p.id]) scrollInventory[p.id] = [];
   }
 
-  for (const scrollKind of SCROLL_LINES) {
-    const claimed = new Set(scrollSearchClaimed[scrollKind] ?? []);
-    const progForKind = { ...(scrollSearchProgress[scrollKind] ?? {}) };
+  for (const site of scrollRelics) {
+    const { regionKind, q, r } = site;
+    const lineKind = scrollKindForTerrain(regionKind);
+    const tileAt = tiles.get(tileKey(q, r));
 
     for (const p of players) {
+      const claimed = new Set(scrollRegionClaimed[regionKind] ?? []);
       if (claimed.has(p.id)) continue;
 
-      let any = false;
+      let picked = false;
       for (const u of units) {
         if (u.ownerId !== p.id) continue;
-        const t = tiles.get(tileKey(u.q, u.r));
-        if (unitCountsTowardScrollSearch(u, t, scrollKind)) {
-          any = true;
-          break;
-        }
+        if (u.q !== q || u.r !== r) continue;
+        if (!unitCountsTowardScrollSearch(u, tileAt, lineKind)) continue;
+        picked = true;
+        break;
       }
+      if (!picked) continue;
 
-      if (!any) continue;
+      claimed.add(p.id);
+      scrollRegionClaimed[regionKind] = [...claimed];
 
-      const cur = progForKind[p.id] ?? 0;
-      const next = cur + 1;
-      progForKind[p.id] = next;
+      const item = makeScrollItem(lineKind, regionKind);
+      scrollInventory[p.id] = [...(scrollInventory[p.id] ?? []), item];
 
-      if (next >= SCROLL_SEARCH_CYCLES_REQUIRED) {
-        claimed.add(p.id);
-        const item = makeScrollItem(scrollKind);
-        scrollInventory[p.id] = [...(scrollInventory[p.id] ?? []), item];
-        const label = p.isHuman ? 'You' : p.name;
-        notifications.push({
-          id: generateId('n'),
-          turn: opts.newCycle,
-          message: `${label} uncovered ${SCROLL_DISPLAY_NAME[scrollKind]} in the wilds.`,
-          type: 'success',
-        });
-      }
+      const label = p.isHuman ? 'You' : p.name;
+      notifications.push({
+        id: generateId('n'),
+        turn: opts.newCycle,
+        message: `${label} claimed ${SCROLL_REGION_ITEM_NAME[regionKind]}.`,
+        type: 'success',
+      });
+      scrollRelicPickupEvents.push({ playerId: p.id, regionKind, kind: lineKind });
     }
-
-    scrollSearchProgress[scrollKind] = progForKind;
-    scrollSearchClaimed[scrollKind] = [...claimed];
   }
 
-  return { scrollSearchProgress, scrollSearchClaimed, scrollInventory, notifications };
+  return { scrollRegionClaimed, scrollInventory, notifications, scrollRelicPickupEvents };
 }
 
 /** When a carrier dies, return their scroll to inventory. */
@@ -168,7 +158,7 @@ export function returnScrollsForDeadCarriers(
     if (lost.length === 0) continue;
     nextAtt = nextAtt.filter(a => a.carrierUnitId !== id);
     for (const a of lost) {
-      const item: ScrollItem = { id: a.scrollId, kind: a.kind };
+      const item: ScrollItem = { id: a.scrollId, kind: a.kind, sourceRegion: a.sourceRegion };
       nextInv[a.ownerId] = [...(nextInv[a.ownerId] ?? []), item];
     }
   }

@@ -10,7 +10,7 @@ import {
   STARTING_GOLD, STARTING_CITY_TEMPLATE, VILLAGE_CITY_TEMPLATE, VILLAGE_INCORPORATE_COST,
   EMPTY_MAP_QUADRANTS, MAP_QUADRANT_LABELS,
   TRADE_MAP_QUADRANT_GOLD, TRADE_MAP_FULL_ATLAS_GOLD, TRADE_RESOURCE_PACK_GOLD, TRADE_MORALE_FESTIVAL_GOLD,
-  TRADE_MORALE_FESTIVAL_DELTA, TRADE_ROYAL_SURVEY_GOLD, TRADE_ROYAL_SURVEY_SCROLL_CYCLES,
+  TRADE_MORALE_FESTIVAL_DELTA, TRADE_ROYAL_SURVEY_GOLD,
   SOCIAL_BAR_UPGRADE_COSTS,
   type MapQuadrantId,
   type ScrollKind,
@@ -25,6 +25,7 @@ import {
   SCOUT_MISSION_COST, SCOUT_MISSION_DURATION_SEC,
   GAME_DURATION_SEC, CYCLE_INTERVAL_SEC,
   BARACKS_UPGRADE_COST, BARACKS_L3_UPGRADE_COST, FACTORY_UPGRADE_COST, FARM_UPGRADE_COST, WALL_SECTION_STONE_COST,
+  WALL_BUILDER_STONE_PER_CYCLE_PER_SLOT,
   UNIVERSITY_UPGRADE_COSTS,
   BUILDER_TASK_LABELS,
   type BuilderTask,
@@ -38,9 +39,13 @@ import {
   RETREAT_DELAY_MS, ASSAULT_ATTACK_DEBUFF, WALL_SECTION_HP, WALL_SECTION_BP_COST,
   AttackCityStyle,
   SpecialRegion,
+  SpecialRegionKind,
+  ScrollRelicSite,
   ScrollItem,
   ScrollAttachment,
   SCROLL_DISPLAY_NAME,
+  scrollItemDisplayName,
+  emptyScrollRegionClaimed,
   Commander,
   CommanderDraftOption,
   COMMANDER_STARTING_PICK,
@@ -72,7 +77,7 @@ import { generateMap, placeAncientCity } from '@/lib/mapGenerator';
 import {
   appendStartingBarracksToCity,
   appendStartingAcademyToCity,
-  findRandomStartHex,
+  findRandomStartHexWithFallback,
   findFishersStartingBuildings,
   isCapitalStartHex,
   clearVillageForCapitalTile,
@@ -116,7 +121,7 @@ import {
   unitIdsMatchingTypes,
   TACTICAL_FILTER_LAND_TYPES,
 } from '@/lib/siege';
-import { tickScrollRegionSearch, returnScrollsForDeadCarriers } from '@/lib/scrolls';
+import { tickScrollRelicPickup, returnScrollsForDeadCarriers } from '@/lib/scrolls';
 import {
   computeConstructionAvailableBp,
   computeRoadAvailableBp,
@@ -125,6 +130,7 @@ import {
   fillUniversitySlotTasks,
   cityUniversityHasSlotTask,
 } from '@/lib/builders';
+import { getNextWallBuildHex, countDefensesTaskSlots } from '@/lib/wallBuilding';
 import { planHumanBuilderAutomation } from '@/lib/builderAutomation';
 import { pruneEndedMajorEngagements } from '@/lib/majorEngagement';
 import type { SiegeTacticId } from '@/lib/siegeTactics';
@@ -200,14 +206,17 @@ interface GameState {
 
   /** Metadata for scroll terrain flavors (names/tints); actual tiles use Tile.specialTerrainKind). */
   specialRegions: SpecialRegion[];
-  /** scrollKind -> playerId -> cycles with military on matching terrain. */
-  scrollSearchProgress: Record<string, Record<string, number>>;
-  /** scrollKind -> player ids who received that scroll from exploration. */
-  scrollSearchClaimed: Record<string, string[]>;
+  /** Seeded relic sites (one per special terrain flavor on the map). */
+  scrollRelics: ScrollRelicSite[];
+  /** Per named region, player ids who claimed that region's relic scroll. */
+  scrollRegionClaimed: Record<SpecialRegionKind, string[]>;
   /** playerId -> scroll items not assigned to a unit. */
   scrollInventory: Record<string, ScrollItem[]>;
   /** Scrolls carried by units (bonuses apply to the whole stack at that hex). */
   scrollAttachments: ScrollAttachment[];
+  /** Lore modal after picking up a regional relic (human only). */
+  scrollRelicPickupModal: { regionKind: SpecialRegionKind; kind: ScrollKind } | null;
+  clearScrollRelicPickupModal: () => void;
 
   // Weather / natural disasters
   activeWeather: WeatherEvent | null;
@@ -236,6 +245,8 @@ interface GameState {
   uiMode: UIMode;
   pendingMove: { toQ: number; toR: number } | null;
   pendingDefenseBuild: { towerType: DefenseTowerType; level: DefenseTowerLevel; cityId: string } | null;
+  /** Set at each economy runCycle: city paid wall builder stone upkeep this cycle (BP for walls gated if false). */
+  wallEconomyStonePaidByCity: Record<string, boolean>;
   wallSections: WallSection[];
   roadPathSelection: { q: number; r: number }[];  // hexes selected for road drag
   supplyViewTab: 'normal' | 'supply';
@@ -343,7 +354,7 @@ interface GameState {
   buildStructure: (type: BuildingType, q: number, r: number) => void;
   buildTrebuchetInField: (q: number, r: number) => void;
   buildScoutTowerInField: (q: number, r: number) => void;
-  /** Builder on hex in your city territory; pay per-level cost from player gold + city storage. */
+  /** Territory hex; pay per-level cost from player gold + city storage; BP from territory city building power only (not University workforce). */
   startCityDefenseTowerBuild: (
     q: number,
     r: number,
@@ -415,8 +426,9 @@ interface GameState {
   setFoodPriority: (priority: FoodPriority) => void;
   setTaxRate: (rate: number) => void;
 
-  // Wall building (ring around city, from build menu; stone cost)
+  // Wall building: one section at a time, inner ring then outer; stone per economy cycle per Defenses slot
   buildWallRing: (cityId: string, ring: number) => void;
+  queueNextWallSection: (cityId: string, opts?: { silent?: boolean }) => void;
 
   // Defense placement from University panel
   startDefensePlacement: (towerType: DefenseTowerType, level: DefenseTowerLevel, cityId: string) => void;
@@ -526,6 +538,7 @@ interface GameState {
   getSelectedUnits: () => Unit[];
   getEnemyCityAt: (q: number, r: number) => City | undefined;
   getBarracksCityAt: (q: number, r: number) => City | undefined;
+  getSiegeWorkshopCityAt: (q: number, r: number) => City | undefined;
   getFactoryAt: (q: number, r: number) => { city: City; building: CityBuilding } | undefined;
   getAcademyAt: (q: number, r: number) => { city: City; building: CityBuilding } | undefined;
   getQuarryMineAt: (q: number, r: number) => { city: City; building: CityBuilding } | undefined;
@@ -649,11 +662,12 @@ function canPayDefenseLevelCost(player: Player, city: City, level: DefenseTowerL
   return true;
 }
 
-function getDefenseProjectBlockedReason(city: City): string | null {
+/** Wall sections only — university workforce on the Walls task. */
+function getWallProjectBlockedReason(city: City): string | null {
   const academy = city.buildings.find(b => b.type === 'academy');
-  if (!academy) return 'Need a University in the territory city to run defense projects.';
+  if (!academy) return 'Need a University in the territory city to run wall projects.';
   if (!cityUniversityHasSlotTask(city, 'city_defenses')) {
-    return `Assign at least one University builder to Defenses to build this project.`;
+    return `Assign at least one University builder to Walls to build wall sections.`;
   }
   return null;
 }
@@ -1019,7 +1033,8 @@ export const useGameStore = create<GameState>((set, get) => ({
   tacticalCityDefenseMode: 'auto_engage',
   commanderDraftOptions: [], commanderDraftSelectedIds: [], commanderDraftAssignment: {},
   constructions: [], roadConstructions: [], scoutTowers: [], defenseInstallations: [], contestedZoneHexKeys: [],
-  specialRegions: [], scrollSearchProgress: {}, scrollSearchClaimed: {}, scrollInventory: {}, scrollAttachments: [],
+  specialRegions: [], scrollRelics: [], scrollRegionClaimed: emptyScrollRegionClaimed(), scrollInventory: {}, scrollAttachments: [],
+  scrollRelicPickupModal: null,
   scoutMissions: [], scoutedHexes: new Set(),
   territory: new Map(), notifications: [],
   combatHexesThisCycle: new Set(),
@@ -1036,7 +1051,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   setSelectedKingdom: (k) => set({ selectedKingdom: k }),
   setTacticalCityDefenseMode: (mode) => set({ tacticalCityDefenseMode: mode }),
   visibleHexes: new Set(), exploredHexes: new Set(), pendingCityHex: null,
-  selectedHex: null, uiMode: 'normal', pendingMove: null, pendingDefenseBuild: null, wallSections: [], roadPathSelection: [],
+  selectedHex: null, uiMode: 'normal', pendingMove: null, pendingDefenseBuild: null, wallEconomyStonePaidByCity: {}, wallSections: [], roadPathSelection: [],
   supplyViewTab: 'normal',
   territoryDisplayStyle: 'fill',
   setTerritoryDisplayStyle: (style) => set({ territoryDisplayStyle: style }),
@@ -1087,7 +1102,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   // ─── Map ────────────────────────────────────────────────────
   generateWorld: (ov) => {
     const config = { ...DEFAULT_MAP_CONFIG, ...ov };
-    const { tiles, provinceCenters, specialRegions } = generateMap(config);
+    const { tiles, provinceCenters, specialRegions, scrollRelics } = generateMap(config);
     const tileMap = new Map<string, Tile>();
     for (const t of tiles) tileMap.set(tileKey(t.q, t.r), t);
     set({
@@ -1095,10 +1110,11 @@ export const useGameStore = create<GameState>((set, get) => ({
       config,
       provinceCenters,
       specialRegions,
-      scrollSearchProgress: {},
-      scrollSearchClaimed: {},
+      scrollRelics,
+      scrollRegionClaimed: emptyScrollRegionClaimed(),
       scrollInventory: {},
       scrollAttachments: [],
+      scrollRelicPickupModal: null,
       isGenerated: true,
       phase: 'setup',
     });
@@ -1109,6 +1125,13 @@ export const useGameStore = create<GameState>((set, get) => ({
   startPlacement: (opts) => {
     cityNameIdx = 0;
     const kingdom = get().selectedKingdom;
+    const tiles = get().tiles;
+    const config = get().config;
+    const startHex = findRandomStartHexWithFallback(kingdom, tiles, config);
+    if (!startHex) {
+      get().addNotification('Could not find any valid capital location on this map. Regenerate the world or try another size.', 'danger');
+      return;
+    }
     const opponentCount = Math.min(5, Math.max(1, opts?.opponentCount ?? 1));
     const aiKingdoms = pickOpponentKingdoms(kingdom, opponentCount);
     const aiIds = AI_PLAYER_IDS.slice(0, opponentCount) as string[];
@@ -1122,9 +1145,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       isHuman: false,
       kingdomId: aiKingdoms[i],
     }));
-    const suggested = findRandomStartHex(kingdom, get().tiles, get().config);
     set({
-      phase: 'place_city',
+      phase: 'starting_game',
       gameMode: 'human_vs_ai',
       players: [
         { id: HUMAN_ID, name: 'You', color: PLAYER_COLORS.human, gold: STARTING_GOLD, taxRate: 0.3, foodPriority: 'civilian', isHuman: true, kingdomId: kingdom },
@@ -1142,26 +1164,30 @@ export const useGameStore = create<GameState>((set, get) => ({
       combatMoraleState: new Map(),
       combatKillFeed: [],
       contestedZoneHexKeys: [],
-      scrollSearchProgress: {},
-      scrollSearchClaimed: {},
+      scrollRegionClaimed: emptyScrollRegionClaimed(),
       scrollInventory: {},
       scrollAttachments: [],
+      scrollRelicPickupModal: null,
       activeWeather: null, lastWeatherEndCycle: -10,
-      visibleHexes: new Set(), exploredHexes: new Set(), pendingCityHex: suggested,
+      visibleHexes: new Set(), exploredHexes: new Set(), pendingCityHex: null,
       battleModalHexKey: null,
       majorEngagementStrategyByHex: {},
     });
-    if (!suggested) {
-      get().addNotification('No scored start for this kingdom — click any valid land hex.', 'warning');
-    }
+    get().placeStartingCity(startHex.q, startHex.r);
   },
 
   startSoloPlacement: () => {
     cityNameIdx = 0;
     const kingdom = get().selectedKingdom;
-    const suggested = findRandomStartHex(kingdom, get().tiles, get().config);
+    const tiles = get().tiles;
+    const config = get().config;
+    const startHex = findRandomStartHexWithFallback(kingdom, tiles, config);
+    if (!startHex) {
+      get().addNotification('Could not find any valid capital location on this map. Regenerate the world or try another size.', 'danger');
+      return;
+    }
     set({
-      phase: 'place_city',
+      phase: 'starting_game',
       gameMode: 'human_solo',
       players: [
         { id: HUMAN_ID, name: 'You', color: PLAYER_COLORS.human, gold: STARTING_GOLD, taxRate: 0.3, foodPriority: 'civilian', isHuman: true, kingdomId: kingdom },
@@ -1180,18 +1206,16 @@ export const useGameStore = create<GameState>((set, get) => ({
       combatMoraleState: new Map(),
       combatKillFeed: [],
       contestedZoneHexKeys: [],
-      scrollSearchProgress: {},
-      scrollSearchClaimed: {},
+      scrollRegionClaimed: emptyScrollRegionClaimed(),
       scrollInventory: {},
       scrollAttachments: [],
+      scrollRelicPickupModal: null,
       activeWeather: null, lastWeatherEndCycle: -10,
-      visibleHexes: new Set(), exploredHexes: new Set(), pendingCityHex: suggested,
+      visibleHexes: new Set(), exploredHexes: new Set(), pendingCityHex: null,
       battleModalHexKey: null,
       majorEngagementStrategyByHex: {},
     });
-    if (!suggested) {
-      get().addNotification('No scored start for this kingdom — click any valid land hex.', 'warning');
-    }
+    get().placeStartingCity(startHex.q, startHex.r);
   },
 
   startBotVsBot: () => {
@@ -1289,10 +1313,11 @@ export const useGameStore = create<GameState>((set, get) => ({
       combatKillFeed: [],
       contestedZoneHexKeys,
       specialRegions: s.specialRegions ?? [],
-      scrollSearchProgress: {},
-      scrollSearchClaimed: {},
+      scrollRelics: s.scrollRelics ?? [],
+      scrollRegionClaimed: emptyScrollRegionClaimed(),
       scrollInventory: scrollInvBot,
       scrollAttachments: [],
+      scrollRelicPickupModal: null,
       notifications: [
         { id: generateId('n'), turn: 0, message: 'Bot vs Bot — observing both empires.', type: 'success' },
       ],
@@ -1414,10 +1439,11 @@ export const useGameStore = create<GameState>((set, get) => ({
       combatKillFeed: [],
       contestedZoneHexKeys,
       specialRegions: s.specialRegions ?? [],
-      scrollSearchProgress: {},
-      scrollSearchClaimed: {},
+      scrollRelics: s.scrollRelics ?? [],
+      scrollRegionClaimed: emptyScrollRegionClaimed(),
       scrollInventory: scrollInvBot,
       scrollAttachments: [],
+      scrollRelicPickupModal: null,
       notifications: [
         { id: generateId('n'), turn: 0, message: `Spectating ${totalBots} AI empires.`, type: 'success' },
       ],
@@ -1601,7 +1627,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         id: generateId('n'),
         turn: 0,
         message:
-          'Ancient wilds now use strong map markers. Hold an army on matching terrain for 3 economy cycles to claim that scroll line; assign scrolls to units or field armies from the hex panel (+10% attack, defense, or movement).',
+          'Named wilds are marked on the map. Explore to reveal relic sites; move a qualifying army onto the relic hex to claim that region’s scroll (+10% attack, defense, or movement by line). Assign scrolls from the hex panel.',
         type: 'info',
       });
     }
@@ -1690,10 +1716,11 @@ export const useGameStore = create<GameState>((set, get) => ({
       scoutTowers: [],
       defenseInstallations: [],
       contestedZoneHexKeys,
-      scrollSearchProgress: {},
-      scrollSearchClaimed: {},
+      scrollRelics: get().scrollRelics ?? [],
+      scrollRegionClaimed: emptyScrollRegionClaimed(),
       scrollInventory: scrollInv,
       scrollAttachments: [],
+      scrollRelicPickupModal: null,
       visibleHexes: initVisible,
       exploredHexes: initExplored,
       notifications: startNotifs,
@@ -2157,8 +2184,19 @@ export const useGameStore = create<GameState>((set, get) => ({
           let defenseOut = [...st.defenseInstallations];
           let wallOut = [...st.wallSections];
 
+          const wallStonePaid = st.wallEconomyStonePaidByCity ?? {};
+          const queueWallAfterComplete: string[] = [];
+
           for (const site of st.constructions) {
             let availBP = computeConstructionAvailableBp(site, st.territory, st.cities);
+
+            if (
+              site.type === 'wall_section' &&
+              site.cityId &&
+              wallStonePaid[site.cityId] === false
+            ) {
+              availBP = 0;
+            }
 
             if (availBP === 0) {
               remaining.push(site);
@@ -2247,6 +2285,7 @@ export const useGameStore = create<GameState>((set, get) => ({
                     maxHp: WALL_SECTION_HP,
                   });
                 }
+                queueWallAfterComplete.push(site.cityId);
                 completedNotifs.push({
                   id: generateId('n'),
                   turn: st.cycle,
@@ -2258,7 +2297,7 @@ export const useGameStore = create<GameState>((set, get) => ({
                 const city = updatedCities.find(c => c.id === site.cityId);
                 if (city) {
                   const b: CityBuilding = { type: site.type as BuildingType, q: site.q, r: site.r };
-                  if (['quarry', 'mine', 'gold_mine', 'barracks', 'factory', 'academy', 'farm', 'banana_farm', 'sawmill', 'port', 'shipyard', 'fishery', 'logging_hut', 'market', 'social_bar'].includes(site.type)) b.level = 1;
+                  if (['quarry', 'mine', 'gold_mine', 'barracks', 'factory', 'academy', 'siege_workshop', 'farm', 'banana_farm', 'sawmill', 'port', 'shipyard', 'fishery', 'logging_hut', 'market', 'social_bar'].includes(site.type)) b.level = 1;
                   const jobs = BUILDING_JOBS[site.type as BuildingType] ?? 0;
                   if (jobs > 0) {
                     const totalEmployed = city.buildings.reduce((s, x) => s + ((x as CityBuilding).assignedWorkers ?? 0), 0);
@@ -2291,6 +2330,9 @@ export const useGameStore = create<GameState>((set, get) => ({
             wallSections: wallOut,
             notifications: allNotifs,
           });
+          for (const cid of queueWallAfterComplete) {
+            queueMicrotask(() => get().queueNextWallSection(cid, { silent: true }));
+          }
         }
       }
 
@@ -2734,6 +2776,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       const aiPlan = planAiTurn(
         aiPlayerId, cities, units, players, tilesMut, flushTerritory, getAiParams(), wallSectionsMut,
         s.contestedZoneHexKeys ?? [], s.commanders ?? [], s.scrollInventory ?? {}, s.scrollAttachments ?? [],
+        s.scrollRelics ?? [], s.scrollRegionClaimed ?? emptyScrollRegionClaimed(),
       );
       const aiPlayer = players.find(p => p.id === aiPlayerId);
       if (!aiPlayer) continue;
@@ -2745,7 +2788,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         const ironCost = (BUILDING_IRON_COSTS[build.type] ?? 0);
         if (ironCost > 0 && (city.storage.iron ?? 0) < ironCost) continue;
         const b: CityBuilding = { type: build.type, q: build.q, r: build.r };
-        if (['quarry', 'mine', 'gold_mine', 'barracks', 'factory', 'academy', 'farm', 'banana_farm', 'market', 'social_bar'].includes(build.type)) b.level = 1;
+        if (['quarry', 'mine', 'gold_mine', 'barracks', 'factory', 'academy', 'siege_workshop', 'farm', 'banana_farm', 'market', 'social_bar'].includes(build.type)) b.level = 1;
         if (build.type === 'quarry' || build.type === 'mine' || build.type === 'gold_mine') {
           const toAssign = Math.min(WORKERS_PER_LEVEL, Math.max(0, city.population - 1));
           b.assignedWorkers = toAssign;
@@ -2887,24 +2930,16 @@ export const useGameStore = create<GameState>((set, get) => ({
       for (const wr of buildWallRings) {
         const city = cities.find(c => c.id === wr.cityId);
         if (!city || city.ownerId !== aiPlayerId) continue;
-        const ringHexes = getHexRing(city.q, city.r, wr.ring);
+        if (constructionsForSet.some(c => c.cityId === city.id && c.type === 'wall_section')) continue;
         const ownerWallKeys = new Set(wallSectionsMut.filter(w => w.ownerId === aiPlayerId).map(w => tileKey(w.q, w.r)));
         const queuedWallKeys = new Set(
           constructionsForSet
             .filter(c => c.ownerId === aiPlayerId && c.type === 'wall_section')
             .map(c => tileKey(c.q, c.r)),
         );
-        const validHexes: { q: number; r: number }[] = [];
-        for (const { q, r } of ringHexes) {
-          const tile = tilesMut.get(tileKey(q, r));
-          if (!tile || tile.biome === 'water') continue;
-          if (ownerWallKeys.has(tileKey(q, r)) || queuedWallKeys.has(tileKey(q, r))) continue;
-          validHexes.push({ q, r });
-        }
-        if (validHexes.length === 0) continue;
-        const totalCost = validHexes.length * WALL_SECTION_STONE_COST;
-        const cityStone = city.storage.stone ?? 0;
-        if (cityStone < totalCost) continue;
+        const next = getNextWallBuildHex(city, tilesMut, ownerWallKeys, queuedWallKeys);
+        if (!next) continue;
+        if (wr.ring === 2 && next.ring === 1) continue;
         const cityIdx = cities.indexOf(city);
         if (cityIdx >= 0) {
           const c0 = cities[cityIdx];
@@ -2913,22 +2948,19 @@ export const useGameStore = create<GameState>((set, get) => ({
             ...c0,
             universityBuilderTask: 'city_defenses',
             universityBuilderSlotTasks: fillUniversitySlotTasks(c0, acad, 'city_defenses'),
-            storage: { ...c0.storage, stone: Math.max(0, cityStone - totalCost) },
           };
         }
-        for (const { q, r } of validHexes) {
-          constructionsForSet = [...constructionsForSet, {
-            id: generateId('con'),
-            type: 'wall_section',
-            q,
-            r,
-            cityId: city.id,
-            ownerId: aiPlayerId,
-            bpRequired: WALL_SECTION_BP_COST,
-            bpAccumulated: 0,
-            wallBuildRing: wr.ring,
-          }];
-        }
+        constructionsForSet = [...constructionsForSet, {
+          id: generateId('con'),
+          type: 'wall_section',
+          q: next.q,
+          r: next.r,
+          cityId: city.id,
+          ownerId: aiPlayerId,
+          bpRequired: WALL_SECTION_BP_COST,
+          bpAccumulated: 0,
+          wallBuildRing: next.ring,
+        }];
       }
 
       // AI commander field assignments
@@ -2950,6 +2982,7 @@ export const useGameStore = create<GameState>((set, get) => ({
           id: generateId('sa'),
           scrollId: scrollItem.id,
           kind: scrollItem.kind,
+          sourceRegion: scrollItem.sourceRegion,
           carrierUnitId: carrier.id,
           ownerId: aiPlayerId,
         });
@@ -3041,16 +3074,22 @@ export const useGameStore = create<GameState>((set, get) => ({
     let citiesForSet = contested.cities;
     let playersForSet = contested.players;
 
-    const scrollTick = tickScrollRegionSearch({
+    const scrollTick = tickScrollRelicPickup({
       newCycle,
       tiles: tilesMut,
       units: aliveUnits,
       players: playersForSet,
-      scrollSearchProgress: s.scrollSearchProgress ?? {},
-      scrollSearchClaimed: s.scrollSearchClaimed ?? {},
+      scrollRelics: s.scrollRelics ?? [],
+      scrollRegionClaimed: s.scrollRegionClaimed ?? emptyScrollRegionClaimed(),
       scrollInventory: s.scrollInventory ?? {},
     });
     notifs.push(...scrollTick.notifications);
+    let nextScrollModal = s.scrollRelicPickupModal;
+    for (const ev of scrollTick.scrollRelicPickupEvents) {
+      if (ev.playerId === HUMAN_ID) {
+        nextScrollModal = { regionKind: ev.regionKind, kind: ev.kind };
+      }
+    }
 
     // Victory check
     let phase: GamePhase = 'playing';
@@ -3087,8 +3126,32 @@ export const useGameStore = create<GameState>((set, get) => ({
       }
     }
 
+    const wallEconomyStonePaidByCity: Record<string, boolean> = {};
+    const citiesWallStone = citiesForSet.map(c => {
+      const hasWallSite = constructionsForSet.some(
+        con => con.cityId === c.id && con.type === 'wall_section',
+      );
+      if (!hasWallSite) return c;
+      const slots = countDefensesTaskSlots(c);
+      if (slots <= 0) {
+        wallEconomyStonePaidByCity[c.id] = false;
+        return c;
+      }
+      const cost = slots * WALL_BUILDER_STONE_PER_CYCLE_PER_SLOT;
+      const stone = c.storage.stone ?? 0;
+      if (stone >= cost) {
+        wallEconomyStonePaidByCity[c.id] = true;
+        return {
+          ...c,
+          storage: { ...c.storage, stone: stone - cost },
+        };
+      }
+      wallEconomyStonePaidByCity[c.id] = false;
+      return c;
+    });
+
     set({
-      cities: citiesForSet,
+      cities: citiesWallStone,
       units: aliveUnits,
       heroes: flushHeroes,
       commanders: flushCommanders,
@@ -3115,8 +3178,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       constructions: constructionsForSet,
       visibleHexes: flushVisible,
       exploredHexes: flushExplored,
-      scrollSearchProgress: scrollTick.scrollSearchProgress,
-      scrollSearchClaimed: scrollTick.scrollSearchClaimed,
+      scrollRegionClaimed: scrollTick.scrollRegionClaimed,
+      scrollRelicPickupModal: nextScrollModal,
       scrollInventory: pendingScrollRemovals.length > 0
         ? Object.fromEntries(
             Object.entries(scrollTick.scrollInventory).map(([pid, items]) => [
@@ -3129,6 +3192,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         ? [...s.scrollAttachments, ...pendingScrollAttachments]
         : s.scrollAttachments,
       notifications: [...s.notifications.slice(-8), ...notifs],
+      wallEconomyStonePaidByCity,
     });
   },
 
@@ -3611,11 +3675,6 @@ export const useGameStore = create<GameState>((set, get) => ({
       get().addNotification('No city owns this territory tile.', 'warning');
       return;
     }
-    const blockedReason = getDefenseProjectBlockedReason(payCity);
-    if (blockedReason) {
-      get().addNotification(blockedReason, 'warning');
-      return;
-    }
     if (s.cities.some(c => c.buildings.some(b => tileKey(b.q, b.r) === hexKey))) {
       get().addNotification('This hex already has a building.', 'warning');
       return;
@@ -3965,18 +4024,13 @@ export const useGameStore = create<GameState>((set, get) => ({
       get().addNotification(`Need ${TRADE_ROYAL_SURVEY_GOLD} gold for the royal survey.`, 'warning');
       return;
     }
-    const kinds: ScrollKind[] = ['combat', 'defense', 'movement'];
-    const nextProg = { ...s.scrollSearchProgress };
-    for (const k of kinds) {
-      const sub = { ...(nextProg[k] ?? {}) };
-      sub[HUMAN_ID] = (sub[HUMAN_ID] ?? 0) + TRADE_ROYAL_SURVEY_SCROLL_CYCLES;
-      nextProg[k] = sub;
-    }
     set({
       players: s.players.map(pl => (pl.id === HUMAN_ID ? { ...pl, gold: pl.gold - TRADE_ROYAL_SURVEY_GOLD } : pl)),
-      scrollSearchProgress: nextProg,
     });
-    get().addNotification('Royal surveyors chart ancient lines — scroll discovery progress advanced.', 'success');
+    get().addNotification(
+      'Royal surveyors map roads and ruins — send scouts and armies to named wilds to find relic scrolls on the ground.',
+      'success',
+    );
   },
 
   upgradeUniversity: (cityId, academyQ, academyR) => {
@@ -4125,6 +4179,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     // Defender is always L3; other units use requested armsLevel (1/2/3)
     let effectiveLevel: 1 | 2 | 3 = type === 'defender' ? 3 : (armsLevel ?? 1);
     if (type === 'crusader_knight') effectiveLevel = 3;
+    if (type === 'trebuchet' || type === 'battering_ram') effectiveLevel = 1;
     const wantL2 = effectiveLevel === 2;
     const wantL3 = effectiveLevel === 3;
 
@@ -4143,6 +4198,11 @@ export const useGameStore = create<GameState>((set, get) => ({
     if (isBuilder) {
       get().addNotification('Builders are tied to your University level — open the University to set workforce tasks.', 'info');
       return;
+    } else if (type === 'trebuchet' || type === 'battering_ram') {
+      const siegeWs = city.buildings.find(b => b.type === 'siege_workshop');
+      if (!siegeWs) {
+        get().addNotification('Build a Siege workshop to recruit trebuchets and battering rams!', 'warning'); return;
+      }
     } else {
       if (!barracks) {
         get().addNotification('Build a Barracks to recruit military units!', 'warning'); return;
@@ -5001,7 +5061,7 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   startDefensePlacement: (towerType, level, cityId) => {
     set({ uiMode: 'build_defense', pendingDefenseBuild: { towerType, level, cityId } });
-    get().addNotification(`Click a territory hex to place ${towerType.replace('_', ' ')} L${level}.`, 'info');
+    get().addNotification(`Click a territory hex to place ${towerType.replace('_', ' ')} (starts at L${level}).`, 'info');
   },
 
   cancelDefensePlacement: () => {
@@ -5031,68 +5091,62 @@ export const useGameStore = create<GameState>((set, get) => ({
     set({ uiMode: 'normal', roadPathSelection: [] });
   },
 
-  buildWallRing: (cityId, ring) => {
+  queueNextWallSection: (cityId, opts) => {
+    const s = get();
+    const city = s.cities.find(c => c.id === cityId);
+    if (!city) return;
+    if (s.constructions.some(c => c.cityId === cityId && c.type === 'wall_section')) return;
+    const blockedReason = getWallProjectBlockedReason(city);
+    if (blockedReason) {
+      if (!opts?.silent) get().addNotification(blockedReason, 'warning');
+      return;
+    }
+    const built = new Set(
+      s.wallSections.filter(w => w.ownerId === city.ownerId).map(w => tileKey(w.q, w.r)),
+    );
+    const queued = new Set(
+      s.constructions
+        .filter(c => c.cityId === cityId && c.type === 'wall_section')
+        .map(c => tileKey(c.q, c.r)),
+    );
+    const next = getNextWallBuildHex(city, s.tiles, built, queued);
+    if (!next) {
+      if (city.ownerId === HUMAN_ID && !opts?.silent) {
+        get().addNotification(`No wall gaps left to build around ${city.name}.`, 'info');
+      }
+      return;
+    }
+    const site: ConstructionSite = {
+      id: generateId('con'),
+      type: 'wall_section',
+      q: next.q,
+      r: next.r,
+      cityId: city.id,
+      ownerId: city.ownerId,
+      bpRequired: WALL_SECTION_BP_COST,
+      bpAccumulated: 0,
+      wallBuildRing: next.ring,
+    };
+    set({ constructions: [...s.constructions, site] });
+    if (city.ownerId === HUMAN_ID && !opts?.silent) {
+      const ringLabel = next.ring === 1 ? 'inner ring' : 'outer ring';
+      get().addNotification(
+        `${city.name}: wall section (${ringLabel}, ${next.q},${next.r}). ${WALL_BUILDER_STONE_PER_CYCLE_PER_SLOT} stone/cycle per Defenses slot while workers build.`,
+        'success',
+      );
+    }
+  },
+
+  /** Queue the next wall hex (inner ring first, then outer). Ring argument ignored — use for UI compatibility. */
+  buildWallRing: (cityId, _ring) => {
     const s = get();
     const city = s.cities.find(c => c.id === cityId);
     if (!city || city.ownerId !== HUMAN_ID) return;
-    const ringTarget: 1 | 2 = ring >= 2 ? 2 : 1;
-    const blockedReason = getDefenseProjectBlockedReason(city);
-    if (blockedReason) {
-      get().addNotification(blockedReason, 'warning');
+    if (s.constructions.some(c => c.cityId === cityId && c.type === 'wall_section')) {
+      get().addNotification('A wall section is already under construction for this city.', 'warning');
       return;
     }
-    const ringHexes = getHexRing(city.q, city.r, ringTarget);
-    const existingWallKeys = new Set(
-      s.wallSections
-        .filter(w => w.ownerId === HUMAN_ID)
-        .map(w => tileKey(w.q, w.r)),
-    );
-    const queuedWallKeys = new Set(
-      s.constructions
-        .filter(c => c.ownerId === HUMAN_ID && c.type === 'wall_section')
-        .map(c => tileKey(c.q, c.r)),
-    );
-    const validHexes: { q: number; r: number }[] = [];
-    for (const { q, r } of ringHexes) {
-      const tile = s.tiles.get(tileKey(q, r));
-      if (!tile || tile.biome === 'water') continue;
-      const key = tileKey(q, r);
-      if (existingWallKeys.has(key) || queuedWallKeys.has(key)) continue;
-      validHexes.push({ q, r });
-    }
-    if (validHexes.length === 0) {
-      get().addNotification(`No open wall projects for ring ${ringTarget} around ${city.name}.`, 'warning');
-      return;
-    }
-    const totalCost = validHexes.length * WALL_SECTION_STONE_COST;
-    const cityStone = city.storage.stone ?? 0;
-    if (cityStone < totalCost) {
-      get().addNotification(`Need ${totalCost - cityStone} more stone in ${city.name} (${totalCost} total).`, 'warning');
-      return;
-    }
-    const newSites: ConstructionSite[] = validHexes.map(({ q, r }) => ({
-      id: generateId('con'),
-      type: 'wall_section',
-      q,
-      r,
-      cityId: city.id,
-      ownerId: HUMAN_ID,
-      bpRequired: WALL_SECTION_BP_COST,
-      bpAccumulated: 0,
-      wallBuildRing: ringTarget,
-    }));
-    set({
-      cities: s.cities.map(c =>
-        c.id === city.id
-          ? { ...c, storage: { ...c.storage, stone: Math.max(0, (c.storage.stone ?? 0) - totalCost) } }
-          : c,
-      ),
-      constructions: [...s.constructions, ...newSites],
-    });
-    get().addNotification(
-      `Queued wall ring ${ringTarget} around ${city.name} (${newSites.length} sections, ${newSites.length * WALL_SECTION_BP_COST} BP).`,
-      'success',
-    );
+    get().queueNextWallSection(cityId);
   },
 
   builderSelectDeposit: (q, r, type) => {
@@ -6696,6 +6750,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       id: generateId('satt'),
       scrollId: scroll.id,
       kind: scroll.kind,
+      sourceRegion: scroll.sourceRegion,
       carrierUnitId: unitId,
       ownerId: human.id,
       armyId: unit.armyId,
@@ -6704,7 +6759,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       scrollInventory: { ...s.scrollInventory, [human.id]: inv },
       scrollAttachments: [...s.scrollAttachments, att],
     });
-    get().addNotification(`${SCROLL_DISPLAY_NAME[scroll.kind]} assigned to ${UNIT_DISPLAY_NAMES[unit.type]}.`, 'success');
+    get().addNotification(`${scrollItemDisplayName(scroll)} assigned to ${UNIT_DISPLAY_NAMES[unit.type]}.`, 'success');
   },
 
   assignScrollToArmy: (scrollItemId, armyId) => {
@@ -6734,6 +6789,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       id: generateId('satt'),
       scrollId: scroll.id,
       kind: scroll.kind,
+      sourceRegion: scroll.sourceRegion,
       carrierUnitId: carrier.id,
       ownerId: human.id,
       armyId,
@@ -6743,7 +6799,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       scrollAttachments: [...s.scrollAttachments, att],
     });
     const armyName = s.operationalArmies.find(a => a.id === armyId)?.name ?? 'army';
-    get().addNotification(`${SCROLL_DISPLAY_NAME[scroll.kind]} assigned to ${armyName}.`, 'success');
+    get().addNotification(`${scrollItemDisplayName(scroll)} assigned to ${armyName}.`, 'success');
   },
 
   unassignScrollFromUnit: (unitId) => {
@@ -6754,7 +6810,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     if (!att) return;
     const unit = s.units.find(u => u.id === unitId);
     if (!unit || unit.ownerId !== human.id) return;
-    const item: ScrollItem = { id: att.scrollId, kind: att.kind };
+    const item: ScrollItem = { id: att.scrollId, kind: att.kind, sourceRegion: att.sourceRegion };
     set({
       scrollAttachments: s.scrollAttachments.filter(a => a.id !== att.id),
       scrollInventory: {
@@ -6762,8 +6818,10 @@ export const useGameStore = create<GameState>((set, get) => ({
         [human.id]: [...(s.scrollInventory[human.id] ?? []), item],
       },
     });
-    get().addNotification(`${SCROLL_DISPLAY_NAME[item.kind]} returned to inventory.`, 'info');
+    get().addNotification(`${scrollItemDisplayName(item)} returned to inventory.`, 'info');
   },
+
+  clearScrollRelicPickupModal: () => set({ scrollRelicPickupModal: null }),
 
   sendScout: (q, r) => {
     const s = get();
@@ -6845,6 +6903,16 @@ export const useGameStore = create<GameState>((set, get) => ({
     }
     return undefined;
   },
+  getSiegeWorkshopCityAt: (q, r) => {
+    const key = tileKey(q, r);
+    for (const city of get().cities) {
+      if (city.ownerId !== HUMAN_ID) continue;
+      if (city.buildings.some(b => b.type === 'siege_workshop' && tileKey(b.q, b.r) === key)) {
+        return city;
+      }
+    }
+    return undefined;
+  },
   getFactoryAt: (q, r) => {
     const key = tileKey(q, r);
     for (const city of get().cities) {
@@ -6874,7 +6942,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   },
   getJobBuildingAt: (q, r) => {
     const key = tileKey(q, r);
-    const jobTypes: BuildingType[] = ['farm', 'banana_farm', 'factory', 'market', 'quarry', 'mine', 'gold_mine', 'city_center', 'barracks', 'academy', 'sawmill', 'port', 'shipyard', 'fishery', 'logging_hut', 'social_bar'];
+    const jobTypes: BuildingType[] = ['farm', 'banana_farm', 'factory', 'market', 'quarry', 'mine', 'gold_mine', 'city_center', 'barracks', 'academy', 'siege_workshop', 'sawmill', 'port', 'shipyard', 'fishery', 'logging_hut', 'social_bar'];
     for (const city of get().cities) {
       if (city.ownerId !== HUMAN_ID) continue;
       const building = city.buildings.find(b => jobTypes.includes(b.type) && tileKey(b.q, b.r) === key);

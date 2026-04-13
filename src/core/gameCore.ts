@@ -12,6 +12,7 @@ import {
   CityBuilding, ScoutMission, WallSection, ScoutTower, WeatherEvent,
   ConstructionSite, BuildingType,
   Commander, ScrollItem, ScrollAttachment, COMMANDER_STARTING_PICK,
+  SpecialRegionKind, ScrollRelicSite,
   DefenseInstallation, UnitStack, OperationalArmy,
   ensureCityBuildingHp, UNIT_HP_REGEN_FRACTION_PER_CYCLE, isNavalUnitType,
   STARTING_GOLD, VILLAGE_CITY_TEMPLATE, CITY_CENTER_STORAGE,
@@ -31,6 +32,7 @@ import { calculateTerritory } from '../lib/territory';
 import { processEconomyTurn } from '../lib/gameLoop';
 import { planAiTurn, placeAiStartingCityAt, AiParams, DEFAULT_AI_PARAMS, estimateAiFoodSurplus } from '../lib/ai';
 import { appendStartingBarracksToCity, appendStartingAcademyToCity } from '../lib/kingdomSpawn';
+import { getNextWallBuildHex } from '../lib/wallBuilding';
 import {
   movementTick,
   combatTick,
@@ -52,7 +54,7 @@ import { rollForWeatherEvent, tickWeatherEvent, getWeatherHarvestMultiplier } fr
 import { computeConstructionAvailableBp, fillUniversitySlotTasks } from '../lib/builders';
 import { computeContestedZoneHexKeys, applyContestedZonePayout } from '../lib/contestedZone';
 import { rollCommanderIdentity, createCommanderRecord, syncCommandersToAssignments, unassignCommandersWithDeadAnchors, clearInvalidCommanderAssignments } from '../lib/commanders';
-import { tickScrollRegionSearch, returnScrollsForDeadCarriers } from '../lib/scrolls';
+import { tickScrollRelicPickup, returnScrollsForDeadCarriers } from '../lib/scrolls';
 
 export type { AiParams };
 export { DEFAULT_AI_PARAMS };
@@ -87,10 +89,10 @@ export type SimState = {
   contestedZoneHexKeys: string[];
   /** Named commanders with trait bonuses; synced to assignments each cycle. */
   commanders: Commander[];
-  /** Scroll discovery progress per line per player. */
-  scrollSearchProgress: Record<string, Record<string, number>>;
-  /** Which scroll lines have been claimed (player ids). */
-  scrollSearchClaimed: Record<string, string[]>;
+  /** Seeded relic hexes (one per special terrain flavor on the map). */
+  scrollRelics: ScrollRelicSite[];
+  /** Per-region scroll claimed by player ids. */
+  scrollRegionClaimed: Record<SpecialRegionKind, string[]>;
   /** Scroll inventory per player. */
   scrollInventory: Record<string, ScrollItem[]>;
   /** Active scroll attachments to carrier units. */
@@ -119,7 +121,7 @@ export function initBotVsBotGame(
 ): SimState {
   _cityNameIdx = 0;
   const config: MapConfig = { ...DEFAULT_MAP_CONFIG, ...mapConfigOverride, seed };
-  const { tiles: tilesArray } = generateMap(config);
+  const { tiles: tilesArray, scrollRelics } = generateMap(config);
   const tiles = new Map<string, Tile>();
   for (const t of tilesArray) tiles.set(tileKey(t.q, t.r), t);
 
@@ -205,8 +207,8 @@ export function initBotVsBotGame(
     simTimeMs: 0,
     contestedZoneHexKeys,
     commanders,
-    scrollSearchProgress: {},
-    scrollSearchClaimed: {},
+    scrollRelics,
+    scrollRegionClaimed: { mexca: [], hills_lost: [], forest_secrets: [], isle_lost: [] },
     scrollInventory,
     scrollAttachments: [],
     defenseInstallations: [],
@@ -557,17 +559,16 @@ export function stepSimulation(
   // ── Scroll search progress ──
   const prevScrollCount1 = (state.scrollInventory[AI_ID] ?? []).length;
   const prevScrollCount2 = (state.scrollInventory[AI_ID_2] ?? []).length;
-  const scrollResult = tickScrollRegionSearch({
+  const scrollResult = tickScrollRelicPickup({
     newCycle,
     tiles: state.tiles,
     units,
     players,
-    scrollSearchProgress: state.scrollSearchProgress,
-    scrollSearchClaimed: state.scrollSearchClaimed,
+    scrollRelics: state.scrollRelics,
+    scrollRegionClaimed: state.scrollRegionClaimed,
     scrollInventory: state.scrollInventory,
   });
-  let scrollSearchProgress = scrollResult.scrollSearchProgress;
-  let scrollSearchClaimed = scrollResult.scrollSearchClaimed;
+  let scrollRegionClaimed = scrollResult.scrollRegionClaimed;
   let scrollInventory = scrollResult.scrollInventory;
   let scrollAttachments = [...state.scrollAttachments];
   if (diagnostics) {
@@ -686,6 +687,7 @@ export function stepSimulation(
   const plans = aiConfigs.map(({ id, params }) => planAiTurn(
     id, cities, units, players, state.tiles, state.territory, params, state.wallSections,
     state.contestedZoneHexKeys, state.commanders, scrollInventory, scrollAttachments,
+    state.scrollRelics, state.scrollRegionClaimed,
   ));
 
   if (traceCallback) {
@@ -796,15 +798,24 @@ export function stepSimulation(
     for (const rec of aiPlan.recruits) {
       const city = cityById.get(rec.cityId);
       if (!city || city.ownerId !== aiPlayerId || city.population <= 0 || aiTroopCount >= aiTotalPopForRecruit) continue;
+      if (rec.type === 'trebuchet' || rec.type === 'battering_ram') {
+        if (!city.buildings.some(b => b.type === 'siege_workshop')) continue;
+      }
       const effectiveLevel = rec.type === 'defender' ? 3 : (rec.armsLevel ?? 1);
       const wantL2 = effectiveLevel === 2;
       const wantL3 = effectiveLevel === 3;
       const goldCost = wantL3 ? UNIT_L3_COSTS[rec.type].gold : wantL2 ? UNIT_L2_COSTS[rec.type].gold : UNIT_COSTS[rec.type].gold;
       const stoneCost = wantL2 ? (UNIT_L2_COSTS[rec.type].stone ?? 0) : 0;
       const ironCost = wantL3 ? (UNIT_L3_COSTS[rec.type].iron ?? 0) : 0;
+      const refinedWoodCost = wantL3
+        ? (UNIT_L3_COSTS[rec.type].refinedWood ?? 0)
+        : wantL2
+          ? (UNIT_L2_COSTS[rec.type].refinedWood ?? 0)
+          : (UNIT_COSTS[rec.type].refinedWood ?? 0);
       if (aiPlayer.gold < goldCost) continue;
       if (stoneCost > 0 && (city.storage.stone ?? 0) < stoneCost) continue;
       if (ironCost > 0 && (city.storage.iron ?? 0) < ironCost) continue;
+      if (refinedWoodCost > 0 && (city.storage.refinedWood ?? 0) < refinedWoodCost) continue;
       if (rec.type === 'defender' || wantL2 || wantL3) {
         const barracks = city.buildings.find(b => b.type === 'barracks');
         if ((barracks?.level ?? 1) < 2) continue;
@@ -842,7 +853,7 @@ export function stepSimulation(
         }
       }
       aiPlayer.gold -= goldCost;
-      if (stoneCost > 0 || ironCost > 0) {
+      if (stoneCost > 0 || ironCost > 0 || refinedWoodCost > 0) {
         const cityIdx = cities.indexOf(city);
         if (cityIdx >= 0) {
           const c = cities[cityIdx];
@@ -852,6 +863,7 @@ export function stepSimulation(
               ...c.storage,
               stone: Math.max(0, (c.storage.stone ?? 0) - stoneCost),
               iron: Math.max(0, (c.storage.iron ?? 0) - ironCost),
+              refinedWood: Math.max(0, (c.storage.refinedWood ?? 0) - refinedWoodCost),
             },
           };
         }
@@ -916,24 +928,16 @@ export function stepSimulation(
     for (const wr of buildWallRings) {
       const city = cityById.get(wr.cityId);
       if (!city || city.ownerId !== aiPlayerId) continue;
-      const ringHexes = getHexRing(city.q, city.r, wr.ring);
+      if (constructions.some(c => c.cityId === city.id && c.type === 'wall_section')) continue;
       const ownerWallKeys = new Set(wallSectionsAfterAi.filter(w => w.ownerId === aiPlayerId).map(w => tileKey(w.q, w.r)));
       const queuedWallKeys = new Set(
         constructions
           .filter(c => c.ownerId === aiPlayerId && c.type === 'wall_section')
           .map(c => tileKey(c.q, c.r)),
       );
-      const validHexes: { q: number; r: number }[] = [];
-      for (const { q, r } of ringHexes) {
-        const tile = tilesMut.get(tileKey(q, r));
-        if (!tile || tile.biome === 'water') continue;
-        if (ownerWallKeys.has(tileKey(q, r)) || queuedWallKeys.has(tileKey(q, r))) continue;
-        validHexes.push({ q, r });
-      }
-      if (validHexes.length === 0) continue;
-      const totalCost = validHexes.length * WALL_SECTION_STONE_COST;
-      const cityStone = city.storage.stone ?? 0;
-      if (cityStone < totalCost) continue;
+      const next = getNextWallBuildHex(city, tilesMut, ownerWallKeys, queuedWallKeys);
+      if (!next) continue;
+      if (wr.ring === 2 && next.ring === 1) continue;
       const cityIdx = cities.indexOf(city);
       if (cityIdx >= 0) {
         const c0 = cities[cityIdx];
@@ -942,22 +946,19 @@ export function stepSimulation(
           ...c0,
           universityBuilderTask: 'city_defenses',
           universityBuilderSlotTasks: fillUniversitySlotTasks(c0, acad, 'city_defenses'),
-          storage: { ...c0.storage, stone: Math.max(0, cityStone - totalCost) },
         };
       }
-      for (const { q, r } of validHexes) {
-        constructions.push({
-          id: generateId('con'),
-          type: 'wall_section',
-          q,
-          r,
-          cityId: city.id,
-          ownerId: aiPlayerId,
-          bpRequired: WALL_SECTION_BP_COST,
-          bpAccumulated: 0,
-          wallBuildRing: wr.ring,
-        });
-      }
+      constructions.push({
+        id: generateId('con'),
+        type: 'wall_section',
+        q: next.q,
+        r: next.r,
+        cityId: city.id,
+        ownerId: aiPlayerId,
+        bpRequired: WALL_SECTION_BP_COST,
+        bpAccumulated: 0,
+        wallBuildRing: next.ring,
+      });
     }
   }
 
@@ -990,6 +991,7 @@ export function stepSimulation(
         id: generateId('sa'),
         scrollId: scrollItem.id,
         kind: scrollItem.kind,
+        sourceRegion: scrollItem.sourceRegion,
         carrierUnitId: carrier.id,
         ownerId: aiPlayerId,
       });
@@ -1045,7 +1047,7 @@ export function stepSimulation(
         const city = updatedCities.find((c) => c.id === site.cityId);
         if (city) {
           const b: CityBuilding = { type: site.type as BuildingType, q: site.q, r: site.r };
-          if (['quarry', 'mine', 'gold_mine', 'barracks', 'factory', 'academy', 'farm', 'banana_farm', 'market', 'sawmill', 'port', 'shipyard', 'fishery', 'logging_hut', 'social_bar'].includes(site.type)) b.level = 1;
+          if (['quarry', 'mine', 'gold_mine', 'barracks', 'factory', 'academy', 'siege_workshop', 'farm', 'banana_farm', 'market', 'sawmill', 'port', 'shipyard', 'fishery', 'logging_hut', 'social_bar'].includes(site.type)) b.level = 1;
           const jobs = BUILDING_JOBS[site.type as BuildingType] ?? 0;
           if (jobs > 0) {
             const totalEmployed = city.buildings.reduce((s, x) => s + ((x as CityBuilding).assignedWorkers ?? 0), 0);
@@ -1292,8 +1294,8 @@ export function stepSimulation(
     supplyCache: supplyCacheNext,
     contestedZoneHexKeys: state.contestedZoneHexKeys,
     commanders: commandersNext,
-    scrollSearchProgress,
-    scrollSearchClaimed,
+    scrollRelics: state.scrollRelics,
+    scrollRegionClaimed,
     scrollInventory,
     scrollAttachments,
     defenseInstallations: state.defenseInstallations,

@@ -6,14 +6,9 @@ import {
   type ScoutTower,
   type Tile,
   type BuildingType,
-  type DefenseTowerType,
-  type DefenseTowerLevel,
   BUILDING_COSTS,
   BUILDING_BP_COST,
   BUILDING_IRON_COSTS,
-  DEFENSE_TOWER_MAX_PER_CITY,
-  DEFENSE_TOWER_LEVEL_COSTS,
-  getDefenseTowerBpCost,
   tileKey,
   parseTileKey,
   hexDistance,
@@ -150,72 +145,6 @@ function findNearestRemoteResourceHex(
   return null;
 }
 
-function pickHexForCityDefense(args: {
-  city: City;
-  player: Player;
-  tiles: Map<string, Tile>;
-  territory: Map<string, { cityId: string; playerId: string }>;
-  constructions: ConstructionSite[];
-  cities: City[];
-  defenseInstallations: DefenseInstallation[];
-  scoutTowers: ScoutTower[];
-}):
-  | {
-      kind: 'new';
-      q: number;
-      r: number;
-      towerType: DefenseTowerType;
-      targetLevel: DefenseTowerLevel;
-    }
-  | {
-      kind: 'upgrade';
-      q: number;
-      r: number;
-      towerType: DefenseTowerType;
-      targetLevel: DefenseTowerLevel;
-    }
-  | null {
-  const { city, player, tiles, territory, constructions, cities, defenseInstallations, scoutTowers } = args;
-  const mortarCount = defenseInstallations.filter(d => d.cityId === city.id && d.type === 'mortar').length;
-  const hexList = hexesOwnedByCity(city.id, territory);
-
-  if (mortarCount < DEFENSE_TOWER_MAX_PER_CITY.mortar) {
-    for (const { q, r } of hexList) {
-      if (q === city.q && r === city.r) continue;
-      const tile = tiles.get(tileKey(q, r));
-      if (!tile || tile.biome === 'water' || tile.biome === 'mountain') continue;
-      if (constructions.some(cs => cs.q === q && cs.r === r)) continue;
-      if (occupiedByBuilding(q, r, cities)) continue;
-      if (scoutTowers.some(t => t.q === q && t.r === r)) continue;
-      const atHex = defenseInstallations.filter(d => d.q === q && d.r === r);
-      if (atHex.some(d => d.type !== 'mortar')) continue;
-      const existing = atHex.find(d => d.type === 'mortar');
-      if (existing) continue;
-      const cost = DEFENSE_TOWER_LEVEL_COSTS[1];
-      if (player.gold < cost.gold) continue;
-      if ((cost.wood ?? 0) > (city.storage.wood ?? 0)) continue;
-      if ((cost.stone ?? 0) > (city.storage.stone ?? 0)) continue;
-      if ((cost.iron ?? 0) > (city.storage.iron ?? 0)) continue;
-      return { kind: 'new', q, r, towerType: 'mortar' as const, targetLevel: 1 as const };
-    }
-  }
-
-  const mortars = defenseInstallations.filter(d => d.cityId === city.id && d.type === 'mortar');
-  for (const d of mortars) {
-    if (d.level >= 5) continue;
-    const next = (d.level + 1) as DefenseTowerLevel;
-    const cost = DEFENSE_TOWER_LEVEL_COSTS[next];
-    if (player.gold < cost.gold) continue;
-    if ((cost.wood ?? 0) > (city.storage.wood ?? 0)) continue;
-    if ((cost.stone ?? 0) > (city.storage.stone ?? 0)) continue;
-    if ((cost.iron ?? 0) > (city.storage.iron ?? 0)) continue;
-    if (constructions.some(cs => cs.q === d.q && cs.r === d.r)) continue;
-    return { kind: 'upgrade', q: d.q, r: d.r, towerType: 'mortar', targetLevel: next };
-  }
-
-  return null;
-}
-
 /**
  * One automated construction start per human city per economy cycle (when task matches and budget allows).
  * Returns patch fragments for the store caller to merge.
@@ -260,53 +189,6 @@ export function planHumanBuilderAutomation(input: {
     if (getUniversityBuilderSlots(academy) <= 0) continue;
 
     const task: BuilderTask = city.universityBuilderTask ?? DEFAULT_BUILDER_TASK;
-
-    if (task === 'city_defenses') {
-      const pick = pickHexForCityDefense({
-        city,
-        player,
-        tiles,
-        territory,
-        constructions,
-        cities,
-        defenseInstallations,
-        scoutTowers,
-      });
-      if (!pick) continue;
-
-      const bpRequired = getDefenseTowerBpCost(pick.towerType, pick.targetLevel);
-      const cost = DEFENSE_TOWER_LEVEL_COSTS[pick.targetLevel];
-      const site: ConstructionSite = {
-        id: generateId('con'),
-        type: 'city_defense',
-        q: pick.q,
-        r: pick.r,
-        cityId: city.id,
-        ownerId: humanPlayerId,
-        bpRequired,
-        bpAccumulated: 0,
-        defenseTowerType: pick.towerType,
-        defenseTowerTargetLevel: pick.targetLevel,
-      };
-
-      const nextGold = player.gold - cost.gold;
-      const nextCityStorage = {
-        ...city.storage,
-        wood: Math.max(0, (city.storage.wood ?? 0) - (cost.wood ?? 0)),
-        stone: Math.max(0, (city.storage.stone ?? 0) - (cost.stone ?? 0)),
-        iron: Math.max(0, (city.storage.iron ?? 0) - (cost.iron ?? 0)),
-      };
-      const nextCities = cities.map(c =>
-        c.id === city.id ? { ...c, storage: nextCityStorage } : c,
-      );
-
-      return {
-        newConstructions: [site],
-        nextGold,
-        nextCities,
-        notification: `University workforce: started ${pick.towerType} L${pick.targetLevel} (${city.name}).`,
-      };
-    }
 
     const hexList = hexesOwnedByCity(city.id, territory);
     const withDist = hexList.map(h => ({

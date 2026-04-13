@@ -136,16 +136,31 @@ export function computeArmyReplenishment(input: ReplenishInput): ReplenishResult
       if (t === 'builder' || isNavalUnitType(t)) continue;
       if (t === 'horse_archer' && player.kingdomId !== 'mongols') continue;
       if (t === 'crusader_knight' && player.kingdomId !== 'crusaders') continue;
-      if (!barracks) continue;
+      const isSiege = t === 'trebuchet' || t === 'battering_ram';
+      if (isSiege) {
+        if (!home.buildings.some(b => b.type === 'siege_workshop')) continue;
+      } else {
+        if (!barracks) continue;
+      }
 
       const wantL3 = entry.armsLevel === 3 || t === 'defender' || t === 'crusader_knight';
       const wantL2 = entry.armsLevel === 2 || wantL3;
-      if (t === 'defender' && barracksLvl < 2) continue;
-      if ((wantL2 || wantL3) && t !== 'defender' && barracksLvl < 2) continue;
-      if (t === 'crusader_knight' && barracksLvl < 3) continue;
+      if (!isSiege) {
+        if (t === 'defender' && barracksLvl < 2) continue;
+        if ((wantL2 || wantL3) && t !== 'defender' && barracksLvl < 2) continue;
+        if (t === 'crusader_knight' && barracksLvl < 3) continue;
+      }
 
       const effArms: 1 | 2 | 3 =
-        t === 'defender' || t === 'crusader_knight' ? 3 : wantL3 ? 3 : wantL2 ? 2 : 1;
+        t === 'trebuchet' || t === 'battering_ram'
+          ? 1
+          : t === 'defender' || t === 'crusader_knight'
+            ? 3
+            : wantL3
+              ? 3
+              : wantL2
+                ? 2
+                : 1;
 
       const pk = pendingKey(army.ownerId, army.id, t, effArms);
       if (pendingSet.has(pk)) continue;

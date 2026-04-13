@@ -12,6 +12,7 @@ import {
   createSpecialRegionMetadata,
   type SpecialRegion,
   type SpecialRegionKind,
+  type ScrollRelicSite,
 } from '@/types/game';
 
 // ─── Seeded PRNG (Mulberry32) ──────────────────────────────────────
@@ -32,6 +33,8 @@ export interface GeneratorResult {
   tiles: Tile[];
   provinceCenters: Tile[];
   specialRegions: SpecialRegion[];
+  /** One relic hex per special terrain flavor present (seeded). */
+  scrollRelics: ScrollRelicSite[];
 }
 
 export function generateMap(config: MapConfig): GeneratorResult {
@@ -83,6 +86,7 @@ export function generateMap(config: MapConfig): GeneratorResult {
   sprinkleSpecialTerrain(allTiles, tileMap, rng, scrollTerrainNoise);
   finalizeSpecialTerrainVariety(allTiles, tileMap, rng);
   const specialRegions = createSpecialRegionMetadata();
+  const scrollRelics = placeScrollRelics(allTiles, rng);
 
   // ── Pass 3: Empire overlay — province centers avoid scroll terrain ───
   const landTiles = allTiles.filter((t) => t.biome !== 'water' && !t.specialTerrainKind);
@@ -101,7 +105,7 @@ export function generateMap(config: MapConfig): GeneratorResult {
   // ── Pass 5: Quarry & Mine deposits (biome-based) ───────────────────────
   scatterResourceDeposits(allTiles, rng);
 
-  return { tiles: allTiles, provinceCenters, specialRegions };
+  return { tiles: allTiles, provinceCenters, specialRegions, scrollRelics };
 }
 
 function waterTouchesIslandLand(t: Tile, tileMap: Map<string, Tile>): boolean {
@@ -182,6 +186,20 @@ function finalizeSpecialTerrainVariety(
     }
   }
 
+  // Each active flavor must have at least one tile so relics and discovery can target it.
+  for (const kind of active) {
+    const has = allTiles.some(t => t.specialTerrainKind === kind);
+    if (has) continue;
+    const bare = allTiles.filter(
+      t => t.biome !== 'water' && t.biome !== 'mountain' && !t.isProvinceCenter && !t.specialTerrainKind,
+    );
+    const pool = bare.length > 0 ? bare : allTiles.filter(t => t.biome !== 'water' && t.biome !== 'mountain' && !t.specialTerrainKind);
+    if (pool.length === 0) continue;
+    const pick = pool[Math.floor(rng() * pool.length)]!;
+    const tile = tileMap.get(tileKey(pick.q, pick.r));
+    if (tile) tile.specialTerrainKind = kind;
+  }
+
   const hasAny = allTiles.some(t => t.specialTerrainKind);
   if (hasAny) return;
 
@@ -206,6 +224,19 @@ function finalizeSpecialTerrainVariety(
     const tile = tileMap.get(tileKey(t.q, t.r));
     if (tile) tile.specialTerrainKind = pickKind();
   }
+}
+
+/** Pick one relic hex per special terrain flavor present (deterministic from rng). */
+export function placeScrollRelics(allTiles: Tile[], rng: () => number): ScrollRelicSite[] {
+  const order: SpecialRegionKind[] = ['mexca', 'hills_lost', 'forest_secrets', 'isle_lost'];
+  const sites: ScrollRelicSite[] = [];
+  for (const regionKind of order) {
+    const candidates = allTiles.filter(t => t.specialTerrainKind === regionKind);
+    if (candidates.length === 0) continue;
+    const t = candidates[Math.floor(rng() * candidates.length)]!;
+    sites.push({ regionKind, q: t.q, r: t.r });
+  }
+  return sites;
 }
 
 // ─── Ancient City placement (after starting cities chosen) ─────────────
