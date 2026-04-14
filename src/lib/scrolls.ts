@@ -64,8 +64,43 @@ export type ScrollRelicPickupEvent = {
   kind: ScrollKind;
 };
 
+export type ScrollSearchPromptEvent = {
+  playerId: string;
+  regionKind: SpecialRegionKind;
+};
+
+function cloneVisited(
+  prev: Record<string, Partial<Record<SpecialRegionKind, string[]>>>,
+): Record<string, Partial<Record<SpecialRegionKind, string[]>>> {
+  const out: Record<string, Partial<Record<SpecialRegionKind, string[]>>> = {};
+  for (const pid of Object.keys(prev)) {
+    const sub = prev[pid];
+    if (!sub) continue;
+    out[pid] = {};
+    for (const rk of Object.keys(sub) as SpecialRegionKind[]) {
+      const arr = sub[rk];
+      if (arr) out[pid]![rk] = [...arr];
+    }
+  }
+  return out;
+}
+
+function isSearchCompleteForPlayer(
+  cluster: string[],
+  visitedKeys: string[],
+  player: Player | undefined,
+): boolean {
+  if (cluster.length === 0) return true;
+  const vis = new Set(visitedKeys);
+  if (cluster.every(k => vis.has(k))) return true;
+  // AI: touching the wilds once counts as having searched (full exploration is expensive to path).
+  if (player && !player.isHuman && vis.size > 0) return true;
+  return false;
+}
+
 /**
- * Grant scroll when a qualifying unit enters that region's relic hex (per player, per region).
+ * Track hexes visited in each relic cluster, then grant the scroll only when the human has
+ * covered the whole connected patch and steps on the relic hex with a qualifying unit.
  */
 export function tickScrollRelicPickup(opts: {
   newCycle: number;
@@ -75,11 +110,15 @@ export function tickScrollRelicPickup(opts: {
   scrollRelics: ScrollRelicSite[];
   scrollRegionClaimed: Record<SpecialRegionKind, string[]>;
   scrollInventory: Record<string, ScrollItem[]>;
+  scrollRelicClusters: Record<SpecialRegionKind, string[]>;
+  scrollSearchVisited: Record<string, Partial<Record<SpecialRegionKind, string[]>>>;
 }): {
   scrollRegionClaimed: Record<SpecialRegionKind, string[]>;
   scrollInventory: Record<string, ScrollItem[]>;
   notifications: GameNotification[];
   scrollRelicPickupEvents: ScrollRelicPickupEvent[];
+  scrollSearchPromptEvents: ScrollSearchPromptEvent[];
+  scrollSearchVisited: Record<string, Partial<Record<SpecialRegionKind, string[]>>>;
 } {
   const {
     tiles,
@@ -88,10 +127,13 @@ export function tickScrollRelicPickup(opts: {
     scrollRelics,
     scrollRegionClaimed: prevClaimed,
     scrollInventory: prevInv,
+    scrollRelicClusters,
+    scrollSearchVisited: prevVisited,
   } = opts;
 
   const notifications: GameNotification[] = [];
   const scrollRelicPickupEvents: ScrollRelicPickupEvent[] = [];
+  const scrollSearchPromptEvents: ScrollSearchPromptEvent[] = [];
 
   let scrollRegionClaimed: Record<SpecialRegionKind, string[]> = {
     ...emptyScrollRegionClaimed(),
@@ -106,14 +148,63 @@ export function tickScrollRelicPickup(opts: {
     if (!scrollInventory[p.id]) scrollInventory[p.id] = [];
   }
 
-  for (const site of scrollRelics) {
-    const { regionKind, q, r } = site;
+  const playerById = new Map(players.map(p => [p.id, p]));
+  const scrollSearchVisited = cloneVisited(prevVisited);
+
+  const regionKinds = new Set(scrollRelics.map(s => s.regionKind));
+
+  for (const regionKind of regionKinds) {
+    const cluster = scrollRelicClusters[regionKind] ?? [];
+    if (cluster.length === 0) continue;
+    const clusterSet = new Set(cluster);
     const lineKind = scrollKindForTerrain(regionKind);
-    const tileAt = tiles.get(tileKey(q, r));
 
     for (const p of players) {
       const claimed = new Set(scrollRegionClaimed[regionKind] ?? []);
       if (claimed.has(p.id)) continue;
+
+      const prevArr = scrollSearchVisited[p.id]?.[regionKind] ?? [];
+      const visSet = new Set(prevArr);
+
+      for (const u of units) {
+        if (u.ownerId !== p.id) continue;
+        const k = tileKey(u.q, u.r);
+        if (!clusterSet.has(k)) continue;
+        const tileAt = tiles.get(k);
+        if (!unitCountsTowardScrollSearch(u, tileAt, lineKind)) continue;
+        visSet.add(k);
+      }
+
+      const merged = [...visSet];
+      if (!scrollSearchVisited[p.id]) scrollSearchVisited[p.id] = {};
+      scrollSearchVisited[p.id]![regionKind] = merged;
+
+      const prevSize = prevArr.length;
+      if (
+        p.isHuman &&
+        cluster.length > 1 &&
+        prevSize === 0 &&
+        merged.length > 0 &&
+        !claimed.has(p.id)
+      ) {
+        scrollSearchPromptEvents.push({ playerId: p.id, regionKind });
+      }
+    }
+  }
+
+  for (const site of scrollRelics) {
+    const { regionKind, q, r } = site;
+    const lineKind = scrollKindForTerrain(regionKind);
+    const tileAt = tiles.get(tileKey(q, r));
+    const cluster = scrollRelicClusters[regionKind] ?? [];
+
+    for (const p of players) {
+      const claimed = new Set(scrollRegionClaimed[regionKind] ?? []);
+      if (claimed.has(p.id)) continue;
+
+      const visited = scrollSearchVisited[p.id]?.[regionKind] ?? [];
+      const pl = playerById.get(p.id);
+      if (!isSearchCompleteForPlayer(cluster, visited, pl)) continue;
 
       let picked = false;
       for (const u of units) {
@@ -142,7 +233,14 @@ export function tickScrollRelicPickup(opts: {
     }
   }
 
-  return { scrollRegionClaimed, scrollInventory, notifications, scrollRelicPickupEvents };
+  return {
+    scrollRegionClaimed,
+    scrollInventory,
+    notifications,
+    scrollRelicPickupEvents,
+    scrollSearchPromptEvents,
+    scrollSearchVisited,
+  };
 }
 
 /** When a carrier dies, return their scroll to inventory. */

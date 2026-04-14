@@ -24,7 +24,7 @@ import {
   CITY_CAPTURE_HOLD_MS,
   WALL_SECTION_STONE_COST, WALL_SECTION_HP, WALL_SECTION_BP_COST, getHexRing,
 } from '../types/game';
-import { generateMap, placeAncientCity } from '../lib/mapGenerator';
+import { generateMap, placeAncientCity, rebuildSpecialTerrainForCapitals, type ScrollRelicClusters } from '../lib/mapGenerator';
 import { calculateTerritory } from '../lib/territory';
 import { processEconomyTurn } from '../lib/gameLoop';
 import { planAiTurn, placeAiStartingCityAt, AiParams, DEFAULT_AI_PARAMS, estimateAiFoodSurplus } from '../lib/ai';
@@ -90,6 +90,10 @@ export type SimState = {
   commanders: Commander[];
   /** Seeded relic hexes (one per special terrain flavor on the map). */
   scrollRelics: ScrollRelicSite[];
+  /** Connected special-terrain patch per region (relic sits in this cluster). */
+  scrollRelicClusters: ScrollRelicClusters;
+  /** Per player, per region, hex keys visited while searching (humans need full cluster). */
+  scrollSearchVisited: Record<string, Partial<Record<SpecialRegionKind, string[]>>>;
   /** Per-region scroll claimed by player ids. */
   scrollRegionClaimed: Record<SpecialRegionKind, string[]>;
   /** Scroll inventory per player. */
@@ -139,7 +143,7 @@ function initBotVsBotGameOnce(
 ): SimState {
   _cityNameIdx = 0;
   const config: MapConfig = { ...DEFAULT_MAP_CONFIG, ...mapConfigOverride, seed };
-  const { tiles: tilesArray, scrollRelics } = generateMap(config);
+  const { tiles: tilesArray } = generateMap(config);
   const tiles = new Map<string, Tile>();
   for (const t of tilesArray) tiles.set(tileKey(t.q, t.r), t);
 
@@ -176,6 +180,12 @@ function initBotVsBotGameOnce(
   const cities = [city1, city2];
   placeAncientCity(tiles, ai1Q, ai1R, ai2Q, ai2R);
   const territory = calculateTerritory(cities, tiles);
+
+  const allTilesArr = Array.from(tiles.values());
+  const { scrollRelics, scrollRelicClusters } = rebuildSpecialTerrainForCapitals(allTilesArr, tiles, config, [
+    { q: ai1Q, r: ai1R },
+    { q: ai2Q, r: ai2R },
+  ]);
 
   const players: Player[] = [
     { id: AI_ID, name: 'North', color: PLAYER_COLORS.ai, gold: STARTING_GOLD, taxRate: 0.3, foodPriority: 'military', isHuman: false },
@@ -226,6 +236,8 @@ function initBotVsBotGameOnce(
     contestedZoneHexKeys,
     commanders,
     scrollRelics,
+    scrollRelicClusters,
+    scrollSearchVisited: {},
     scrollRegionClaimed: { mexca: [], hills_lost: [], forest_secrets: [], isle_lost: [] },
     scrollInventory,
     scrollAttachments: [],
@@ -598,9 +610,12 @@ export function stepSimulation(
     scrollRelics: state.scrollRelics,
     scrollRegionClaimed: state.scrollRegionClaimed,
     scrollInventory: state.scrollInventory,
+    scrollRelicClusters: state.scrollRelicClusters,
+    scrollSearchVisited: state.scrollSearchVisited ?? {},
   });
   let scrollRegionClaimed = scrollResult.scrollRegionClaimed;
   let scrollInventory = scrollResult.scrollInventory;
+  let scrollSearchVisited = scrollResult.scrollSearchVisited;
   let scrollAttachments = [...state.scrollAttachments];
   if (diagnostics) {
     const newScrollCount1 = (scrollInventory[AI_ID] ?? []).length;
@@ -1065,7 +1080,6 @@ export function stepSimulation(
     scrollAttachments,
     movingCommanders,
     state.combatMoraleState,
-    undefined,
   );
 
   const wallSectionsMut = wallSectionsAfterAi.map(w => ({ ...w }));
@@ -1231,6 +1245,7 @@ export function stepSimulation(
     commanders: commandersNext,
     scrollRelics: state.scrollRelics,
     scrollRegionClaimed,
+    scrollSearchVisited,
     scrollInventory,
     scrollAttachments,
     defenseInstallations: state.defenseInstallations,

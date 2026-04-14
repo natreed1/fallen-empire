@@ -23,6 +23,7 @@ import {
   type Player,
 } from '@/types/game';
 import { isGarrisonedAtCity } from '@/lib/garrison';
+import { clusterHumanBattleEngagements } from '@/lib/battlePreview';
 import { universityTaskMatchesSiteType, getUniversitySlotTasks } from '@/lib/builders';
 import { createTerrainHexTopGeometry, defaultBiomePaintRadius } from '@/lib/hexTopGeometry';
 import type { DefenseVolleyFx, RangedShotFx } from '@/lib/military';
@@ -100,14 +101,12 @@ function rgbaFromHex(hex: string, alpha: number): string {
 const HEX_SEGMENTS = 6;
 const UNIT_HEIGHT = 1.0;
 
-/** Billboards & map meshes above special-region tints/decals (see BiomeTextureLayer renderOrder 2–6). */
+/** Billboards & map meshes above terrain (special wilds use props at {@link MAP_TREE_RENDER_ORDER}). */
 const MAP_ENTITY_RENDER_ORDER = 12;
-/** Forest trees draw below most map sprites so buildings/units sort cleanly on top. */
+/** Forest / special-wilds props draw below buildings/units. */
 const MAP_TREE_RENDER_ORDER = 11;
 /** Completed buildings and construction markers above terrain trees. */
 const MAP_BUILDING_RENDER_ORDER = 13;
-const SPECIAL_REGION_TINT_RENDER_ORDER = 1;
-
 // ─── Sprite Texture Loader ──────────────────────────────────────────
 // Loads all game sprite textures once with nearest-neighbor filtering for pixel art crispness.
 //
@@ -171,6 +170,11 @@ const SPRITE_PATHS: Record<string, string> = {
   deposit_gold:    '/sprites/entities/deposit_gold.png',
   deposit_wood:    '/sprites/entities/deposit_wood.png',
   deposit_ancient: '/sprites/entities/deposit_ancient.png',
+  /** Special wilds — billboard props (integrate like trees; replaces hex-cap paint). */
+  sr_prop_mexca: '/sprites/entities/sr_prop_mexca.png',
+  sr_prop_hills_lost: '/sprites/entities/sr_prop_hills_lost.png',
+  sr_prop_forest_secrets: '/sprites/entities/sr_prop_forest_secrets.png',
+  sr_prop_isle_lost: '/sprites/entities/sr_prop_isle_lost.png',
   hero:     '/sprites/entities/hero.png',
   detail_flower:   '/sprites/entities/detail_flower.png',
   detail_grass:    '/sprites/entities/detail_grass.png',
@@ -566,138 +570,71 @@ function RuinSpriteLayer({ tiles }: { tiles: Tile[] }) {
   );
 }
 
-/** Scroll terrain — hex-cap decals from Tile.specialTerrainKind (sprinkled across biomes). */
-function SpecialRegionTextureDecals({ tiles }: { tiles: Map<string, Tile> }) {
-  const {
-    forestBuckets,
-    mexcaBuckets,
-    hillsBuckets,
-    isleLandBuckets,
-    isleWaterBuckets,
-    isleCoastWreckBuckets,
-  } = useMemo(() => {
-    const forest: Tile[] = [];
-    const mexca: Tile[] = [];
-    const hills: Tile[] = [];
-    const isleLand: Tile[] = [];
-    const isleWater: Tile[] = [];
-    const isleCoast: Tile[] = [];
-
-    for (const t of tiles.values()) {
-      const k = t.specialTerrainKind;
-      if (!k) continue;
-      switch (k) {
-        case 'forest_secrets':
-          forest.push(t);
-          break;
-        case 'mexca':
-          mexca.push(t);
-          break;
-        case 'hills_lost':
-          hills.push(t);
-          break;
-        case 'isle_lost':
-          if (t.biome === 'water') {
-            isleWater.push(t);
-          } else {
-            isleLand.push(t);
-            if (isBeachLandTile(t, tiles)) isleCoast.push(t);
-          }
-          break;
-        default:
-          break;
-      }
+function specialWildsTilesWithoutBuildings(tiles: Tile[], cities: City[]): Tile[] {
+  const occupied = new Set<string>();
+  for (const c of cities) {
+    for (const b of c.buildings) {
+      occupied.add(tileKey(b.q, b.r));
     }
+  }
+  return tiles.filter(t => !occupied.has(tileKey(t.q, t.r)));
+}
 
-    return {
-      forestBuckets: bucketTilesByVariant(forest),
-      mexcaBuckets: bucketTilesByVariant(mexca),
-      hillsBuckets: bucketTilesByVariant(hills),
-      isleLandBuckets: bucketTilesByVariant(isleLand),
-      isleWaterBuckets: bucketTilesByVariant(isleWater),
-      isleCoastWreckBuckets: bucketTilesByVariant(isleCoast),
-    };
-  }, [tiles]);
+/** Named wilds — scattered props (ruins/tree style) instead of painted hex caps. */
+function SpecialTerrainPropLayer({ tiles, cities }: { tiles: Map<string, Tile>; cities: City[] }) {
+  const texMexca = useMemo(() => getSpriteTexture('sr_prop_mexca'), []);
+  const texHills = useMemo(() => getSpriteTexture('sr_prop_hills_lost'), []);
+  const texForest = useMemo(() => getSpriteTexture('sr_prop_forest_secrets'), []);
+  const texIsle = useMemo(() => getSpriteTexture('sr_prop_isle_lost'), []);
 
-  const y = 0.028;
-  const ro = 4;
-  const roWreck = 6;
+  const propTiles = useMemo(() => {
+    const raw: Tile[] = [];
+    for (const t of tiles.values()) {
+      if (t.specialTerrainKind) raw.push(t);
+    }
+    return specialWildsTilesWithoutBuildings(raw, cities);
+  }, [tiles, cities]);
 
+  if (propTiles.length === 0) return null;
+  const scatter = HEX_RADIUS * 0.55;
   return (
-    <>
-      {[0, 1, 2, 3].map(v => (
-        <BiomeTextureLayer
-          key={`sr-fs-${v}`}
-          tiles={forestBuckets[v]}
-          textureKey={`sr_forest_secrets_${v}`}
-          renderOrder={ro}
-          surfaceYOffset={y}
-          opacity={0.94}
-          transparentMap
-          alphaTest={0.04}
-        />
-      ))}
-      {[0, 1, 2, 3].map(v => (
-        <BiomeTextureLayer
-          key={`sr-mx-${v}`}
-          tiles={mexcaBuckets[v]}
-          textureKey={`sr_mexca_${v}`}
-          renderOrder={ro}
-          surfaceYOffset={y}
-          opacity={0.94}
-          transparentMap
-          alphaTest={0.04}
-        />
-      ))}
-      {[0, 1, 2, 3].map(v => (
-        <BiomeTextureLayer
-          key={`sr-hl-${v}`}
-          tiles={hillsBuckets[v]}
-          textureKey={`sr_hills_lost_${v}`}
-          renderOrder={ro}
-          surfaceYOffset={y}
-          opacity={0.94}
-          transparentMap
-          alphaTest={0.04}
-        />
-      ))}
-      {[0, 1, 2, 3].map(v => (
-        <BiomeTextureLayer
-          key={`sr-ill-${v}`}
-          tiles={isleLandBuckets[v]}
-          textureKey={`sr_isle_lost_land_${v}`}
-          renderOrder={ro}
-          surfaceYOffset={y}
-          opacity={0.94}
-          transparentMap
-          alphaTest={0.04}
-        />
-      ))}
-      {[0, 1, 2, 3].map(v => (
-        <BiomeTextureLayer
-          key={`sr-ilw-${v}`}
-          tiles={isleWaterBuckets[v]}
-          textureKey={`sr_isle_lost_water_${v}`}
-          renderOrder={ro}
-          surfaceYOffset={y}
-          opacity={0.94}
-          transparentMap
-          alphaTest={0.04}
-        />
-      ))}
-      {[0, 1, 2, 3].map(v => (
-        <BiomeTextureLayer
-          key={`sr-ilwr-${v}`}
-          tiles={isleCoastWreckBuckets[v]}
-          textureKey={`sr_isle_lost_wreck_${v}`}
-          renderOrder={roWreck}
-          surfaceYOffset={y + 0.004}
-          opacity={0.94}
-          transparentMap
-          alphaTest={0.04}
-        />
-      ))}
-    </>
+    <group>
+      {propTiles.flatMap(tile => {
+        const kind = tile.specialTerrainKind!;
+        let tex = texMexca;
+        if (kind === 'hills_lost') tex = texHills;
+        else if (kind === 'forest_secrets') tex = texForest;
+        else if (kind === 'isle_lost') tex = texIsle;
+        const [cx, cz] = axialToWorld(tile.q, tile.r, HEX_RADIUS);
+        const baseHash = ((tile.q * 62837111) ^ (tile.r * 489287499)) >>> 0;
+        const nProps = 2 + (baseHash % 2);
+        const key = tileKey(tile.q, tile.r);
+        const sprites: JSX.Element[] = [];
+        for (let i = 0; i < nProps; i++) {
+          const h1 = ((baseHash + i * 117_031) * 16807) >>> 0;
+          const h2 = ((baseHash + i * 243_993) * 48271) >>> 0;
+          const h3 = ((baseHash + i * 364_761) * 69621) >>> 0;
+          const angle = ((h1 % 10000) / 10000) * Math.PI * 2;
+          const dist = Math.sqrt((h2 % 10000) / 10000) * scatter;
+          const dx = Math.cos(angle) * dist;
+          const dz = Math.sin(angle) * dist;
+          const scale = 0.62 + ((h3 % 1000) / 1000) * 0.35;
+          const dy = ((h1 % 500) / 1000) * 0.12;
+          sprites.push(
+            <sprite
+              key={`${key}_sr_${i}`}
+              position={[cx + dx, tile.height + 0.48 + dy, cz + dz]}
+              scale={[scale, scale, 1]}
+              raycast={() => null}
+              renderOrder={MAP_TREE_RENDER_ORDER}
+            >
+              <spriteMaterial map={tex} {...MAP_ENTITY_SPRITE_MAT} />
+            </sprite>,
+          );
+        }
+        return sprites;
+      })}
+    </group>
   );
 }
 
@@ -1381,78 +1318,6 @@ function ContestedZoneOverlay({ zoneKeys, tiles }: { zoneKeys: string[]; tiles: 
   if (validTiles.length === 0) return null;
   return (
     <instancedMesh ref={meshRef} args={[geometry, material, validTiles.length]} renderOrder={5} raycast={() => null} />
-  );
-}
-
-/** Subtle tint per scroll terrain flavor (matches sprinkled tiles). */
-function SpecialRegionOverlay({ tiles }: { tiles: Map<string, Tile> }) {
-  const tilesByKind = useMemo(() => {
-    const m = new Map<SpecialRegionKind, Tile[]>();
-    for (const t of tiles.values()) {
-      const k = t.specialTerrainKind;
-      if (!k) continue;
-      const arr = m.get(k) ?? [];
-      arr.push(t);
-      m.set(k, arr);
-    }
-    return m;
-  }, [tiles]);
-
-  const kinds: SpecialRegionKind[] = ['mexca', 'hills_lost', 'forest_secrets', 'isle_lost'];
-  return (
-    <group>
-      {kinds.map(kind => {
-        const list = tilesByKind.get(kind);
-        if (!list?.length) return null;
-        return (
-          <SpecialRegionHexTint
-            key={kind}
-            tiles={list}
-            color={SPECIAL_REGION_OVERLAY_COLORS[kind]}
-          />
-        );
-      })}
-    </group>
-  );
-}
-
-function SpecialRegionHexTint({ tiles: regionTiles, color }: { tiles: Tile[]; color: string }) {
-  const meshRef = useRef<THREE.InstancedMesh>(null);
-  /** Match biome paint decals (`defaultBiomePaintRadius`) so tint aligns with sr_* PNG caps. */
-  const geometry = useMemo(() => makeHexGeo(defaultBiomePaintRadius(), 0.05), []);
-  const material = useMemo(
-    () =>
-      new THREE.MeshBasicMaterial({
-        color,
-        transparent: true,
-        opacity: 0.12,
-        depthWrite: false,
-      }),
-    [color],
-  );
-
-  useEffect(() => {
-    if (!meshRef.current || regionTiles.length === 0) return;
-    const mesh = meshRef.current;
-    const dummy = new THREE.Object3D();
-    const yOff = 0.028;
-    regionTiles.forEach((tile, i) => {
-      const [x, z] = axialToWorld(tile.q, tile.r, HEX_RADIUS);
-      dummy.position.set(x, tile.height + yOff, z);
-      dummy.scale.set(1, 1, 1);
-      dummy.updateMatrix();
-      mesh.setMatrixAt(i, dummy.matrix);
-    });
-    mesh.instanceMatrix.needsUpdate = true;
-  }, [regionTiles]);
-
-  return (
-    <instancedMesh
-      ref={meshRef}
-      args={[geometry, material, regionTiles.length]}
-      renderOrder={SPECIAL_REGION_TINT_RENDER_ORDER}
-      raycast={() => null}
-    />
   );
 }
 
@@ -2547,6 +2412,7 @@ function ShipUnitSprite({
   sy,
   tex,
   moving,
+  ownerId,
 }: {
   id: string;
   q: number;
@@ -2559,11 +2425,14 @@ function ShipUnitSprite({
   sy: number;
   tex: THREE.Texture;
   moving: boolean;
+  ownerId: string;
 }) {
   const groupRef = useRef<THREE.Group>(null);
   const spriteRef = useRef<THREE.Sprite>(null);
   const selectHex = useGameStore(s => s.selectHex);
+  const stackMoveUnitId = useGameStore(s => s.stackMoveUnitId);
   const lastFxAt = useGameStore(s => s.lastCombatFxAtMs);
+  const isFocused = ownerId === PLAYER_HUMAN_ID && stackMoveUnitId === id;
 
   const phase = useMemo(() => {
     let h = 0;
@@ -2614,7 +2483,8 @@ function ShipUnitSprite({
       ? 1 + 0.12 * Math.sin(Math.min(combatAge / 350, 1) * Math.PI)
       : 1;
 
-    const finalScale = breath * combatPulse;
+    const focusBoost = isFocused ? 1.08 : 1;
+    const finalScale = breath * combatPulse * focusBoost;
 
     spriteRef.current.rotation.z = roll;
     spriteRef.current.scale.set(sx * finalScale, sy * finalScale, 1);
@@ -2629,7 +2499,11 @@ function ShipUnitSprite({
         renderOrder={MAP_ENTITY_RENDER_ORDER}
         onClick={e => {
           e.stopPropagation();
-          selectHex(q, r);
+          if (ownerId === PLAYER_HUMAN_ID) {
+            selectHex(q, r, { focusUnitId: id });
+          } else {
+            selectHex(q, r);
+          }
         }}
       >
         <spriteMaterial map={tex} {...MAP_ENTITY_SPRITE_MAT} color={tint} />
@@ -2775,6 +2649,7 @@ function UnitMarkers({ units, tiles, cities, players }: { units: Unit[]; tiles: 
                 sy={sy}
                 tex={tex}
                 moving={u.moving}
+                ownerId={u.ownerId}
               />
             </Fragment>
           );
@@ -3408,87 +3283,71 @@ function PendingCityRing({ q, r, tiles }: { q: number; r: number; tiles: Map<str
   );
 }
 
-// ─── Battle Icons (animated crossed-swords on contested hexes) ────
-
-function BattleIcons({ units, tiles }: { units: Unit[]; tiles: Map<string, Tile> }) {
-  const groupRef = useRef<THREE.Group>(null);
+/** Human-involved battles: same hex or opposing stacks within `NEARBY_OPPOSITION_MAX_HEX` (see battlePreview). */
+function BattlePopups({ units, tiles }: { units: Unit[]; tiles: Map<string, Tile> }) {
   const battleModalHexKey = useGameStore(s => s.battleModalHexKey);
   const openBattleModal = useGameStore(s => s.openBattleModal);
+  const gameMode = useGameStore(s => s.gameMode);
 
-  const battleHexes = useMemo(() => {
-    const byHex: Record<string, Set<string>> = {};
-    for (const u of units) {
-      if (u.hp <= 0 || u.aboardShipId) continue;
-      const key = tileKey(u.q, u.r);
-      if (!byHex[key]) byHex[key] = new Set();
-      byHex[key].add(u.ownerId);
-    }
-    const result: { q: number; r: number }[] = [];
-    for (const [key, owners] of Object.entries(byHex)) {
-      if (owners.size >= 2) {
-        const [q, r] = key.split(',').map(Number);
-        result.push({ q, r });
-      }
-    }
-    return result;
-  }, [units]);
+  const clusters = useMemo(() => clusterHumanBattleEngagements(units), [units]);
 
-  useFrame(({ clock }) => {
-    if (!groupRef.current) return;
-    const t = clock.getElapsedTime();
-    const bounce = Math.sin(t * 3) * 0.08;
-    const pulse = 0.8 + Math.sin(t * 4) * 0.2;
-    groupRef.current.children.forEach((child) => {
-      child.position.y = (child.userData.baseY ?? 1.0) + bounce;
-      child.scale.setScalar(pulse);
-    });
-  });
-
-  if (battleHexes.length === 0) return null;
+  if (
+    battleModalHexKey !== null ||
+    clusters.length === 0 ||
+    gameMode === 'bot_vs_bot' ||
+    gameMode === 'bot_vs_bot_4' ||
+    gameMode === 'spectate'
+  ) {
+    return null;
+  }
 
   return (
-    <group ref={groupRef} renderOrder={MAP_ENTITY_RENDER_ORDER}>
-      {battleHexes.map(({ q, r }) => {
-        const tile = tiles.get(tileKey(q, r));
-        const h = tile?.height ?? 0.3;
-        const [x, z] = axialToWorld(q, r, HEX_RADIUS);
-        const baseY = h + 1.0;
-        const k = tileKey(q, r);
-        const selected = battleModalHexKey === k;
+    <group renderOrder={MAP_ENTITY_RENDER_ORDER}>
+      {clusters.map(cluster => {
+        const anchorKey =
+          cluster.find(k =>
+            units.some(
+              u =>
+                u.hp > 0 &&
+                !u.aboardShipId &&
+                tileKey(u.q, u.r) === k &&
+                u.ownerId.includes('human'),
+            ),
+          ) ?? cluster[0]!;
+        let elev = 0.3;
+        let cx = 0;
+        let cz = 0;
+        for (const k of cluster) {
+          const t = tiles.get(k);
+          elev = Math.max(elev, t?.height ?? 0.3);
+          const [q, r] = k.split(',').map(Number);
+          const [wx, wz] = axialToWorld(q, r, HEX_RADIUS);
+          cx += wx;
+          cz += wz;
+        }
+        cx /= cluster.length;
+        cz /= cluster.length;
         return (
-          <group
-            key={`battle-${q},${r}`}
-            position={[x, baseY, z]}
-            userData={{ baseY }}
-            onClick={e => {
-              e.stopPropagation();
-              openBattleModal(k);
-            }}
-          >
-            <mesh position={[0, -0.92, 0]} rotation={[-Math.PI / 2, 0, Math.PI / 6]}>
-              <ringGeometry args={[HEX_RADIUS * 0.55, HEX_RADIUS * 0.92, 6]} />
-              <meshBasicMaterial
-                color={selected ? '#e8c84a' : '#cc2222'}
-                transparent
-                opacity={selected ? 0.85 : 0.5}
-                depthWrite={false}
-              />
-            </mesh>
-            {/* Sword 1 (leaning right) */}
-            <mesh rotation={[0, 0, Math.PI / 6]} position={[-0.08, 0, 0]}>
-              <boxGeometry args={[0.04, 0.45, 0.04]} />
-              <meshBasicMaterial color={selected ? '#ffcc66' : '#ff4444'} />
-            </mesh>
-            {/* Sword 2 (leaning left) */}
-            <mesh rotation={[0, 0, -Math.PI / 6]} position={[0.08, 0, 0]}>
-              <boxGeometry args={[0.04, 0.45, 0.04]} />
-              <meshBasicMaterial color={selected ? '#ffcc66' : '#ff4444'} />
-            </mesh>
-            {/* Flash/glow sphere */}
-            <mesh>
-              <sphereGeometry args={[0.16, 10, 10]} />
-              <meshBasicMaterial color={selected ? '#ffaa33' : '#ff2200'} transparent opacity={selected ? 0.45 : 0.35} />
-            </mesh>
+          <group key={cluster.join('|')} position={[cx, elev + 1.05, cz]}>
+            {/*
+              Do not set distanceFactor: drei Html scales by orthographic camera.zoom, so
+              zoom×distanceFactor (e.g. 36×12) blows up labels to full-screen size.
+              Undefined distanceFactor => scale 1; px text sizes stay readable.
+            */}
+            <Html center style={{ pointerEvents: 'auto' }} zIndexRange={[200, 0]} occlude={false}>
+              <button
+                type="button"
+                title="Battle report"
+                aria-label="Open battle report"
+                onClick={e => {
+                  e.stopPropagation();
+                  openBattleModal(anchorKey);
+                }}
+                className="rounded border border-red-500/45 bg-empire-dark/90 px-1 py-px text-[8px] font-semibold leading-none text-red-300/90 shadow-md backdrop-blur-sm transition-colors hover:border-red-400/55 hover:bg-empire-dark/95"
+              >
+                Battle
+              </button>
+            </Html>
           </group>
         );
       })}
@@ -3944,9 +3803,7 @@ export default function HexGrid() {
       <DepositSpriteLayer tiles={discoveredTilesMap} />
       {(phase === 'playing' || phase === 'starting_game') && (
         <>
-          {/* Tint below PNG decals (renderOrder); sprites/units use MAP_ENTITY_RENDER_ORDER above both */}
-          <SpecialRegionOverlay tiles={discoveredTilesMap} />
-          <SpecialRegionTextureDecals tiles={discoveredTilesMap} />
+          <SpecialTerrainPropLayer tiles={discoveredTilesMap} cities={cities} />
           <ScrollRelicMarkers
             scrollRelics={scrollRelics}
             tiles={tiles}
@@ -4003,7 +3860,7 @@ export default function HexGrid() {
         <OverlayLayer tiles={tacticalPatrolPaintTiles} color="#2dd4bf" yOffset={0.08} radiusScale={0.52} height={0.07} />
       )}
       <CommanderMarkers commanders={visibleCommanders} tiles={discoveredTilesMap} />
-      <BattleIcons units={visibleUnits} tiles={discoveredTilesMap} />
+      <BattlePopups units={visibleUnits} tiles={discoveredTilesMap} />
 
       {/* Weather visual effects */}
       {activeWeather && (

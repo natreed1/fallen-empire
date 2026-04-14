@@ -140,12 +140,21 @@ function HexInteractionPlane() {
 function useCameraTarget(): [number, number, number] {
   const provinceCenters = useGameStore(s => s.provinceCenters);
   const cities = useGameStore(s => s.cities);
+  const units = useGameStore(s => s.units);
   const config = useGameStore(s => s.config);
   const gameMode = useGameStore(s => s.gameMode);
   const phase = useGameStore(s => s.phase);
   const pendingCityHex = useGameStore(s => s.pendingCityHex);
 
   return useMemo(() => {
+    // Battle test: frame the skirmish (no cities)
+    if (gameMode === 'battle_test') {
+      const u = units.find(x => x.ownerId.includes('human'));
+      if (u) {
+        const [x, z] = axialToWorld(u.q, u.r, HEX_RADIUS);
+        return [x, 0, z];
+      }
+    }
     // Bot-vs-bot (2 or 4): center camera on capitals so all are visible
     if ((gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4' || gameMode === 'spectate') && cities.length >= 2) {
       let sumX = 0, sumZ = 0;
@@ -182,7 +191,7 @@ function useCameraTarget(): [number, number, number] {
     }
     const [x, z] = axialToWorld(config.width / 2, config.height / 2, HEX_RADIUS);
     return [x, 0, z];
-  }, [gameMode, provinceCenters, cities, config, phase, pendingCityHex]);
+  }, [gameMode, provinceCenters, cities, units, config, phase, pendingCityHex]);
 }
 
 // ─── Camera Zoom Controller ─────────────────────────────────────────
@@ -193,6 +202,7 @@ function CameraZoomController() {
   const { camera } = useThree();
   const prevPhaseRef = useRef(phase);
   const botZoomSet = useRef(false);
+  const battleTestZoomSet = useRef(false);
 
   useEffect(() => {
     const cam = camera as THREE.OrthographicCamera;
@@ -202,6 +212,13 @@ function CameraZoomController() {
       cam.updateProjectionMatrix();
     }
     if (phase !== 'playing') botZoomSet.current = false;
+
+    if (phase === 'playing' && gameMode === 'battle_test' && !battleTestZoomSet.current) {
+      battleTestZoomSet.current = true;
+      cam.zoom = 36;
+      cam.updateProjectionMatrix();
+    }
+    if (phase !== 'playing') battleTestZoomSet.current = false;
 
     if (
       (prevPhaseRef.current === 'place_city' || prevPhaseRef.current === 'starting_game') &&

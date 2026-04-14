@@ -1,19 +1,17 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useGameStore } from '@/store/useGameStore';
 import { countVillagesInPlayerTerritory, isUnitInSupplyVicinityOfPlayerCities } from '@/lib/empireEconomy';
 import { computeCityProductionRate, computeSawmillBuildingPreview } from '@/lib/gameLoop';
 import { getWeatherHarvestMultiplier } from '@/lib/weather';
-import { BUILDING_COSTS, BUILDING_PRODUCTION, BUILDING_BP_COST, BUILDING_JOBS, CITY_BUILDING_POWER, BUILDER_POWER, BP_RATE_BASE, TERRAIN_FOOD_YIELD, UNIT_COSTS, UNIT_L2_COSTS, UNIT_L3_COSTS, UNIT_BASE_STATS, UNIT_DISPLAY_NAMES, getUnitDisplayName, ARMS_TIER_LABELS, type RangedVariant, COMMANDER_TRAIT_INFO, COMMANDER_RECRUIT_GOLD, VILLAGE_INCORPORATE_COST, MARKET_GOLD_PER_CYCLE, MARKET_GOLD_PER_VILLAGE, POPULATION_TAX_GOLD_MULT, SCOUT_MISSION_COST, WEATHER_DISPLAY, BARACKS_UPGRADE_COST, BARACKS_L3_UPGRADE_COST, FACTORY_UPGRADE_COST, FARM_UPGRADE_COST, RESOURCE_MINE_UPGRADE_COST, FARM_L2_FOOD_PER_CYCLE, WALL_SECTION_STONE_COST, WALL_BUILDER_STONE_PER_CYCLE_PER_SLOT, WORKERS_PER_LEVEL, MIN_STAFFING_RATIO, TREBUCHET_FIELD_BP_COST, TREBUCHET_FIELD_GOLD_COST, TREBUCHET_REFINED_WOOD_COST, SAWMILL_WOOD_PER_REFINED, getBuildingJobs, getUnitStats, BuildingType, UnitType, ArmyStance, Biome, hexDistance, getHexRing, tileKey, POP_BIRTH_RATE, POP_NATURAL_DEATHS, POP_CARRYING_CAPACITY_PER_FOOD, POP_EXPECTED_K_ALPHA, STARVATION_DEATHS, SHIP_RECRUIT_COSTS, isNavalUnitType, getShipMaxCargo, hexTouchesBiome, AttackCityStyle, DefenseTowerType, DefenseTowerLevel, DEFENSE_TOWER_LEVEL_COSTS, DEFENSE_TOWER_MAX_PER_CITY, DEFENSE_TOWER_DISPLAY_NAME, City, CONTESTED_ZONE_GOLD_REWARD, CONTESTED_ZONE_IRON_REWARD, KingdomId, KINGDOM_IDS, KINGDOM_DISPLAY_NAMES, KINGDOM_SETUP_ICONS, SCROLL_DISPLAY_NAME, scrollItemDisplayName, SCROLL_RELIC_LORE, SCROLL_REGION_ITEM_NAME, SPECIAL_REGION_DISPLAY_NAME, SPECIAL_REGION_OVERLAY_COLORS, SCROLL_COMBAT_BONUS, SCROLL_DEFENSE_BONUS, SCROLL_MOVEMENT_BONUS, SCROLL_ARMY_SLOT_ORDER, SCROLL_SLOT_LABEL, MAP_SIZE_PRESETS, type MapSizePreset, type MapTerrainPreset, type ScrollKind, type SpecialRegionKind, type ScrollAttachment, type ScrollItem, type Commander, UNIVERSITY_UPGRADE_COSTS, BUILDER_TASK_LABELS, type BuilderTask, type ArmyMarchSpreadMode, DEFAULT_BUILDER_TASK, ABILITY_DEFS,   getAbilityForUnit, MAJOR_ENGAGEMENT_ARMY_FRACTION, type MajorEngagementDoctrine, TERRITORY_RADIUS, GARRISON_PATROL_RADIUS_MIN, GARRISON_PATROL_RADIUS_MAX, defaultCityBuildingMaxHp, RUINS_REPAIR_GOLD_RATIO, isCityBuildingOperational, EMPTY_MAP_QUADRANTS, TRADE_MAP_QUADRANT_GOLD, TRADE_MAP_FULL_ATLAS_GOLD, TRADE_RESOURCE_PACK_GOLD, TRADE_MORALE_FESTIVAL_GOLD, TRADE_MORALE_FESTIVAL_DELTA, TRADE_ROYAL_SURVEY_GOLD, MAP_QUADRANT_LABELS, type MapQuadrantId, SOCIAL_BAR_BUILD_GOLD, SOCIAL_BAR_BP, SOCIAL_BAR_UPGRADE_COSTS, SOCIAL_BAR_BIRTH_MULT_PER_LEVEL } from '@/types/game';
+import { BUILDING_COSTS, BUILDING_PRODUCTION, BUILDING_BP_COST, BUILDING_JOBS, CITY_BUILDING_POWER, BUILDER_POWER, BP_RATE_BASE, TERRAIN_FOOD_YIELD, UNIT_COSTS, UNIT_L2_COSTS, UNIT_L3_COSTS, UNIT_BASE_STATS, UNIT_DISPLAY_NAMES, getUnitDisplayName, ARMS_TIER_LABELS, type RangedVariant, COMMANDER_TRAIT_INFO, COMMANDER_RECRUIT_GOLD, VILLAGE_INCORPORATE_COST, MARKET_GOLD_PER_CYCLE, MARKET_GOLD_PER_VILLAGE, POPULATION_TAX_GOLD_MULT, SCOUT_MISSION_COST, WEATHER_DISPLAY, BARACKS_UPGRADE_COST, BARACKS_L3_UPGRADE_COST, FACTORY_UPGRADE_COST, FARM_UPGRADE_COST, RESOURCE_MINE_UPGRADE_COST, FARM_L2_FOOD_PER_CYCLE, WALL_SECTION_STONE_COST, WALL_BUILDER_STONE_PER_CYCLE_PER_SLOT, WORKERS_PER_LEVEL, MIN_STAFFING_RATIO, TREBUCHET_FIELD_BP_COST, TREBUCHET_FIELD_GOLD_COST, TREBUCHET_REFINED_WOOD_COST, SAWMILL_WOOD_PER_REFINED, getBuildingJobs, getUnitStats, BuildingType, UnitType, ArmyStance, Biome, hexDistance, getHexRing, tileKey, POP_BIRTH_RATE, POP_NATURAL_DEATHS, POP_CARRYING_CAPACITY_PER_FOOD, POP_EXPECTED_K_ALPHA, STARVATION_DEATHS, SHIP_RECRUIT_COSTS, isNavalUnitType, getShipMaxCargo, hexTouchesBiome, AttackCityStyle, DefenseTowerType, DefenseTowerLevel, DEFENSE_TOWER_LEVEL_COSTS, DEFENSE_TOWER_MAX_PER_CITY, DEFENSE_TOWER_DISPLAY_NAME, City, CONTESTED_ZONE_GOLD_REWARD, CONTESTED_ZONE_IRON_REWARD, KingdomId, KINGDOM_IDS, KINGDOM_DISPLAY_NAMES, KINGDOM_SETUP_ICONS, SCROLL_DISPLAY_NAME, scrollItemDisplayName, SCROLL_RELIC_LORE, SCROLL_REGION_ITEM_NAME, SPECIAL_REGION_DISPLAY_NAME, SPECIAL_REGION_OVERLAY_COLORS, SCROLL_COMBAT_BONUS, SCROLL_DEFENSE_BONUS, SCROLL_MOVEMENT_BONUS, SCROLL_ARMY_SLOT_ORDER, SCROLL_SLOT_LABEL, MAP_SIZE_PRESETS, type MapSizePreset, type MapTerrainPreset, type ScrollKind, type SpecialRegionKind, type ScrollAttachment, type ScrollItem, type Commander, UNIVERSITY_UPGRADE_COSTS, BUILDER_TASK_LABELS, type BuilderTask, type ArmyMarchSpreadMode, DEFAULT_BUILDER_TASK, ABILITY_DEFS,   getAbilityForUnit, TERRITORY_RADIUS, GARRISON_PATROL_RADIUS_MIN, GARRISON_PATROL_RADIUS_MAX, defaultCityBuildingMaxHp, RUINS_REPAIR_GOLD_RATIO, isCityBuildingOperational, EMPTY_MAP_QUADRANTS, TRADE_MAP_QUADRANT_GOLD, TRADE_MAP_FULL_ATLAS_GOLD, TRADE_RESOURCE_PACK_GOLD, TRADE_MORALE_FESTIVAL_GOLD, TRADE_MORALE_FESTIVAL_DELTA, TRADE_ROYAL_SURVEY_GOLD, MAP_QUADRANT_LABELS, type MapQuadrantId, SOCIAL_BAR_BUILD_GOLD, SOCIAL_BAR_BP, SOCIAL_BAR_UPGRADE_COSTS, SOCIAL_BAR_BIRTH_MULT_PER_LEVEL, isFarmBuildingType, isValidFarmPlacementBiome } from '@/types/game';
 import {
-  MAJOR_ENGAGEMENT_DOCTRINE_LABELS,
-  MAJOR_ENGAGEMENT_DOCTRINE_HELP,
-  globalLandArmyPower,
-  engagedLandPower,
-  inferEnemyTacticLabel,
-} from '@/lib/majorEngagement';
+  battleClusterContainingHex,
+  humanBattleHexKeysFlat,
+  likelyWinnerForHumanBattle,
+} from '@/lib/battlePreview';
 import {
   computeConstructionAvailableBp,
   computeRoadAvailableBp,
@@ -123,6 +121,7 @@ function SetupScreen() {
   const generateWorld = useGameStore(s => s.generateWorld);
   const isGenerated = useGameStore(s => s.isGenerated);
   const startPlacement = useGameStore(s => s.startPlacement);
+  const startBattleTest = useGameStore(s => s.startBattleTest);
   const startSpectateMatch = useGameStore(s => s.startSpectateMatch);
   const selectedKingdom = useGameStore(s => s.selectedKingdom);
   const setSelectedKingdom = useGameStore(s => s.setSelectedKingdom);
@@ -188,6 +187,13 @@ function SetupScreen() {
                 className="px-8 py-3 bg-transparent border border-empire-gold/30 rounded text-empire-parchment/80 text-lg tracking-wide hover:bg-empire-gold/10 hover:border-empire-gold/50 transition-all duration-300"
               >
                 Spectate
+              </button>
+              <button
+                type="button"
+                onClick={() => startBattleTest()}
+                className="px-8 py-2.5 bg-transparent border border-sky-500/35 rounded text-sky-200/90 text-sm tracking-wide hover:bg-sky-950/40 hover:border-sky-400/50 transition-all duration-300"
+              >
+                Battle test (10v10)
               </button>
             </div>
           </div>
@@ -458,13 +464,52 @@ function ArcherDoctrineModal() {
   );
 }
 
+function BattleTestTopBar() {
+  const exitBattleTestToMenu = useGameStore(s => s.exitBattleTestToMenu);
+  return (
+    <div className="fixed top-0 left-0 right-0 z-40 pointer-events-auto flex items-center justify-between gap-3 px-4 py-2 bg-empire-dark/92 border-b border-red-500/45">
+      <p className="text-empire-parchment/90 text-sm min-w-0">
+        <span className="text-red-400 font-bold">Battle test</span>
+        <span className="text-empire-parchment/55 ml-2 hidden sm:inline">
+          10× L1 infantry vs 10× on one hex · movement & combat only (no economy)
+        </span>
+      </p>
+      <button
+        type="button"
+        onClick={() => exitBattleTestToMenu()}
+        className="shrink-0 text-xs px-3 py-1.5 rounded border border-empire-stone/50 text-empire-parchment/85 hover:bg-empire-stone/15"
+      >
+        Exit to menu
+      </button>
+    </div>
+  );
+}
+
 function PlayingHUD() {
+  const gameMode = useGameStore(s => s.gameMode);
   const pendingTacticalOrders = useGameStore(s => s.pendingTacticalOrders);
   const tacticalAttackCityDraft = useGameStore(s => s.tacticalAttackCityDraft);
   const migrateLegacyArcherDoctrineIfNeeded = useGameStore(s => s.migrateLegacyArcherDoctrineIfNeeded);
   useEffect(() => {
     migrateLegacyArcherDoctrineIfNeeded();
   }, [migrateLegacyArcherDoctrineIfNeeded]);
+
+  if (gameMode === 'battle_test') {
+    return (
+      <>
+        <BattleTestTopBar />
+        <SidePanel />
+        <MoveConfirmPopup />
+        <CombatHud />
+        <div className="fixed bottom-4 left-2 z-30 flex flex-col-reverse gap-2 items-start max-w-[min(20rem,calc(100vw-1rem))] pointer-events-none">
+          <div className="pointer-events-auto w-56 min-w-0">
+            <NotificationLog />
+          </div>
+        </div>
+      </>
+    );
+  }
+
   return (
     <>
       <ArcherDoctrineModal />
@@ -486,68 +531,102 @@ function PlayingHUD() {
       <SupplyViewPanel />
       <MoveConfirmPopup />
       <CombatHud />
-      <SpecialRegionExploreModal />
+      <ScrollSearchPromptModal />
+      <SpecialRegionSearchGuideModal />
       <ScrollRelicPickupModal />
     </>
   );
 }
 
-// ─── City logistics modal (opened from hex panel, not on first city click) ─
+// ─── Special wilds: search prompt (first entry) + guide (from side panel) ─
 
-function SpecialRegionExploreModal() {
-  const selectedHex = useGameStore(s => s.selectedHex);
+function ScrollSearchPromptModal() {
+  const modal = useGameStore(s => s.scrollSearchPromptModal);
+  const clearScrollSearchPromptModal = useGameStore(s => s.clearScrollSearchPromptModal);
+  if (!modal) return null;
+  const terrainName = SPECIAL_REGION_DISPLAY_NAME[modal.regionKind];
+  return (
+    <div
+      className="fixed inset-0 z-[92] flex items-center justify-center bg-black/50 pointer-events-auto"
+      onClick={() => clearScrollSearchPromptModal()}
+    >
+      <div
+        className="bg-empire-dark/95 border border-teal-500/50 rounded-xl p-5 max-w-sm w-full mx-4 shadow-2xl"
+        onClick={e => e.stopPropagation()}
+      >
+        <h3 className="text-teal-200 font-bold text-sm mb-2">Search area</h3>
+        <p className="text-empire-parchment/75 text-xs mb-4 leading-relaxed">
+          Your troops entered <span className="text-teal-100/95">{terrainName}</span>. Walk a qualifying army across{' '}
+          <strong className="text-empire-parchment/90">every hex</strong> of this wilds patch. When it is fully explored, move onto the{' '}
+          <strong className="text-empire-parchment/90">relic</strong> tile to reveal the scroll and equip it to an army.
+        </p>
+        <button
+          type="button"
+          onClick={() => clearScrollSearchPromptModal()}
+          className="w-full px-3 py-2 text-xs font-bold rounded border border-teal-500/45 text-teal-100 hover:bg-teal-950/40"
+        >
+          Understood
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function SpecialRegionSearchGuideModal() {
+  const guide = useGameStore(s => s.specialRegionSearchGuideModal);
+  const clearSpecialRegionSearchGuideModal = useGameStore(s => s.clearSpecialRegionSearchGuideModal);
   const pendingTacticalOrders = useGameStore(s => s.pendingTacticalOrders);
   const tiles = useGameStore(s => s.tiles);
   const scrollRelics = useGameStore(s => s.scrollRelics);
   const scrollRegionClaimed = useGameStore(s => s.scrollRegionClaimed);
+  const scrollRelicClusters = useGameStore(s => s.scrollRelicClusters);
+  const scrollSearchVisited = useGameStore(s => s.scrollSearchVisited);
   const players = useGameStore(s => s.players);
   const openTacticalMode = useGameStore(s => s.openTacticalMode);
   const addNotification = useGameStore(s => s.addNotification);
-  const [dismissed, setDismissed] = useState(false);
 
-  useEffect(() => {
-    setDismissed(false);
-  }, [selectedHex?.q, selectedHex?.r]);
-
-  if (pendingTacticalOrders !== null) return null;
-  if (!selectedHex || dismissed) return null;
-  const tile = tiles.get(tileKey(selectedHex.q, selectedHex.r));
+  if (pendingTacticalOrders !== null || !guide) return null;
+  const tile = tiles.get(tileKey(guide.q, guide.r));
   const terrainKind = tile?.specialTerrainKind;
   if (!terrainKind) return null;
   const terrainName = SPECIAL_REGION_DISPLAY_NAME[terrainKind];
-
   const human = players.find(p => p.isHuman);
   const hid = human?.id ?? '';
   const claimed = hid ? (scrollRegionClaimed[terrainKind] ?? []).includes(hid) : false;
-  const relicHere = scrollRelics.some(r => r.q === selectedHex.q && r.r === selectedHex.r);
   const relicForRegion = scrollRelics.find(r => r.regionKind === terrainKind);
+  const cluster = scrollRelicClusters[terrainKind] ?? [];
+  const visited = scrollSearchVisited[hid]?.[terrainKind] ?? [];
+  const visSet = new Set(visited);
+  const explored = cluster.filter(k => visSet.has(k)).length;
+  const total = cluster.length;
+  const searchComplete = total > 0 && cluster.every(k => visSet.has(k));
 
   return (
     <div
       className="fixed inset-0 z-[90] flex items-center justify-center bg-black/45 pointer-events-auto"
-      onClick={() => setDismissed(true)}
+      onClick={() => clearSpecialRegionSearchGuideModal()}
     >
       <div
         className="bg-empire-dark/95 border border-teal-600/50 rounded-xl p-5 max-w-sm w-full mx-4 shadow-2xl"
         onClick={e => e.stopPropagation()}
       >
-        <h3 className="text-teal-200 font-bold text-sm mb-1">Explore — {terrainName}</h3>
-        <p className="text-empire-parchment/70 text-xs mb-3">
+        <h3 className="text-teal-200 font-bold text-sm mb-1">Search — {terrainName}</h3>
+        <p className="text-empire-parchment/70 text-xs mb-3 leading-relaxed">
           {claimed
-            ? `You hold ${SCROLL_REGION_ITEM_NAME[terrainKind]} in your inventory (or it is assigned to a unit).`
-            : relicHere
-              ? 'A relic lies on this hex. Move a qualifying army onto this tile (ships count in the Isle of Lost) to claim the scroll the moment you enter.'
-              : 'Explore to reveal named wilds. Each region has a single relic site; find it on the map, then move an army onto that hex to claim the scroll.'}
+            ? `You hold ${SCROLL_REGION_ITEM_NAME[terrainKind]} (inventory or assigned to an army).`
+            : 'Send a qualifying army through army orders: select stack(s) → Move → path through every hex of this wilds, then end on the relic tile to claim the scroll.'}
         </p>
-        {!claimed && relicForRegion && (
-          <p className="text-teal-300/90 text-[10px] mb-2 font-mono border border-teal-600/35 rounded px-2 py-1 bg-teal-950/30">
-            Relic site (claim by moving qualifying troops here): ({relicForRegion.q}, {relicForRegion.r})
-            {relicHere ? ' — you are on this hex.' : ''}
+        {!claimed && total > 0 && (
+          <p className="text-teal-200/90 text-[11px] mb-3 font-mono border border-teal-600/35 rounded px-2 py-1.5 bg-teal-950/30">
+            Search progress: {explored} / {total} hex{total === 1 ? '' : 'es'}
+            {searchComplete ? ' — patch fully explored. Claim the relic hex.' : ''}
           </p>
         )}
-        <p className="text-empire-parchment/50 text-[10px] mb-2">
-          &quot;Open army orders&quot; does not march units by itself — use the bar at the bottom: choose stacks → Move → click the relic hex → Confirm orders.
-        </p>
+        {!claimed && relicForRegion && (
+          <p className="text-empire-parchment/55 text-[10px] mb-3">
+            Relic site: ({relicForRegion.q}, {relicForRegion.r}) — visible as a marker when discovered.
+          </p>
+        )}
         <div className="flex flex-wrap gap-2">
           <button
             type="button"
@@ -555,12 +634,9 @@ function SpecialRegionExploreModal() {
               const rq = relicForRegion?.q;
               const rr = relicForRegion?.r;
               const coordHint =
-                rq !== undefined && rr !== undefined ? ` Relic is at hex (${rq}, ${rr}).` : '';
-              addNotification(
-                `Army orders mode: use the bottom bar — select stack(s), tap Move, click the target hex, then Confirm orders.${coordHint}`,
-                'info',
-              );
-              setDismissed(true);
+                rq !== undefined && rr !== undefined ? ` Target relic hex (${rq}, ${rr}).` : '';
+              addNotification(`Army orders: select stack(s) → Move → click destination(s) → Confirm orders.${coordHint}`, 'info');
+              clearSpecialRegionSearchGuideModal();
               openTacticalMode();
             }}
             className="flex-1 min-w-[8rem] px-3 py-2 text-xs font-bold rounded border border-empire-gold/50 text-empire-gold hover:bg-empire-gold/10"
@@ -569,7 +645,7 @@ function SpecialRegionExploreModal() {
           </button>
           <button
             type="button"
-            onClick={() => setDismissed(true)}
+            onClick={() => clearSpecialRegionSearchGuideModal()}
             className="px-3 py-2 text-xs rounded border border-empire-stone/40 text-empire-parchment/80 hover:bg-empire-stone/20"
           >
             Close
@@ -1232,65 +1308,13 @@ function DroughtParticles() {
 
 // ─── Combat banner + battle report modal ───────────────────────────
 
-function humanBattleHexKeys(units: import('@/types/game').Unit[]): string[] {
-  const byHex: Record<string, import('@/types/game').Unit[]> = {};
-  for (const u of units) {
-    if (u.hp <= 0 || u.aboardShipId) continue;
-    const k = tileKey(u.q, u.r);
-    if (!byHex[k]) byHex[k] = [];
-    byHex[k].push(u);
-  }
-  const keys: string[] = [];
-  for (const [k, arr] of Object.entries(byHex)) {
-    if (new Set(arr.map(u => u.ownerId)).size < 2) continue;
-    if (arr.some(u => u.ownerId.includes('human'))) keys.push(k);
-  }
-  return keys;
-}
-
 function CombatHud() {
   return (
     <>
-      <CombatBanner />
       <BattleReportModal />
     </>
   );
 }
-
-function CombatBanner() {
-  const units = useGameStore(s => s.units);
-  const gameMode = useGameStore(s => s.gameMode);
-  const openBattleModal = useGameStore(s => s.openBattleModal);
-
-  const keys = useMemo(() => humanBattleHexKeys(units), [units]);
-  const fightingUnits = units.filter(
-    u => u.ownerId.includes('human') && u.hp > 0 && u.status === 'fighting'
-  );
-
-  if (keys.length === 0 || gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4' || gameMode === 'spectate') return null;
-
-  return (
-    <div className="absolute top-24 left-1/2 -translate-x-1/2 pointer-events-auto z-20">
-      <div className="bg-empire-dark/95 border border-red-500/60 rounded-lg px-4 py-3 shadow-xl min-w-[280px] flex flex-col sm:flex-row sm:items-center gap-3">
-        <div className="flex-1 min-w-0">
-          <p className="text-red-400 font-bold tracking-wide text-sm">COMBAT</p>
-          <p className="text-empire-parchment/60 text-xs mt-0.5">
-            {fightingUnits.length} of your unit{fightingUnits.length !== 1 ? 's' : ''} engaged · {keys.length} battlefield{keys.length !== 1 ? 's' : ''}
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={() => openBattleModal()}
-          className="shrink-0 px-4 py-2 text-xs font-bold rounded border border-empire-gold/50 bg-empire-gold/15 text-empire-gold hover:bg-empire-gold/25 transition-colors"
-        >
-          Battle report
-        </button>
-      </div>
-    </div>
-  );
-}
-
-const HUMAN_PLAYER_ID = 'player_human';
 
 function BattleReportModal() {
   const battleModalHexKey = useGameStore(s => s.battleModalHexKey);
@@ -1298,25 +1322,49 @@ function BattleReportModal() {
   const openBattleModal = useGameStore(s => s.openBattleModal);
   const units = useGameStore(s => s.units);
   const players = useGameStore(s => s.players);
-  const setRetreatStack = useGameStore(s => s.setRetreatStack);
+  const exitBattleReportToMoveMode = useGameStore(s => s.exitBattleReportToMoveMode);
   const gameMode = useGameStore(s => s.gameMode);
   const moraleState = useGameStore(s => s.combatMoraleState);
   const killFeed = useGameStore(s => s.combatKillFeed);
-  const majorEngagementStrategyByHex = useGameStore(s => s.majorEngagementStrategyByHex);
-  const setMajorEngagementDoctrine = useGameStore(s => s.setMajorEngagementDoctrine);
 
-  const battleKeys = useMemo(() => humanBattleHexKeys(units), [units]);
+  const battleKeys = useMemo(() => humanBattleHexKeysFlat(units), [units]);
+  const battleClusterHexKeys = useMemo(
+    () => battleClusterContainingHex(units, battleModalHexKey),
+    [units, battleModalHexKey],
+  );
+
+  const outlook = useMemo(() => {
+    if (!battleModalHexKey || battleClusterHexKeys.length === 0) {
+      return { label: '—', lean: 'tossup' as const, pctYou: 50 };
+    }
+    return likelyWinnerForHumanBattle(units, battleClusterHexKeys, moraleState);
+  }, [battleModalHexKey, battleClusterHexKeys, units, moraleState]);
 
   useEffect(() => {
     if (!battleModalHexKey) return;
     if (!battleKeys.includes(battleModalHexKey)) closeBattleModal();
   }, [battleModalHexKey, battleKeys, closeBattleModal]);
 
+  const clusterHexSet = useMemo(() => new Set(battleClusterHexKeys), [battleClusterHexKeys]);
+
+  const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
+  const dragSessionRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    originX: number;
+    originY: number;
+  } | null>(null);
+
+  useEffect(() => {
+    setDragOffset({ x: 0, y: 0 });
+  }, [battleModalHexKey]);
+
   if (!battleModalHexKey || gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4' || gameMode === 'spectate') return null;
 
   const [q, r] = battleModalHexKey.split(',').map(Number);
   const atHex = units.filter(
-    u => u.q === q && u.r === r && u.hp > 0 && !u.aboardShipId
+    u => clusterHexSet.has(tileKey(u.q, u.r)) && u.hp > 0 && !u.aboardShipId
   );
   const yours = atHex.filter(u => u.ownerId.includes('human'));
   const enemies = atHex.filter(u => !u.ownerId.includes('human'));
@@ -1332,39 +1380,161 @@ function BattleReportModal() {
     if (e.target === e.currentTarget) closeBattleModal();
   };
 
+  const clampBattleReportDrag = (x: number, y: number) => {
+    const margin = 40;
+    const maxX = Math.max(0, window.innerWidth / 2 - margin);
+    const maxY = Math.max(0, window.innerHeight / 2 - margin);
+    return {
+      x: Math.max(-maxX, Math.min(maxX, x)),
+      y: Math.max(-maxY, Math.min(maxY, y)),
+    };
+  };
+
+  const handleBattleReportCornerPointerDown = (e: React.PointerEvent<HTMLButtonElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragSessionRef.current = {
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      originX: dragOffset.x,
+      originY: dragOffset.y,
+    };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+
+  const handleBattleReportCornerPointerMove = (e: React.PointerEvent<HTMLButtonElement>) => {
+    const s = dragSessionRef.current;
+    if (!s || e.pointerId !== s.pointerId) return;
+    const nx = s.originX + (e.clientX - s.startX);
+    const ny = s.originY + (e.clientY - s.startY);
+    setDragOffset(clampBattleReportDrag(nx, ny));
+  };
+
+  const handleBattleReportCornerPointerUp = (e: React.PointerEvent<HTMLButtonElement>) => {
+    const s = dragSessionRef.current;
+    if (!s || e.pointerId !== s.pointerId) return;
+    dragSessionRef.current = null;
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {
+      /* already released */
+    }
+  };
+
+  const battleReportCornerHandleClass =
+    'absolute z-[2] h-5 w-5 touch-none select-none rounded-sm border border-amber-900/50 bg-[#141428]/95 hover:bg-amber-950/40 cursor-grab active:cursor-grabbing';
+
   return (
     <div
-      className="absolute inset-0 flex items-center justify-center bg-black/65 pointer-events-auto z-[95] isolate"
+      className="absolute inset-0 bg-black/70 backdrop-blur-[2px] pointer-events-auto z-[95] isolate"
       onClick={handleBackdrop}
-      onPointerDown={e => e.stopPropagation()}
     >
       <div
         role="dialog"
         aria-modal="true"
         aria-labelledby="battle-report-title"
-        className="bg-empire-dark/95 border border-red-500/45 rounded-xl p-5 max-w-lg w-full mx-4 shadow-2xl pointer-events-auto max-h-[min(85vh,640px)] flex flex-col"
+        style={{
+          position: 'fixed',
+          left: `calc(50% + ${dragOffset.x}px)`,
+          top: `calc(50% + ${dragOffset.y}px)`,
+          transform: 'translate(-50%, -50%)',
+        }}
+        className="medieval-frame medieval-frame--hud relative w-[min(100%,20rem)] max-w-[20rem] pointer-events-auto flex flex-col shadow-2xl"
         onClick={e => e.stopPropagation()}
       >
-        <div className="flex items-start justify-between gap-3 mb-4">
-          <div>
-            <h2 id="battle-report-title" className="text-red-400 font-bold tracking-wide text-base">
-              Battle report
-            </h2>
-            <p className="text-empire-parchment/55 text-xs mt-1">
-              Hex ({q}, {r}) · Retreat orders a 2s delay before units stop attacking and route away.
+        <button
+          type="button"
+          tabIndex={-1}
+          aria-label="Drag to move battle report"
+          title="Drag to move"
+          className={`${battleReportCornerHandleClass} -left-1.5 -top-1.5`}
+          onPointerDown={handleBattleReportCornerPointerDown}
+          onPointerMove={handleBattleReportCornerPointerMove}
+          onPointerUp={handleBattleReportCornerPointerUp}
+          onPointerCancel={handleBattleReportCornerPointerUp}
+        />
+        <button
+          type="button"
+          tabIndex={-1}
+          aria-label="Drag to move battle report"
+          title="Drag to move"
+          className={`${battleReportCornerHandleClass} -right-1.5 -top-1.5`}
+          onPointerDown={handleBattleReportCornerPointerDown}
+          onPointerMove={handleBattleReportCornerPointerMove}
+          onPointerUp={handleBattleReportCornerPointerUp}
+          onPointerCancel={handleBattleReportCornerPointerUp}
+        />
+        <button
+          type="button"
+          tabIndex={-1}
+          aria-label="Drag to move battle report"
+          title="Drag to move"
+          className={`${battleReportCornerHandleClass} -left-1.5 -bottom-1.5`}
+          onPointerDown={handleBattleReportCornerPointerDown}
+          onPointerMove={handleBattleReportCornerPointerMove}
+          onPointerUp={handleBattleReportCornerPointerUp}
+          onPointerCancel={handleBattleReportCornerPointerUp}
+        />
+        <button
+          type="button"
+          tabIndex={-1}
+          aria-label="Drag to move battle report"
+          title="Drag to move"
+          className={`${battleReportCornerHandleClass} -right-1.5 -bottom-1.5`}
+          onPointerDown={handleBattleReportCornerPointerDown}
+          onPointerMove={handleBattleReportCornerPointerMove}
+          onPointerUp={handleBattleReportCornerPointerUp}
+          onPointerCancel={handleBattleReportCornerPointerUp}
+        />
+        <div className="medieval-frame-inner flex flex-col min-h-0 max-h-[min(58vh,22rem)] px-2.5 pb-2.5 pt-2.5 font-medieval text-empire-parchment/88">
+          <div className="flex items-start justify-between gap-2 mb-2 shrink-0">
+          <div className="min-w-0 pr-1">
+            <div className="flex items-center gap-1.5 mb-0.5">
+              <span className="text-amber-500/70 text-[9px] select-none" aria-hidden>
+                ⚜
+              </span>
+              <h2
+                id="battle-report-title"
+                className="font-cinzel medieval-title text-[13px] font-bold tracking-[0.12em] uppercase leading-tight"
+              >
+                Battle report
+              </h2>
+              <span className="text-amber-500/70 text-[9px] select-none" aria-hidden>
+                ⚜
+              </span>
+            </div>
+            <div className="medieval-divider my-1.5 opacity-80" />
+            <p className="text-empire-parchment/60 text-[10px] leading-snug italic">
+              {battleClusterHexKeys.length <= 1 ? (
+                <>Hex ({q}, {r}) · Retreat: 2s delay before routing.</>
+              ) : (
+                <>
+                  Linked:{' '}
+                  {battleClusterHexKeys.map(k => {
+                    const [hq, hr] = k.split(',').map(Number);
+                    return (
+                      <span key={k} className="text-empire-parchment/65">
+                        ({hq}, {hr}){' '}
+                      </span>
+                    );
+                  })}
+                  · Retreat: 2s delay.
+                </>
+              )}
             </p>
           </div>
           <button
             type="button"
             onClick={closeBattleModal}
-            className="text-empire-parchment/50 hover:text-empire-parchment text-sm px-2 py-1 rounded border border-empire-stone/30"
+            className="relative z-[5] font-cinzel text-[10px] text-empire-gold/90 hover:text-empire-gold px-2 py-1 rounded border border-empire-gold/35 bg-black/20 hover:bg-empire-gold/10 shrink-0 tracking-wide"
           >
             Close
           </button>
         </div>
 
         {battleKeys.length > 1 && (
-          <div className="flex flex-wrap gap-2 mb-4">
+          <div className="flex flex-wrap gap-1.5 mb-2 shrink-0">
             {battleKeys.map(k => {
               const [cq, cr] = k.split(',').map(Number);
               return (
@@ -1372,10 +1542,10 @@ function BattleReportModal() {
                   key={k}
                   type="button"
                   onClick={() => openBattleModal(k)}
-                  className={`text-xs px-2.5 py-1 rounded border transition-colors ${
+                  className={`font-cinzel text-[10px] px-2 py-0.5 rounded border transition-colors tracking-wide ${
                     k === battleModalHexKey
-                      ? 'border-empire-gold/70 bg-empire-gold/15 text-empire-gold'
-                      : 'border-empire-stone/35 text-empire-parchment/70 hover:border-empire-stone/55'
+                      ? 'border-empire-gold/70 bg-empire-gold/12 text-empire-gold shadow-[inset_0_0_12px_rgba(201,168,76,0.12)]'
+                      : 'border-amber-900/40 text-empire-parchment/75 hover:border-empire-gold/40 hover:bg-black/20'
                   }`}
                 >
                   ({cq}, {cr})
@@ -1385,107 +1555,62 @@ function BattleReportModal() {
           </div>
         )}
 
-        <div className="grid grid-cols-2 gap-3 text-xs mb-4">
-          <div className="rounded-lg border border-emerald-800/40 bg-emerald-950/25 px-3 py-2">
-            <p className="text-emerald-400/90 font-semibold mb-1">Your force</p>
-            <p className="text-empire-parchment/80">
+        <div className="grid grid-cols-2 gap-2 text-[10px] mb-2 shrink-0">
+          <div className="rounded border border-emerald-900/45 bg-emerald-950/20 px-2 py-1.5 shadow-[inset_0_0_0_1px_rgba(201,168,76,0.06)]">
+            <p className="font-cinzel text-emerald-400/95 text-[9px] mb-0.5 uppercase tracking-[0.1em]">Your force</p>
+            <p className="text-empire-parchment/80 leading-tight">
               {yours.length} unit{yours.length !== 1 ? 's' : ''} · {Math.round(sumHp(yours))} / {Math.round(sumMax(yours))} HP
             </p>
           </div>
-          <div className="rounded-lg border border-rose-800/40 bg-rose-950/20 px-3 py-2">
-            <p className="text-rose-400/90 font-semibold mb-1">Enemy</p>
-            <p className="text-empire-parchment/80">
+          <div className="rounded border border-rose-900/45 bg-rose-950/25 px-2 py-1.5 shadow-[inset_0_0_0_1px_rgba(201,168,76,0.06)]">
+            <p className="font-cinzel text-rose-400/95 text-[9px] mb-0.5 uppercase tracking-[0.1em]">Enemy</p>
+            <p className="text-empire-parchment/80 leading-tight">
               {enemies.length} unit{enemies.length !== 1 ? 's' : ''} · {Math.round(sumHp(enemies))} / {Math.round(sumMax(enemies))} HP
             </p>
           </div>
         </div>
 
-        {majorEngagementStrategyByHex[battleModalHexKey] && (() => {
-          const enemyOwner = enemies[0]?.ownerId;
-          const yourOwner = yours[0]?.ownerId;
-          const row = majorEngagementStrategyByHex[battleModalHexKey]!;
-          const humanDoc = row[HUMAN_PLAYER_ID] ?? 'balanced';
-          const enemyDoc = enemyOwner ? row[enemyOwner] : undefined;
-          const pctYou =
-            enemyOwner && globalLandArmyPower(enemyOwner, units) > 0
-              ? Math.round(
-                  (100 * engagedLandPower(yours)) / globalLandArmyPower(enemyOwner, units),
-                )
-              : 0;
-          const pctEnemy =
-            yourOwner && globalLandArmyPower(yourOwner, units) > 0
-              ? Math.round(
-                  (100 * engagedLandPower(enemies)) / globalLandArmyPower(yourOwner, units),
-                )
-              : 0;
-          const doctrineIds = Object.keys(MAJOR_ENGAGEMENT_DOCTRINE_LABELS) as MajorEngagementDoctrine[];
-          return (
-            <div className="mb-4 p-3 rounded-lg border border-amber-500/35 bg-amber-950/20">
-              <p className="text-amber-300 text-xs font-bold tracking-wide mb-1">Major engagement</p>
-              <p className="text-empire-parchment/55 text-[10px] mb-2">
-                Each side meets the {Math.round(MAJOR_ENGAGEMENT_ARMY_FRACTION * 100)}% threshold vs the enemy&apos;s global land army (max HP). Enemy read:{' '}
-                <span className="text-empire-parchment/85 font-medium">{inferEnemyTacticLabel(enemies)}</span>
-              </p>
-              <p className="text-empire-parchment/45 text-[10px] mb-2 tabular-nums">
-                Engaged vs global — You: {pctYou}% · Enemy: {pctEnemy}%
-              </p>
-              {enemyDoc != null && enemyOwner && (
-                <p className="text-empire-parchment/60 text-[10px] mb-2">
-                  Enemy doctrine:{' '}
-                  <span className="text-rose-300/90">{MAJOR_ENGAGEMENT_DOCTRINE_LABELS[enemyDoc]}</span>
-                </p>
-              )}
-              <p className="text-[10px] text-empire-parchment/55 mb-1.5 font-semibold uppercase tracking-wide">Your doctrine</p>
-              <div className="flex flex-col gap-1.5 max-h-40 overflow-y-auto pr-1">
-                {doctrineIds.map(d => (
-                  <label
-                    key={d}
-                    className="flex items-start gap-2 text-[11px] cursor-pointer rounded border border-transparent hover:border-empire-stone/25 px-1 py-0.5"
-                  >
-                    <input
-                      type="radio"
-                      name={`major-doctrine-${battleModalHexKey}`}
-                      checked={humanDoc === d}
-                      onChange={() => setMajorEngagementDoctrine(battleModalHexKey, d)}
-                      className="mt-0.5"
-                    />
-                    <span>
-                      <span className="text-empire-parchment/90">{MAJOR_ENGAGEMENT_DOCTRINE_LABELS[d]}</span>
-                      <span className="block text-empire-parchment/45 text-[10px] leading-snug">
-                        {MAJOR_ENGAGEMENT_DOCTRINE_HELP[d]}
-                      </span>
-                    </span>
-                  </label>
-                ))}
-              </div>
-            </div>
-          );
-        })()}
+        <div className="mb-2 p-2 rounded border border-amber-800/35 bg-gradient-to-b from-amber-950/25 to-black/35 shrink-0 shadow-[inset_0_1px_0_rgba(201,168,76,0.08)]">
+          <p className="font-cinzel text-empire-gold/90 text-[9px] tracking-[0.12em] mb-0.5 uppercase">Likely victor</p>
+          <p className="text-empire-parchment/95 text-[11px] font-medium leading-tight">{outlook.label}</p>
+          <p className="text-empire-parchment/50 text-[9px] mt-0.5 tabular-nums leading-tight italic">
+            ~{outlook.pctYou}% — rough tally of vigor and spirit (HP &amp; morale).
+          </p>
+        </div>
 
         {/* Morale bars */}
         {(() => {
           const yourOwner = yours[0]?.ownerId;
           const enemyOwner = enemies[0]?.ownerId;
-          const yourMorale = yourOwner ? (moraleState.get(`${battleModalHexKey}:${yourOwner}`)?.morale ?? 100) : 100;
-          const enMorale = enemyOwner ? (moraleState.get(`${battleModalHexKey}:${enemyOwner}`)?.morale ?? 100) : 100;
+          const nHex = battleClusterHexKeys.length || 1;
+          const avgMorale = (owner: string | undefined) => {
+            if (!owner) return 100;
+            let s = 0;
+            for (const hk of battleClusterHexKeys) {
+              s += moraleState.get(`${hk}:${owner}`)?.morale ?? 100;
+            }
+            return s / nHex;
+          };
+          const yourMorale = avgMorale(yourOwner);
+          const enMorale = avgMorale(enemyOwner);
           return (
-            <div className="grid grid-cols-2 gap-3 mb-3">
+            <div className="grid grid-cols-2 gap-2 mb-2 shrink-0">
               <div>
                 <div className="flex items-center justify-between text-[10px] mb-0.5">
-                  <span className="text-emerald-400/70">Morale</span>
+                  <span className="font-cinzel text-emerald-400/80 text-[9px] tracking-wide">Spirit</span>
                   <span className={`${yourMorale < 30 ? 'text-amber-400' : yourMorale < 15 ? 'text-red-400' : 'text-emerald-400/70'}`}>{Math.round(yourMorale)}</span>
                 </div>
-                <div className="h-1.5 bg-empire-stone/25 rounded-full overflow-hidden">
-                  <div className={`h-full rounded-full ${yourMorale > 30 ? 'bg-emerald-500' : yourMorale > 15 ? 'bg-amber-500' : 'bg-red-500'}`} style={{ width: `${yourMorale}%` }} />
+                <div className="h-1.5 bg-black/40 rounded-full overflow-hidden ring-1 ring-empire-gold/10">
+                  <div className={`h-full rounded-full ${yourMorale > 30 ? 'bg-emerald-600/90' : yourMorale > 15 ? 'bg-amber-600/90' : 'bg-red-600/90'}`} style={{ width: `${yourMorale}%` }} />
                 </div>
               </div>
               <div>
                 <div className="flex items-center justify-between text-[10px] mb-0.5">
-                  <span className="text-rose-400/70">Morale</span>
+                  <span className="font-cinzel text-rose-400/80 text-[9px] tracking-wide">Spirit</span>
                   <span className={`${enMorale < 30 ? 'text-amber-400' : enMorale < 15 ? 'text-red-400' : 'text-rose-400/70'}`}>{Math.round(enMorale)}</span>
                 </div>
-                <div className="h-1.5 bg-empire-stone/25 rounded-full overflow-hidden">
-                  <div className={`h-full rounded-full ${enMorale > 30 ? 'bg-rose-500' : enMorale > 15 ? 'bg-amber-500' : 'bg-red-500'}`} style={{ width: `${enMorale}%` }} />
+                <div className="h-1.5 bg-black/40 rounded-full overflow-hidden ring-1 ring-empire-gold/10">
+                  <div className={`h-full rounded-full ${enMorale > 30 ? 'bg-rose-600/90' : enMorale > 15 ? 'bg-amber-600/90' : 'bg-red-600/90'}`} style={{ width: `${enMorale}%` }} />
                 </div>
               </div>
             </div>
@@ -1494,11 +1619,11 @@ function BattleReportModal() {
 
         {/* Kill feed for this hex */}
         {(() => {
-          const hexKills = killFeed.filter(k => k.hexKey === battleModalHexKey);
+          const hexKills = killFeed.filter(k => battleClusterHexKeys.includes(k.hexKey));
           if (hexKills.length === 0) return null;
           return (
-            <div className="mb-3 p-2 rounded border border-empire-stone/20 bg-empire-stone/5 max-h-24 overflow-y-auto">
-              <p className="text-[9px] text-empire-parchment/40 mb-1 uppercase tracking-wider">Kill feed</p>
+            <div className="mb-2 p-1.5 rounded border border-amber-900/30 bg-black/25 max-h-16 overflow-y-auto shrink-0 medieval-scroll shadow-[inset_0_0_12px_rgba(0,0,0,0.35)]">
+              <p className="font-cinzel text-[9px] text-empire-gold/70 mb-1 uppercase tracking-[0.14em]">Casualties</p>
               {hexKills.slice(-8).map((k, i) => (
                 <div key={i} className="text-[10px] text-empire-parchment/70 leading-tight">
                   <span className={k.killerOwner.includes('human') ? 'text-emerald-400' : 'text-rose-400'}>
@@ -1514,76 +1639,79 @@ function BattleReportModal() {
           );
         })()}
 
-        <div className="flex-1 overflow-y-auto min-h-0 space-y-4 pr-1">
+        <div className="flex-1 overflow-y-auto min-h-0 space-y-2 pr-0.5 medieval-scroll">
           <div>
-            <p className="text-emerald-500/80 text-[11px] font-semibold uppercase tracking-wide mb-2">Your units</p>
-            <ul className="space-y-1.5">
+            <p className="font-cinzel text-emerald-400/90 text-[9px] uppercase tracking-[0.12em] mb-1">Your ranks</p>
+            <ul className="space-y-1">
               {yours.map(u => {
                 const max = u.maxHp ?? getUnitStats(u).maxHp;
                 const pct = max > 0 ? Math.round((100 * u.hp) / max) : 0;
                 return (
-                  <li key={u.id} className="flex items-center gap-2 text-[11px] text-empire-parchment/90">
-                    <span className="w-24 truncate">{getUnitDisplayName(u.type, u.armsLevel ?? 1, u.rangedVariant)}</span>
-                    <div className="flex-1 h-1.5 rounded-full bg-empire-stone/30 overflow-hidden">
+                  <li key={u.id} className="flex items-center gap-1 text-[10px] text-empire-parchment/90">
+                    <span className="w-20 truncate shrink-0">{getUnitDisplayName(u.type, u.armsLevel ?? 1, u.rangedVariant)}</span>
+                    <div className="flex-1 h-1.5 rounded-full bg-black/35 overflow-hidden ring-1 ring-emerald-900/30">
                       <div
-                        className="h-full bg-emerald-600/80 rounded-full transition-all"
+                        className="h-full bg-gradient-to-r from-emerald-800/90 to-emerald-600/90 rounded-full transition-all"
                         style={{ width: `${pct}%` }}
                       />
                     </div>
-                    <span className="text-empire-parchment/60 tabular-nums w-16 text-right">
+                    <span className="text-empire-parchment/60 tabular-nums w-12 text-right shrink-0 text-[9px]">
                       {u.hp}/{max}
                     </span>
                   </li>
                 );
               })}
-              {yours.length === 0 && <li className="text-empire-parchment/45 text-[11px]">No land units (check garrison or cargo).</li>}
+              {yours.length === 0 && <li className="text-empire-parchment/45 text-[10px] italic">No units here.</li>}
             </ul>
           </div>
           <div>
-            <p className="text-rose-500/80 text-[11px] font-semibold uppercase tracking-wide mb-2">Enemy units</p>
-            <ul className="space-y-1.5">
+            <p className="font-cinzel text-rose-400/90 text-[9px] uppercase tracking-[0.12em] mb-1">Enemy ranks</p>
+            <ul className="space-y-1">
               {enemies.map(u => {
                 const max = u.maxHp ?? getUnitStats(u).maxHp;
                 const pct = max > 0 ? Math.round((100 * u.hp) / max) : 0;
                 return (
-                  <li key={u.id} className="flex items-center gap-2 text-[11px] text-empire-parchment/90">
-                    <span className="w-24 truncate">{getUnitDisplayName(u.type, u.armsLevel ?? 1, u.rangedVariant)}</span>
-                    <span className="text-empire-parchment/50 w-20 truncate">{nameFor(u.ownerId)}</span>
-                    <div className="flex-1 h-1.5 rounded-full bg-empire-stone/30 overflow-hidden">
+                  <li key={u.id} className="flex items-center gap-1 text-[10px] text-empire-parchment/90">
+                    <span className="w-20 truncate shrink-0">{getUnitDisplayName(u.type, u.armsLevel ?? 1, u.rangedVariant)}</span>
+                    <span className="text-empire-parchment/50 w-14 truncate shrink-0">{nameFor(u.ownerId)}</span>
+                    <div className="flex-1 h-1.5 rounded-full bg-black/35 overflow-hidden ring-1 ring-rose-900/30">
                       <div
-                        className="h-full bg-rose-600/75 rounded-full transition-all"
+                        className="h-full bg-gradient-to-r from-rose-900/90 to-rose-600/85 rounded-full transition-all"
                         style={{ width: `${pct}%` }}
                       />
                     </div>
-                    <span className="text-empire-parchment/60 tabular-nums w-16 text-right">
+                    <span className="text-empire-parchment/60 tabular-nums w-12 text-right shrink-0 text-[9px]">
                       {u.hp}/{max}
                     </span>
                   </li>
                 );
               })}
-              {enemies.length === 0 && <li className="text-empire-parchment/45 text-[11px]">No visible enemy stacks here.</li>}
+              {enemies.length === 0 && <li className="text-empire-parchment/45 text-[10px] italic">No enemy in view.</li>}
             </ul>
           </div>
         </div>
 
-        <div className="mt-5 pt-4 border-t border-empire-stone/25 flex flex-wrap gap-2 justify-end">
+        <div className="mt-2 pt-2 border-t border-empire-gold/15 flex flex-wrap gap-1.5 justify-end shrink-0">
           <button
             type="button"
+            title="Close report and choose where to move your stack"
             onClick={() => {
-              setRetreatStack(q, r);
-              closeBattleModal();
+              const lead = yours[0];
+              if (lead) exitBattleReportToMoveMode(lead.q, lead.r);
+              else closeBattleModal();
             }}
-            className="px-4 py-2 text-xs font-bold rounded border border-amber-600/50 bg-amber-950/35 text-amber-300 hover:bg-amber-900/45 transition-colors"
+            className="font-cinzel px-2.5 py-1 text-[10px] font-bold rounded border border-amber-700/55 bg-amber-950/40 text-amber-200/95 hover:bg-amber-900/55 hover:border-amber-500/50 transition-colors tracking-wide shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]"
           >
-            Retreat this stack
+            Retreat
           </button>
           <button
             type="button"
             onClick={closeBattleModal}
-            className="px-4 py-2 text-xs font-bold rounded border border-empire-stone/40 text-empire-parchment/80 hover:bg-empire-stone/15 transition-colors"
+            className="font-cinzel px-2.5 py-1 text-[10px] font-bold rounded border border-empire-gold/35 text-empire-parchment/85 hover:bg-empire-gold/10 hover:border-empire-gold/50 transition-colors tracking-wide"
           >
             Dismiss
           </button>
+        </div>
         </div>
       </div>
     </div>
@@ -3386,7 +3514,7 @@ function TacticalPanel() {
                         splitStackPendingStore.fromR === r && (
                           <div className="mt-1.5 flex flex-wrap items-center justify-between gap-1 rounded border border-cyan-600/35 bg-cyan-950/20 px-2 py-1">
                             <p className="text-[9px] text-cyan-300/90">
-                              Splitting {splitStackPendingStore.count} unit(s) — click an adjacent land hex
+                              Splitting {splitStackPendingStore.count} unit(s) — adjacent land (armies) or water (fleets)
                             </p>
                             <button
                               type="button"
@@ -4448,6 +4576,9 @@ function SidePanel() {
   const pendingMove = useGameStore(s => s.pendingMove);
   const scrollRegionClaimed = useGameStore(s => s.scrollRegionClaimed);
   const scrollRelics = useGameStore(s => s.scrollRelics);
+  const scrollRelicClusters = useGameStore(s => s.scrollRelicClusters);
+  const scrollSearchVisited = useGameStore(s => s.scrollSearchVisited);
+  const openSpecialRegionSearchGuideModal = useGameStore(s => s.openSpecialRegionSearchGuideModal);
   const scrollInventory = useGameStore(s => s.scrollInventory);
   const assignScrollToArmy = useGameStore(s => s.assignScrollToArmy);
   const addNotification = useGameStore(s => s.addNotification);
@@ -4650,16 +4781,38 @@ function SidePanel() {
           const hid = human?.id ?? '';
           const claimed = hid ? (scrollRegionClaimed[rk] ?? []).includes(hid) : false;
           const relicOnHex = scrollRelics.some(r => r.q === selectedHex.q && r.r === selectedHex.r && r.regionKind === rk);
+          const cluster = scrollRelicClusters[rk] ?? [];
+          const visited = scrollSearchVisited[hid]?.[rk] ?? [];
+          const vis = new Set(visited);
+          const explored = cluster.filter(k => vis.has(k)).length;
+          const total = cluster.length;
+          const searchComplete = total > 0 && cluster.every(k => vis.has(k));
           return (
             <div className="px-2 py-1.5 bg-teal-950/40 border border-teal-600/35 rounded text-xs space-y-1.5">
               <div className="font-medium text-teal-200/95">{terrainName}</div>
               <div className="text-teal-100/70 text-[10px] leading-snug">
                 {claimed
                   ? `You claimed ${SCROLL_REGION_ITEM_NAME[rk]}. Assign it from the army section or inventory.`
-                  : relicOnHex
-                    ? 'Relic site: move a qualifying army onto this hex to claim the scroll (see explore popup).'
-                    : 'Named wilds hide one relic per region. Explore fog to spot the relic marker, then move an army onto that hex.'}
+                  : 'March a qualifying army across every hex of this wilds patch, then step on the relic tile to reveal the scroll.'}
               </div>
+              {!claimed && total > 1 && (
+                <div className="text-teal-200/85 text-[10px] font-mono">
+                  Search: {explored}/{total} hexes
+                  {searchComplete ? ' — ready to claim relic.' : ''}
+                </div>
+              )}
+              {!claimed && (
+                <button
+                  type="button"
+                  onClick={() => openSpecialRegionSearchGuideModal(selectedHex.q, selectedHex.r)}
+                  className="w-full px-2 py-1.5 text-[11px] rounded border border-teal-500/50 text-teal-100 hover:bg-teal-900/35 font-medium"
+                >
+                  Send army to search…
+                </button>
+              )}
+              {relicOnHex && !claimed && (
+                <div className="text-amber-200/80 text-[10px]">Relic hex — claim after search is complete.</div>
+              )}
             </div>
           );
         })()}
@@ -4811,8 +4964,8 @@ function SidePanel() {
             !construction &&
             canAffordDefenseHud(human?.gold ?? 0, payCity, nextL);
           return (
-            <div className="bg-rose-900/15 border border-rose-500/30 rounded px-3 py-2 space-y-1.5 text-xs">
-              <div className="text-rose-300 font-bold">
+            <div className="bg-cottage-wood/35 border border-cottage-brass/25 rounded px-3 py-2 space-y-1.5 text-xs">
+              <div className="text-cottage-glow font-bold">
                 {DEFENSE_TOWER_DISPLAY_NAME[od.type]} — L{od.level}
               </div>
               <p className="text-[10px] text-empire-parchment/55">
@@ -4826,10 +4979,10 @@ function SidePanel() {
                   disabled={!canUpgrade}
                   title={canUpgrade ? formatDefenseLevelCost(nextL) : undefined}
                   onClick={() => startCityDefenseTowerBuild(selectedHex.q, selectedHex.r, od.type, nextL, od.cityId)}
-                  className={`w-full px-2 py-1.5 rounded border text-[11px] font-medium ${
+                  className={`w-full px-2 py-1.5 rounded border text-[11px] font-medium transition-colors ${
                     canUpgrade
-                      ? 'border-rose-500/50 bg-rose-950/40 text-rose-100 hover:bg-rose-900/40'
-                      : 'border-empire-stone/25 text-empire-parchment/35 cursor-not-allowed'
+                      ? 'border-empire-stone/40 bg-empire-stone/10 text-empire-parchment hover:bg-empire-stone/20'
+                      : 'border-empire-stone/20 bg-transparent text-empire-parchment/30 cursor-not-allowed'
                   }`}
                 >
                   Upgrade to L{nextL} — {formatDefenseLevelCost(nextL)}
@@ -5290,24 +5443,23 @@ function BarracksPanel({ city, barracksQ, barracksR }: { city: import('@/types/g
   };
 
   return (
-    <div className="space-y-1.5">
-      <h3 className="text-orange-400 text-xs font-semibold uppercase tracking-wide">Barracks — {city.name}</h3>
+    <MapRoomPanel title={`Barracks — ${city.name}`} innerClassName="space-y-1.5">
       {barracksLvl < 2 && (
         <button
           onClick={() => upgradeBarracks(city.id, barracksQ, barracksR)}
           disabled={gold < BARACKS_UPGRADE_COST}
-          className="w-full px-2 py-1.5 text-xs bg-amber-900/30 border border-amber-500/40 rounded text-amber-300 hover:bg-amber-900/50 disabled:opacity-50 disabled:cursor-not-allowed"
+          className="w-full px-2 py-1.5 text-xs bg-empire-stone/20 border border-empire-gold/45 rounded text-empire-gold hover:bg-empire-stone/35 disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          Upgrade Barracks (L2) — {BARACKS_UPGRADE_COST}g
+          Upgrade barracks (L2) — {BARACKS_UPGRADE_COST}g
         </button>
       )}
       {barracksLvl === 2 && (
         <button
           onClick={() => upgradeBarracks(city.id, barracksQ, barracksR)}
           disabled={gold < BARACKS_L3_UPGRADE_COST}
-          className="w-full px-2 py-1.5 text-xs bg-amber-900/30 border border-amber-500/50 rounded text-amber-200 hover:bg-amber-900/50 disabled:opacity-50 disabled:cursor-not-allowed"
+          className="w-full px-2 py-1.5 text-xs bg-empire-stone/20 border border-amber-800/50 rounded text-empire-parchment hover:bg-empire-stone/35 disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          Upgrade Barracks (L3) — {BARACKS_L3_UPGRADE_COST}g
+          Upgrade barracks (L3) — {BARACKS_L3_UPGRADE_COST}g
         </button>
       )}
       <p className="text-empire-parchment/50 text-[10px]">Troops: {livingTroops} / {totalPop} (1 per pop; pop lost when unit dies)</p>
@@ -5380,11 +5532,15 @@ function BarracksPanel({ city, barracksQ, barracksR }: { city: import('@/types/g
           return (
             <div key={type} className={`px-2.5 py-2 rounded border transition-colors ${
               canAfford
-                ? isL3 ? 'border-amber-500/30 bg-amber-900/15 text-empire-parchment' : isL2 ? 'border-cyan-500/30 bg-cyan-900/15 text-empire-parchment' : 'border-orange-500/30 bg-orange-900/15 text-empire-parchment'
+                ? isL3
+                  ? 'border-amber-700/45 bg-amber-950/25 text-empire-parchment'
+                  : isL2
+                    ? 'border-empire-gold/40 bg-empire-gold/10 text-empire-parchment'
+                    : 'border-empire-stone/40 bg-empire-stone/15 text-empire-parchment'
                 : 'border-empire-stone/20 bg-transparent text-empire-parchment/30'
             }`}>
               <div className="flex justify-between items-center gap-2 mb-0.5">
-                <span className={`font-bold text-xs ${isL3 ? 'text-amber-300' : isL2 ? 'text-cyan-300' : ''}`}>
+                <span className={`font-bold text-xs ${isL3 ? 'text-amber-200' : isL2 ? 'text-empire-gold' : 'text-empire-parchment'}`}>
                   {tierShort} {displayName}
                 </span>
                 <span className={`text-xs font-mono ${canAfford ? 'text-yellow-400' : 'text-red-400/50'}`}>{costLabel} ea</span>
@@ -5410,8 +5566,8 @@ function BarracksPanel({ city, barracksQ, barracksR }: { city: import('@/types/g
                 <p className="text-[10px] text-red-400/80 mt-0.5">Choose archer doctrine (popup after L3 barracks upgrade, or try recruiting).</p>
               )}
               <div className="flex justify-between text-[10px] mt-0.5 mb-1.5">
-                <span className={isL3 ? 'text-amber-300/90' : isL2 ? 'text-cyan-300/90' : 'text-empire-parchment/40'}>HP {stats.maxHp} | ATK {stats.attack} | Rng {stats.range}</span>
-                <span className="text-orange-300/60">{upkeepText}</span>
+                <span className={isL3 ? 'text-amber-200/90' : isL2 ? 'text-empire-gold/90' : 'text-empire-parchment/40'}>HP {stats.maxHp} | ATK {stats.attack} | Rng {stats.range}</span>
+                <span className="text-empire-parchment/55">{upkeepText}</span>
               </div>
 
               <div className="flex items-center gap-2">
@@ -5421,9 +5577,9 @@ function BarracksPanel({ city, barracksQ, barracksR }: { city: import('@/types/g
                   max={maxQty}
                   value={Math.min(qty, maxQty)}
                   onChange={e => setQty(type, Number(e.target.value))}
-                  className="flex-1 h-1 bg-empire-stone/30 rounded-lg appearance-none cursor-pointer accent-orange-500"
+                  className="flex-1 h-1 bg-empire-stone/30 rounded-lg appearance-none cursor-pointer accent-empire-gold"
                 />
-                <span className="text-xs font-mono text-orange-300 w-6 text-right">{qty}</span>
+                <span className="text-xs font-mono text-empire-gold/90 w-6 text-right">{qty}</span>
               </div>
 
               <div className="flex justify-between items-center mt-1">
@@ -5439,7 +5595,11 @@ function BarracksPanel({ city, barracksQ, barracksR }: { city: import('@/types/g
                   disabled={!canAfford}
                   className={`px-2.5 py-1 text-[10px] font-bold rounded transition-colors ${
                     canAfford
-                      ? isL3 ? 'bg-amber-600/40 text-amber-200 hover:bg-amber-600/60' : isL2 ? 'bg-cyan-600/40 text-cyan-200 hover:bg-cyan-600/60' : 'bg-orange-600/40 text-orange-200 hover:bg-orange-600/60'
+                      ? isL3
+                        ? 'bg-amber-800/45 text-amber-100 hover:bg-amber-800/60'
+                        : isL2
+                          ? 'bg-empire-gold/25 text-empire-parchment hover:bg-empire-gold/35'
+                          : 'bg-empire-stone/30 text-empire-parchment hover:bg-empire-stone/45'
                       : 'bg-empire-stone/10 text-empire-parchment/20 cursor-not-allowed'
                   }`}
                 >
@@ -5455,11 +5615,11 @@ function BarracksPanel({ city, barracksQ, barracksR }: { city: import('@/types/g
         type="button"
         onClick={() => recruitCommanderInstant()}
         disabled={!canRecruitCommander}
-        className="w-full px-2 py-1.5 text-xs bg-violet-950/40 border border-violet-500/35 rounded text-violet-200 hover:bg-violet-900/45 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+        className="w-full px-2 py-1.5 text-xs bg-empire-stone/25 border border-empire-gold/35 rounded text-empire-parchment hover:bg-empire-stone/40 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
       >
-        Recruit Commander ({COMMANDER_RECRUIT_GOLD}g) — ~25% naval; assign in City tab or Army panel
+        Recruit commander ({COMMANDER_RECRUIT_GOLD}g) — ~25% naval; assign in City tab or Army panel
       </button>
-    </div>
+    </MapRoomPanel>
   );
 }
 
@@ -5616,7 +5776,7 @@ function AcademyPanel({ city, academyQ, academyR }: { city: import('@/types/game
   ];
 
   return (
-    <BuilderCottagePanel title={`University — ${city.name}`} innerClassName="space-y-3">
+    <MapRoomPanel title={`University — ${city.name}`} innerClassName="space-y-3">
 
       {/* Builder count — prominent visual */}
       {(() => {
@@ -5635,9 +5795,9 @@ function AcademyPanel({ city, academyQ, academyR }: { city: import('@/types/game
           idle: 'Off',
         };
         return (
-          <div className="bg-cottage-wood/50 border border-cottage-brass/40 rounded-md px-3 py-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]">
+          <div className="bg-empire-stone/20 border border-empire-stone/40 rounded-md px-3 py-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
             <div className="flex items-center justify-between mb-2">
-              <span className="font-cinzel text-cottage-glow text-xs font-bold tracking-wide">Workforce</span>
+              <span className="font-cinzel text-empire-gold text-xs font-bold tracking-wide">Workforce</span>
               <span className="text-empire-parchment/90 text-xs font-medium">Level {lvl}</span>
             </div>
             <div className="flex items-center gap-1.5 mb-1.5">
@@ -5662,8 +5822,8 @@ function AcademyPanel({ city, academyQ, academyR }: { city: import('@/types/game
                     title={i < slots ? `Builder ${i + 1}: ${BUILDER_TASK_LABELS[task!] ?? task} — drag to reassign` : 'Locked — upgrade to unlock'}
                     className={`w-9 h-9 rounded border-2 flex flex-col items-center justify-center transition-colors select-none ${
                       i < slots
-                        ? `${tc?.border ?? 'border-cottage-brass/60'} ${tc?.bg ?? 'bg-cottage-wood/60'} ${tc?.text ?? 'text-cottage-glow'} ring-1 ${tc?.ring ?? 'ring-cottage-brass/20'} cursor-grab active:cursor-grabbing`
-                        : 'border-dashed border-cottage-brass/15 bg-black/20 text-empire-parchment/15'
+                        ? `${tc?.border ?? 'border-empire-gold/50'} ${tc?.bg ?? 'bg-empire-stone/40'} ${tc?.text ?? 'text-empire-gold'} ring-1 ${tc?.ring ?? 'ring-empire-gold/20'} cursor-grab active:cursor-grabbing`
+                        : 'border-dashed border-empire-stone/25 bg-black/20 text-empire-parchment/15'
                     }`}
                   >
                     {i < slots ? (
@@ -5682,7 +5842,7 @@ function AcademyPanel({ city, academyQ, academyR }: { city: import('@/types/game
               <span className="text-empire-parchment/55">
                 {slots} builder{slots !== 1 ? 's' : ''} active
               </span>
-              <span className="text-cottage-brass/90">+{bpPerSec} BP/sec total workforce</span>
+              <span className="text-empire-gold/85">+{bpPerSec} BP/sec total workforce</span>
             </div>
           </div>
         );
@@ -5694,7 +5854,7 @@ function AcademyPanel({ city, academyQ, academyR }: { city: import('@/types/game
           type="button"
           onClick={() => upgradeUniversity(city.id, academyQ, academyR)}
           disabled={!canUpgrade}
-          className="w-full px-2 py-1.5 text-xs bg-cottage-wood/45 border border-cottage-brass/50 rounded text-cottage-glow hover:bg-cottage-plank/55 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          className="w-full px-2 py-1.5 text-xs bg-empire-stone/25 border border-empire-gold/40 rounded text-empire-gold hover:bg-empire-stone/40 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
         >
           Upgrade to L{lvl + 1} — {upgradeCost}g (+1 builder)
         </button>
@@ -5702,7 +5862,7 @@ function AcademyPanel({ city, academyQ, academyR }: { city: import('@/types/game
 
       {/* Task assignment — drag a hammer from Workforce onto a task (parallel assignments). */}
       <div>
-        <p className="text-[10px] text-cottage-brass/95 mb-1.5 font-cinzel font-semibold uppercase tracking-wide">
+        <p className="text-[10px] text-empire-gold/90 mb-1.5 font-cinzel font-semibold uppercase tracking-wide">
           Assign builders to
         </p>
         <p className="text-[9px] text-empire-parchment/50 mb-1.5 leading-snug">
@@ -5774,17 +5934,17 @@ function AcademyPanel({ city, academyQ, academyR }: { city: import('@/types/game
                 }}
                 className={`text-left px-2.5 py-2 rounded border text-[11px] transition-colors ${
                   dragOverTask === t.id
-                    ? 'border-empire-gold/55 bg-cottage-plank/50 ring-2 ring-empire-gold/25 text-empire-parchment'
+                    ? 'border-empire-gold/55 bg-empire-stone/30 ring-2 ring-empire-gold/25 text-empire-parchment'
                     : assignedHere > 0
-                      ? 'border-cottage-brass/45 bg-cottage-wood/35 text-empire-parchment/90'
-                      : 'border-cottage-brass/20 bg-black/15 text-empire-parchment/75'
+                      ? 'border-empire-stone/45 bg-empire-stone/20 text-empire-parchment/90'
+                      : 'border-empire-stone/25 bg-black/15 text-empire-parchment/75'
                 }`}
               >
                 <div className="flex items-center justify-between gap-1">
                   <span className="font-medium">{t.label}</span>
                   <div className="flex flex-wrap items-center justify-end gap-1">
                     {assignedHere > 0 && (
-                      <span className="text-[9px] px-1.5 py-0.5 rounded bg-cottage-brass/25 text-cottage-glow whitespace-nowrap border border-cottage-brass/35">
+                      <span className="text-[9px] px-1.5 py-0.5 rounded bg-empire-gold/15 text-empire-gold whitespace-nowrap border border-empire-gold/35">
                         {assignedHere} builder{assignedHere !== 1 ? 's' : ''}
                       </span>
                     )}
@@ -5807,7 +5967,7 @@ function AcademyPanel({ city, academyQ, academyR }: { city: import('@/types/game
               key={`all-${t.id}`}
               type="button"
               onClick={() => setUniversityBuilderTask(liveCity.id, t.id)}
-              className="text-[9px] px-1.5 py-0.5 rounded border border-cottage-brass/30 text-empire-parchment/75 hover:bg-cottage-wood/45 hover:border-cottage-brass/55 transition-colors"
+              className="text-[9px] px-1.5 py-0.5 rounded border border-empire-stone/35 text-empire-parchment/75 hover:bg-empire-stone/30 hover:border-empire-gold/45 transition-colors"
             >
               {t.label}
             </button>
@@ -5815,7 +5975,7 @@ function AcademyPanel({ city, academyQ, academyR }: { city: import('@/types/game
           <button
             type="button"
             onClick={() => setUniversityBuilderTask(liveCity.id, 'idle')}
-            className="text-[9px] px-1.5 py-0.5 rounded border border-slate-500/40 text-slate-300/90 hover:bg-slate-900/45 hover:border-slate-400/55 transition-colors"
+            className="text-[9px] px-1.5 py-0.5 rounded border border-empire-stone/40 text-empire-parchment/70 hover:bg-empire-stone/25 hover:border-empire-stone/55 transition-colors"
           >
             Unassign all
           </button>
@@ -5855,7 +6015,7 @@ function AcademyPanel({ city, academyQ, academyR }: { city: import('@/types/game
           !hasWallBuilding &&
           (wallSlots <= 0 || cityStone >= stonePerCycle);
         return (
-          <div className="space-y-2 border border-rose-500/35 rounded-md px-2.5 py-2 bg-gradient-to-b from-rose-950/25 to-cottage-wood/20 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
+          <div className="space-y-2 border border-rose-500/35 rounded-md px-2.5 py-2 bg-gradient-to-b from-rose-950/25 to-empire-stone/15 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
             <p className="font-cinzel text-rose-200/95 text-[11px] font-semibold tracking-wide">Walls</p>
             {!wallsUnlocked && (
               <p className="text-[10px] text-amber-200/85 leading-snug border border-amber-500/30 rounded px-2 py-1.5 bg-amber-950/20">
@@ -5904,10 +6064,10 @@ function AcademyPanel({ city, academyQ, academyR }: { city: import('@/types/game
       {/* Active constructions for this city */}
       {(cityConstructions.length > 0 || cityRoads.length > 0) && (
         <div>
-          <p className="text-[10px] text-cottage-brass/90 mb-1 font-cinzel font-semibold uppercase tracking-wide">
+          <p className="text-[10px] text-empire-gold/90 mb-1 font-cinzel font-semibold uppercase tracking-wide">
             Active projects ({cityConstructions.length + cityRoads.length})
           </p>
-          <div className="flex flex-col gap-1 max-h-32 overflow-y-auto cottage-scroll pr-0.5">
+          <div className="flex flex-col gap-1 max-h-32 overflow-y-auto map-scroll pr-0.5">
             {cityConstructions.map(site => {
               const availBP = computeConstructionAvailableBp(site, territory, cities, constructions);
               const pct = Math.min(100, Math.round((site.bpAccumulated / site.bpRequired) * 100));
@@ -5918,17 +6078,17 @@ function AcademyPanel({ city, academyQ, academyR }: { city: import('@/types/game
                   ? `Wall section${site.wallBuildRing ? ` (ring ${site.wallBuildRing})` : ''}`
                   : site.type.replace(/_/g, ' ');
               return (
-                <div key={site.id} className="bg-cottage-wood/35 border border-cottage-brass/25 rounded px-2 py-1.5">
+                <div key={site.id} className="bg-empire-stone/20 border border-empire-stone/35 rounded px-2 py-1.5">
                   <div className="flex justify-between items-center text-[10px]">
                     <span className="capitalize text-empire-parchment/85">
-                      {gettingBoost && <span className="text-cottage-brass mr-0.5" title="Boosted by workforce">\u2692</span>}
+                      {gettingBoost && <span className="text-empire-gold mr-0.5" title="Boosted by workforce">\u2692</span>}
                       {typeName}
                     </span>
                     <span className="text-empire-parchment/55">{pct}% · {availBP} BP</span>
                   </div>
-                  <div className="w-full h-1 bg-cottage-wood/90 rounded-full overflow-hidden mt-1">
+                  <div className="w-full h-1 bg-empire-stone/50 rounded-full overflow-hidden mt-1">
                     <div
-                      className={`h-full rounded-full transition-all ${gettingBoost ? 'bg-cottage-brass/85' : 'bg-amber-600/60'}`}
+                      className={`h-full rounded-full transition-all ${gettingBoost ? 'bg-empire-gold/70' : 'bg-teal-800/55'}`}
                       style={{ width: `${pct}%` }}
                     />
                   </div>
@@ -5938,16 +6098,16 @@ function AcademyPanel({ city, academyQ, academyR }: { city: import('@/types/game
             {cityRoads.map(road => {
               const pct = Math.min(100, Math.round((road.bpAccumulated / road.bpRequired) * 100));
               return (
-                <div key={road.id} className="bg-cottage-wood/35 border border-cottage-brass/25 rounded px-2 py-1.5">
+                <div key={road.id} className="bg-empire-stone/20 border border-empire-stone/35 rounded px-2 py-1.5">
                   <div className="flex justify-between items-center text-[10px]">
                     <span className="text-empire-parchment/85">
-                      <span className="text-cottage-brass mr-0.5" title="Uses workforce">\u2692</span>
+                      <span className="text-empire-gold mr-0.5" title="Uses workforce">\u2692</span>
                       Road ({road.q},{road.r})
                     </span>
                     <span className="text-empire-parchment/55">{pct}%</span>
                   </div>
-                  <div className="w-full h-1 bg-cottage-wood/90 rounded-full overflow-hidden mt-1">
-                    <div className="h-full bg-cottage-brass/70 rounded-full transition-all" style={{ width: `${pct}%` }} />
+                  <div className="w-full h-1 bg-empire-stone/50 rounded-full overflow-hidden mt-1">
+                    <div className="h-full bg-teal-800/55 rounded-full transition-all" style={{ width: `${pct}%` }} />
                   </div>
                 </div>
               );
@@ -5956,10 +6116,10 @@ function AcademyPanel({ city, academyQ, academyR }: { city: import('@/types/game
         </div>
       )}
 
-      <p className="text-[10px] text-empire-parchment/45 leading-snug border-t border-cottage-brass/20 pt-2 mt-1">
+      <p className="text-[10px] text-empire-parchment/45 leading-snug border-t border-empire-stone/30 pt-2 mt-1">
         All territory buildings get {CITY_BUILDING_POWER} base BP. Each workforce slot adds {BUILDER_POWER} BP to sites that match that slot&apos;s task (parallel builds). Roads and field trebuchets still use total workforce from this city.
       </p>
-    </BuilderCottagePanel>
+    </MapRoomPanel>
   );
 }
 
@@ -6656,7 +6816,7 @@ function ArmyPanel({ units }: { units: import('@/types/game').Unit[] }) {
 
       {canSplit && isThisStackSplitting && (
         <div className="rounded border border-empire-stone/30 bg-empire-stone/10 px-2 py-1.5 flex items-center justify-between gap-2">
-          <p className="text-cyan-400/90 text-[10px]">Move {splitStackPending!.count} unit(s) → click adjacent hex</p>
+          <p className="text-cyan-400/90 text-[10px]">Move {splitStackPending!.count} unit(s) → adjacent land or water (fleets)</p>
           <button
             type="button"
             onClick={cancelSplitStack}
@@ -6790,7 +6950,7 @@ function BuilderBuildMenu({
                   className="w-full text-left px-3 py-2 rounded border border-cottage-brass/45 bg-cottage-wood/40 text-cottage-glow hover:bg-cottage-plank/60 text-xs"
                 >
                   <span className="font-medium">Mine</span>
-                  <span className="text-empire-parchment/60 ml-1">— +1 iron/cycle on deposit</span>
+                  <span className="text-empire-parchment/60 ml-1">— +{BUILDING_PRODUCTION.mine.iron} iron/cycle on deposit</span>
                 </button>
               )}
               {tileHasQuarryDeposit && (
@@ -6888,9 +7048,9 @@ function DefensePlacementOverlay() {
   const { towerType, level } = pendingDefenseBuild;
   return (
     <div className="fixed top-20 left-1/2 -translate-x-1/2 z-30 pointer-events-auto">
-      <div className="bg-empire-dark/95 border border-rose-500/50 rounded-lg px-4 py-3 shadow-xl flex items-center gap-3">
+      <div className="bg-empire-dark/95 border border-empire-stone/40 rounded-lg px-4 py-3 shadow-xl flex items-center gap-3">
         <div>
-          <div className="text-rose-300 text-xs font-bold">Placing {DEFENSE_TOWER_DISPLAY_NAME[towerType]} (L{level})</div>
+          <div className="text-cottage-glow text-xs font-bold">Placing {DEFENSE_TOWER_DISPLAY_NAME[towerType]} (L{level})</div>
           <div className="text-[10px] text-empire-parchment/60">Click a territory hex (not city center, water, or mountain). Upgrades are on the side panel after you select the tower.</div>
         </div>
         <button
@@ -7048,7 +7208,10 @@ function BuildMenu({ q, r, inTerritory, buildersHere, tile, hasConstructionAt, h
         {items.map(b => {
           const cost = BUILDING_COSTS[b.type];
           const canAfford = (human?.gold ?? 0) >= cost;
-          const enabled = canAfford;
+          const biome = tile?.biome as Biome | undefined;
+          const farmTerrainOk =
+            !isFarmBuildingType(b.type) || !biome || isValidFarmPlacementBiome(biome);
+          const enabled = canAfford && farmTerrainOk;
           const bpCost = BUILDING_BP_COST[b.type];
           const buildTime = bpPerSec > 0 ? Math.ceil(bpCost / bpPerSec) : Infinity;
           return (
@@ -7159,7 +7322,7 @@ function BuildMenu({ q, r, inTerritory, buildersHere, tile, hasConstructionAt, h
       )}
 
       {panelTab === 'defense' && payCityForDefense && (
-        <div className="space-y-2 pt-0.5 border-t border-rose-500/20" role="tabpanel">
+        <div className="space-y-2 pt-0.5 border-t border-empire-stone/25" role="tabpanel">
           <p className="text-[9px] text-empire-parchment/45 leading-snug">
             Mortar, archer tower, ballista — paid from your gold and this city&apos;s stores (territory BP only). Place a new tower at L1, then click the tower on the map to upgrade one level at a time.
           </p>
@@ -7177,10 +7340,10 @@ function BuildMenu({ q, r, inTerritory, buildersHere, tile, hasConstructionAt, h
                   disabled={!placeOk}
                   title={placeOk ? `Place L1 — ${formatDefenseLevelCost(1)}` : maxed ? 'Max towers of this type for this city' : `Need ${formatDefenseLevelCost(1)}`}
                   onClick={() => startDefensePlacement(tt, 1, payCityForDefense.id)}
-                  className={`w-full text-left px-2 py-1.5 rounded border text-[10px] font-medium ${
+                  className={`w-full text-left px-2 py-1.5 rounded border text-[10px] font-medium transition-colors ${
                     placeOk
-                      ? 'border-rose-500/50 bg-rose-950/40 text-rose-100 hover:bg-rose-900/35'
-                      : 'border-empire-stone/20 text-empire-parchment/25 cursor-not-allowed'
+                      ? 'border-empire-stone/40 bg-empire-stone/10 text-empire-parchment hover:bg-empire-stone/20'
+                      : 'border-empire-stone/20 bg-transparent text-empire-parchment/30 cursor-not-allowed'
                   }`}
                 >
                   Place new tower (L1) — {formatDefenseLevelCost(1)}

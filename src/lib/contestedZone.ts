@@ -21,7 +21,13 @@ const HUMAN_ID = 'player_human';
 const AI_ID = 'player_ai';
 const AI_ID_2 = 'player_ai_2';
 
-type PayoutGameMode = 'human_vs_ai' | 'human_solo' | 'bot_vs_bot' | 'bot_vs_bot_4' | 'spectate';
+type PayoutGameMode =
+  | 'human_vs_ai'
+  | 'human_solo'
+  | 'bot_vs_bot'
+  | 'bot_vs_bot_4'
+  | 'spectate'
+  | 'battle_test';
 
 function walkableLandTile(t: Tile | undefined, config: MapConfig, q: number, r: number): boolean {
   if (!t) return false;
@@ -89,7 +95,7 @@ export function computeContestedZoneHexKeys(
 
 function contestedRivalPair(gameMode: PayoutGameMode, players: Player[]): [string, string] | null {
   const has = (id: string) => players.some(p => p.id === id);
-  if (gameMode === 'human_vs_ai' || gameMode === 'human_solo') {
+  if (gameMode === 'human_vs_ai' || gameMode === 'human_solo' || gameMode === 'battle_test') {
     if (has(HUMAN_ID) && has(AI_ID)) return [HUMAN_ID, AI_ID];
   }
   if (gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4') {

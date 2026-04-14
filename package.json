@@ -11,7 +11,6 @@
     "align-biome-hex": "python3 scripts/composite_biome_hex_mask.py --biomes plains desert",
     "generate-special-regions": "python3 scripts/generate_special_region_overlays.py",
     "generate-special-region-sprites": "python3 scripts/render_special_region_sprites.py",
-    "verify-major-engagement": "npx ts-node --transpile-only -r tsconfig-paths/register --project tsconfig.train.json scripts/verify-major-engagement.ts",
     "sim-combat-length": "npx ts-node --transpile-only -r tsconfig-paths/register --project tsconfig.train.json scripts/sim-combat-length.ts",
     "train-ai": "npx ts-node -r tsconfig-paths/register --project tsconfig.train.json scripts/train-ai.ts",
     "diag-sim-health": "npx ts-node -r tsconfig-paths/register --project tsconfig.train.json scripts/diag-sim-health.ts",

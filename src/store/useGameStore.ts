@@ -58,13 +58,14 @@ import {
   type AbilityId,
   ABILITY_DEFS,
   getAbilityForUnit,
-  type MajorEngagementDoctrine,
   type UnitStack,
   type OperationalArmy,
   type ArmyMarchSpreadMode,
   type ArmyCompositionEntry,
   ensureCityBuildingHp,
   isCityBuildingOperational,
+  isFarmBuildingType,
+  isValidFarmPlacementBiome,
   UNIT_HP_REGEN_FRACTION_PER_CYCLE,
   PATROL_DEFAULT_RADIUS,
   RUINS_REPAIR_GOLD_RATIO,
@@ -78,7 +79,13 @@ import {
   clearInvalidCommanderAssignments,
   unassignCommandersWithDeadAnchors,
 } from '@/lib/commanders';
-import { generateMap, placeAncientCity } from '@/lib/mapGenerator';
+import {
+  generateMap,
+  placeAncientCity,
+  computeScrollRelicClusters,
+  rebuildSpecialTerrainForCapitals,
+  type ScrollRelicClusters,
+} from '@/lib/mapGenerator';
 import {
   appendStartingBarracksToCity,
   appendStartingAcademyToCity,
@@ -104,7 +111,6 @@ import { getAiParams } from '@/lib/aiParams';
 import {
   movementTick,
   combatTick,
-  type CombatTickMajorEngagementOptions,
   coastalBombardmentTick,
   upkeepTick,
   siegeTick,
@@ -145,8 +151,8 @@ import {
   cityUniversityHasSlotTask,
 } from '@/lib/builders';
 import { getNextWallBuildHex, countDefensesTaskSlots } from '@/lib/wallBuilding';
+import { clusterHumanBattleEngagements } from '@/lib/battlePreview';
 import { planHumanBuilderAutomation } from '@/lib/builderAutomation';
-import { pruneEndedMajorEngagements } from '@/lib/majorEngagement';
 import type { SiegeTacticId } from '@/lib/siegeTactics';
 import {
   buildWaveGroupsFromTactic,
@@ -222,6 +228,10 @@ interface GameState {
   specialRegions: SpecialRegion[];
   /** Seeded relic sites (one per special terrain flavor on the map). */
   scrollRelics: ScrollRelicSite[];
+  /** Connected special-terrain hexes containing each relic (search covers this patch). */
+  scrollRelicClusters: ScrollRelicClusters;
+  /** Per player / region, hex keys visited with a qualifying unit while searching. */
+  scrollSearchVisited: Record<string, Partial<Record<SpecialRegionKind, string[]>>>;
   /** Per named region, player ids who claimed that region's relic scroll. */
   scrollRegionClaimed: Record<SpecialRegionKind, string[]>;
   /** playerId -> scroll items not assigned to a unit. */
@@ -231,6 +241,13 @@ interface GameState {
   /** Lore modal after picking up a regional relic (human only). */
   scrollRelicPickupModal: { regionKind: SpecialRegionKind; kind: ScrollKind } | null;
   clearScrollRelicPickupModal: () => void;
+  /** First time you march into a multi-hex wilds patch (human). */
+  scrollSearchPromptModal: { regionKind: SpecialRegionKind } | null;
+  clearScrollSearchPromptModal: () => void;
+  /** Full-screen guide from side panel: send an army to search this wilds. */
+  specialRegionSearchGuideModal: { q: number; r: number } | null;
+  openSpecialRegionSearchGuideModal: (q: number, r: number) => void;
+  clearSpecialRegionSearchGuideModal: () => void;
 
   // Weather / natural disasters
   activeWeather: WeatherEvent | null;
@@ -256,6 +273,8 @@ interface GameState {
 
   // UI
   selectedHex: { q: number; r: number } | null;
+  /** Human: single ship selected for movement (same hex as {@link selectedHex}). Cleared when hex changes without sprite focus. */
+  stackMoveUnitId: string | null;
   uiMode: UIMode;
   pendingMove: { toQ: number; toR: number } | null;
   pendingDefenseBuild: { towerType: DefenseTowerType; level: DefenseTowerLevel; cityId: string } | null;
@@ -271,8 +290,6 @@ interface GameState {
   lastClickTime: number;
   /** When non-null, battle report modal is open for this `tileKey(q,r)`. */
   battleModalHexKey: string | null;
-  /** Per-hex per-player major engagement doctrine (same-hex land battles meeting army threshold). */
-  majorEngagementStrategyByHex: Record<string, Record<string, MajorEngagementDoctrine>>;
   /** After closing city modal, ignore map clicks briefly so the same gesture does not hit the canvas (R3F). */
   mapClickSuppressionUntilMs: number;
   /** Full city / logistics modal — opened from hex panel, not automatically on city click. */
@@ -338,6 +355,10 @@ interface GameState {
   startSpectateMatch: (opts: { opponentCount: number }) => void;
   /** Human only, no rival AI — compact map recommended (e.g. generateWorld 38×38 first). */
   startSoloPlacement: () => void;
+  /** Dry map, 10× L1 infantry vs 10× L1 infantry, spawns 3 hexes apart — no economy ticks. */
+  startBattleTest: () => void;
+  /** Leave battle test and return to main menu map preview. */
+  exitBattleTestToMenu: () => void;
   startBotVsBot: () => void;
   /** 4-player bot observer mode (same setup as 2-bot for now; gameMode affects camera/UI). */
   startFourBotVsBot: () => void;
@@ -358,7 +379,8 @@ interface GameState {
   recomputeVision: () => void;
 
   // Interaction
-  selectHex: (q: number, r: number) => void;
+  /** Optional `focusUnitId` when clicking a ship sprite — move orders apply only to that ship on this hex. */
+  selectHex: (q: number, r: number, opts?: { focusUnitId?: string }) => void;
   deselectAll: () => void;
   /** Layered Escape: cancel tactical assign → pending move → builder → split → tactical → deselect. */
   escapeFromUi: () => void;
@@ -481,7 +503,8 @@ interface GameState {
   /** Open battle report; pass a hex key to focus that battle, or omit to pick the first human contested hex. */
   openBattleModal: (hexKey?: string) => void;
   closeBattleModal: () => void;
-  setMajorEngagementDoctrine: (hexKey: string, doctrine: MajorEngagementDoctrine) => void;
+  /** Close battle report and enter map move mode for the human stack at this hex. */
+  exitBattleReportToMoveMode: (q: number, r: number) => void;
   openTacticalMode: () => void;
   cancelTacticalMode: () => void;
   setTacticalOrder: (stackKey: string, order: TacticalStackOrder | null) => void;
@@ -593,7 +616,14 @@ const HUMAN_ID = 'player_human';
 const AI_ID = 'player_ai';
 const AI_ID_2 = 'player_ai_2';
 
-export type GameMode = 'human_vs_ai' | 'human_solo' | 'bot_vs_bot' | 'bot_vs_bot_4' | 'spectate';
+export type GameMode =
+  | 'human_vs_ai'
+  | 'human_solo'
+  | 'bot_vs_bot'
+  | 'bot_vs_bot_4'
+  | 'spectate'
+  /** Tiny open-field 10v10: no economy cycle, for combat UI / mechanics QA */
+  | 'battle_test';
 
 /** When set on an order, only these units receive the order on confirm; omitted = whole stack (legacy). */
 type TacticalParticipation = { participatingUnitIds?: string[] };
@@ -723,6 +753,76 @@ function resolveParticipatingUnitIds(
   return ids.length > 0 ? ids : undefined;
 }
 
+const BATTLE_TEST_MAP_SIZE = 22;
+const BATTLE_TEST_PER_SIDE = 10;
+/** Axial distance between human stack and AI stack in battle test (room to march before contact). */
+const BATTLE_TEST_HEX_SEPARATION = 3;
+
+function makeBattleTestInfantry(ownerId: string, q: number, r: number): Unit {
+  const stats = getUnitStats({ type: 'infantry', armsLevel: 1 });
+  return {
+    id: generateId('btu'),
+    type: 'infantry',
+    q,
+    r,
+    ownerId,
+    hp: stats.maxHp,
+    maxHp: stats.maxHp,
+    xp: 0,
+    level: 0,
+    status: 'idle',
+    stance: 'aggressive',
+    nextMoveAt: 0,
+  };
+}
+
+function battleTestTileWalkable(t: Tile | undefined): boolean {
+  return !!t && t.biome !== 'water' && t.biome !== 'mountain';
+}
+
+/**
+ * Human and AI spawn hexes exactly `BATTLE_TEST_HEX_SEPARATION` apart (axial), both walkable land, in bounds.
+ * Spirals from map center; prefers a plains tile for the human stack when possible.
+ */
+function findBattleTestOpposingHexes(
+  tiles: Map<string, Tile>,
+  w: number,
+  h: number,
+): { humanQ: number; humanR: number; enemyQ: number; enemyR: number } | null {
+  const pq = Math.floor(w / 2);
+  const pr = Math.floor(h / 2);
+  const stepDeltas = hexNeighbors(0, 0).map(([nq, nr]) => [nq, nr] as [number, number]);
+  const sep = BATTLE_TEST_HEX_SEPARATION;
+
+  const search = (humanPlainsOnly: boolean) => {
+    for (let d = 0; d <= Math.max(w, h); d++) {
+      for (let dq = -d; dq <= d; dq++) {
+        for (let dr = -d; dr <= d; dr++) {
+          if (d > 0 && Math.abs(dq) !== d && Math.abs(dr) !== d) continue;
+          const q = pq + dq;
+          const r = pr + dr;
+          if (q < 0 || q >= w || r < 0 || r >= h) continue;
+          const t0 = tiles.get(tileKey(q, r));
+          if (!battleTestTileWalkable(t0)) continue;
+          if (humanPlainsOnly && t0!.biome !== 'plains') continue;
+          for (const [ddq, ddr] of stepDeltas) {
+            const eq = q + sep * ddq;
+            const er = r + sep * ddr;
+            if (eq < 0 || eq >= w || er < 0 || er >= h) continue;
+            if (hexDistance(q, r, eq, er) !== sep) continue;
+            const t1 = tiles.get(tileKey(eq, er));
+            if (!battleTestTileWalkable(t1)) continue;
+            return { humanQ: q, humanR: r, enemyQ: eq, enemyR: er };
+          }
+        }
+      }
+    }
+    return null;
+  };
+
+  return search(true) ?? search(false);
+}
+
 /** Like `resolveParticipatingUnitIds`, but narrows to one unit type on this hex when focus is set. */
 function resolveParticipatingUnitIdsForTactical(
   stackUnits: Unit[],
@@ -741,6 +841,28 @@ function resolveParticipatingUnitIdsForTactical(
   }
   const ids = unitIdsMatchingTypes(subset, tacticalIncludedUnitTypes);
   return ids.length > 0 ? ids : [];
+}
+
+/** Human clicked a ship — move orders only affect this unit while selection stays on this hex. */
+function resolveNavalStackMoveUnitId(
+  s: { units: Unit[] },
+  q: number,
+  r: number,
+  focusUnitId: string,
+): string | null {
+  const u = s.units.find(x => x.id === focusUnitId);
+  if (
+    !u ||
+    u.q !== q ||
+    u.r !== r ||
+    u.ownerId !== HUMAN_ID ||
+    u.hp <= 0 ||
+    u.aboardShipId ||
+    !isNavalUnitType(u.type)
+  ) {
+    return null;
+  }
+  return focusUnitId;
 }
 
 function orderAppliesToUnit(order: TacticalStackOrder, u: Unit): boolean {
@@ -1006,8 +1128,16 @@ export const useGameStore = create<GameState>((set, get) => ({
   tacticalCityDefenseMode: 'auto_engage',
   commanderDraftOptions: [], commanderDraftSelectedIds: [], commanderDraftAssignment: {},
   constructions: [], roadConstructions: [], scoutTowers: [], defenseInstallations: [], contestedZoneHexKeys: [],
-  specialRegions: [], scrollRelics: [], scrollRegionClaimed: emptyScrollRegionClaimed(), scrollInventory: {}, scrollAttachments: [],
+  specialRegions: [],
+  scrollRelics: [],
+  scrollRelicClusters: { mexca: [], hills_lost: [], forest_secrets: [], isle_lost: [] },
+  scrollSearchVisited: {},
+  scrollRegionClaimed: emptyScrollRegionClaimed(),
+  scrollInventory: {},
+  scrollAttachments: [],
   scrollRelicPickupModal: null,
+  scrollSearchPromptModal: null,
+  specialRegionSearchGuideModal: null,
   scoutMissions: [], scoutedHexes: new Set(),
   territory: new Map(), notifications: [],
   combatHexesThisCycle: new Set(),
@@ -1024,7 +1154,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   setSelectedKingdom: (k) => set({ selectedKingdom: k }),
   setTacticalCityDefenseMode: (mode) => set({ tacticalCityDefenseMode: mode }),
   visibleHexes: new Set(), exploredHexes: new Set(), pendingCityHex: null,
-  selectedHex: null, uiMode: 'normal', pendingMove: null, pendingDefenseBuild: null, wallEconomyStonePaidByCity: {}, wallSections: [], roadPathSelection: [],
+  selectedHex: null, stackMoveUnitId: null, uiMode: 'normal', pendingMove: null, pendingDefenseBuild: null, wallEconomyStonePaidByCity: {}, wallSections: [], roadPathSelection: [],
   supplyViewTab: 'normal',
   territoryDisplayStyle: 'fill',
   setTerritoryDisplayStyle: (style) => set({ territoryDisplayStyle: style }),
@@ -1032,7 +1162,6 @@ export const useGameStore = create<GameState>((set, get) => ({
   lastClickHex: null,
   lastClickTime: 0,
   battleModalHexKey: null,
-  majorEngagementStrategyByHex: {},
   mapClickSuppressionUntilMs: 0,
   cityLogisticsOpen: false,
   cityCaptureHold: {},
@@ -1076,7 +1205,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   // ─── Map ────────────────────────────────────────────────────
   generateWorld: (ov) => {
     const config = { ...DEFAULT_MAP_CONFIG, ...ov };
-    const { tiles, provinceCenters, specialRegions, scrollRelics } = generateMap(config);
+    const { tiles, provinceCenters, specialRegions, scrollRelics, scrollRelicClusters } = generateMap(config);
     const tileMap = new Map<string, Tile>();
     for (const t of tiles) tileMap.set(tileKey(t.q, t.r), t);
     set({
@@ -1085,10 +1214,14 @@ export const useGameStore = create<GameState>((set, get) => ({
       provinceCenters,
       specialRegions,
       scrollRelics,
+      scrollRelicClusters,
+      scrollSearchVisited: {},
       scrollRegionClaimed: emptyScrollRegionClaimed(),
       scrollInventory: {},
       scrollAttachments: [],
       scrollRelicPickupModal: null,
+      scrollSearchPromptModal: null,
+      specialRegionSearchGuideModal: null,
       isGenerated: true,
       phase: 'setup',
     });
@@ -1138,14 +1271,17 @@ export const useGameStore = create<GameState>((set, get) => ({
       combatMoraleState: new Map(),
       combatKillFeed: [],
       contestedZoneHexKeys: [],
+      scrollRelicClusters: computeScrollRelicClusters(get().tiles, get().scrollRelics ?? []),
+      scrollSearchVisited: {},
       scrollRegionClaimed: emptyScrollRegionClaimed(),
       scrollInventory: {},
       scrollAttachments: [],
       scrollRelicPickupModal: null,
+      scrollSearchPromptModal: null,
+      specialRegionSearchGuideModal: null,
       activeWeather: null, lastWeatherEndCycle: -10,
       visibleHexes: new Set(), exploredHexes: new Set(), pendingCityHex: null,
       battleModalHexKey: null,
-      majorEngagementStrategyByHex: {},
     });
     get().placeStartingCity(startHex.q, startHex.r);
   },
@@ -1180,16 +1316,162 @@ export const useGameStore = create<GameState>((set, get) => ({
       combatMoraleState: new Map(),
       combatKillFeed: [],
       contestedZoneHexKeys: [],
+      scrollRelicClusters: computeScrollRelicClusters(get().tiles, get().scrollRelics ?? []),
+      scrollSearchVisited: {},
       scrollRegionClaimed: emptyScrollRegionClaimed(),
       scrollInventory: {},
       scrollAttachments: [],
       scrollRelicPickupModal: null,
+      scrollSearchPromptModal: null,
+      specialRegionSearchGuideModal: null,
       activeWeather: null, lastWeatherEndCycle: -10,
       visibleHexes: new Set(), exploredHexes: new Set(), pendingCityHex: null,
       battleModalHexKey: null,
-      majorEngagementStrategyByHex: {},
     });
     get().placeStartingCity(startHex.q, startHex.r);
+  },
+
+  startBattleTest: () => {
+    clearAllTimers();
+    cityNameIdx = 0;
+    get().generateWorld({
+      width: BATTLE_TEST_MAP_SIZE,
+      height: BATTLE_TEST_MAP_SIZE,
+      seed: 900_001,
+      mapTerrain: 'no_water',
+      provinceDensity: 0.004,
+      villageDensity: 0,
+      ruinDensity: 0,
+      noiseScale: 0.022,
+      moistureScale: 0.04,
+    });
+    const tiles = get().tiles;
+    const config = get().config;
+    const w = config.width;
+    const h = config.height;
+    const spawns = findBattleTestOpposingHexes(tiles, w, h);
+    if (!spawns) {
+      get().addNotification(
+        `Could not place battle test armies ${BATTLE_TEST_HEX_SEPARATION} hexes apart on land.`,
+        'danger',
+      );
+      set({ phase: 'setup', gameMode: 'human_vs_ai' });
+      return;
+    }
+    const { humanQ, humanR, enemyQ, enemyR } = spawns;
+    const testUnits: Unit[] = [];
+    for (let i = 0; i < BATTLE_TEST_PER_SIDE; i++) {
+      testUnits.push(makeBattleTestInfantry(HUMAN_ID, humanQ, humanR));
+      testUnits.push(makeBattleTestInfantry(AI_ID, enemyQ, enemyR));
+    }
+    const allKeys = new Set<string>();
+    tiles.forEach((_, k) => allKeys.add(k));
+    set({
+      phase: 'playing',
+      gameMode: 'battle_test',
+      players: [
+        {
+          id: HUMAN_ID,
+          name: 'You',
+          color: PLAYER_COLORS.human,
+          gold: 0,
+          taxRate: 0,
+          foodPriority: 'military',
+          isHuman: true,
+          kingdomId: DEFAULT_KINGDOM_ID,
+        },
+        {
+          id: AI_ID,
+          name: 'Enemy',
+          color: PLAYER_COLORS.ai,
+          gold: 0,
+          taxRate: 0,
+          foodPriority: 'military',
+          isHuman: false,
+          kingdomId: 'mongols',
+        },
+      ],
+      cities: [],
+      units: testUnits,
+      heroes: [],
+      commanders: [],
+      unitStacks: [],
+      operationalArmies: [],
+      commanderDraftOptions: [],
+      commanderDraftSelectedIds: [],
+      commanderDraftAssignment: {},
+      territory: new Map(),
+      visibleHexes: allKeys,
+      exploredHexes: allKeys,
+      pendingCityHex: null,
+      selectedHex: null,
+      battleModalHexKey: null,
+      wallSections: [],
+      cityCaptureHold: {},
+      pendingRecruits: [],
+      pendingIncorporations: [],
+      combatMoraleState: new Map(),
+      combatKillFeed: [],
+      contestedZoneHexKeys: [],
+      notifications: [
+        {
+          id: generateId('n'),
+          turn: 0,
+          message: `Battle test: 10v10 infantry — ${BATTLE_TEST_HEX_SEPARATION} hexes apart, no economy or supply.`,
+          type: 'success',
+        },
+      ],
+      cycle: 0,
+      combatHexesThisCycle: new Set(),
+      pendingTacticalOrders: null,
+      tacticalSelectedStackKeys: [],
+      tacticalOrderScope: 'all',
+      tacticalOrderScopeArmyId: null,
+      constructions: [],
+      roadConstructions: [],
+      scoutMissions: [],
+      scoutedHexes: new Set(),
+      defenseInstallations: [],
+      scoutTowers: [],
+      scrollAttachments: [],
+      scrollInventory: {},
+      scrollRelicPickupModal: null,
+      scrollSearchPromptModal: null,
+      specialRegionSearchGuideModal: null,
+      activeWeather: null,
+      lastWeatherEndCycle: -10,
+      uiMode: 'normal',
+      pendingMove: null,
+      cityLogisticsOpen: false,
+    });
+    get().recomputeVision();
+    get().startRealTimeLoop();
+  },
+
+  exitBattleTestToMenu: () => {
+    clearAllTimers();
+    get().generateWorld({ width: 38, height: 38, mapTerrain: 'continents' });
+    set({
+      gameMode: 'human_vs_ai',
+      phase: 'setup',
+      players: [],
+      cities: [],
+      units: [],
+      heroes: [],
+      commanders: [],
+      unitStacks: [],
+      operationalArmies: [],
+      territory: new Map(),
+      visibleHexes: new Set(),
+      exploredHexes: new Set(),
+      battleModalHexKey: null,
+      pendingTacticalOrders: null,
+      selectedHex: null,
+      combatMoraleState: new Map(),
+      combatKillFeed: [],
+      notifications: [],
+      cycle: 0,
+    });
   },
 
   startBotVsBot: () => {
@@ -1243,6 +1525,13 @@ export const useGameStore = create<GameState>((set, get) => ({
     const contestedZoneHexKeys = computeContestedZoneHexKeys(tiles, ai1Q, ai1R, ai2Q, ai2R, config);
     const territory = calculateTerritory(cities, tiles);
 
+    const allTilesArr = Array.from(tiles.values());
+    const { scrollRelics: scrollRelicsBot, scrollRelicClusters: scrollRelicClustersBot } =
+      rebuildSpecialTerrainForCapitals(allTilesArr, tiles, config, [
+        { q: ai1Q, r: ai1R },
+        { q: ai2Q, r: ai2R },
+      ]);
+
     const allTileKeys = new Set<string>();
     tiles.forEach((_, key) => allTileKeys.add(key));
 
@@ -1288,16 +1577,19 @@ export const useGameStore = create<GameState>((set, get) => ({
       combatKillFeed: [],
       contestedZoneHexKeys,
       specialRegions: s.specialRegions ?? [],
-      scrollRelics: s.scrollRelics ?? [],
+      scrollRelics: scrollRelicsBot,
+      scrollRelicClusters: scrollRelicClustersBot,
+      scrollSearchVisited: {},
       scrollRegionClaimed: emptyScrollRegionClaimed(),
       scrollInventory: scrollInvBot,
       scrollAttachments: [],
       scrollRelicPickupModal: null,
+      scrollSearchPromptModal: null,
+      specialRegionSearchGuideModal: null,
       notifications: [
         { id: generateId('n'), turn: 0, message: 'Bot vs Bot — observing both empires.', type: 'success' },
       ],
       battleModalHexKey: null,
-      majorEngagementStrategyByHex: {},
     });
     get().startRealTimeLoop();
     // Run first economy cycle immediately so AIs build (barracks, farms, etc.) from the start
@@ -1355,6 +1647,15 @@ export const useGameStore = create<GameState>((set, get) => ({
     placeAncientCity(tiles, c0.q, c0.r, c1.q, c1.r);
     const contestedZoneHexKeys = computeContestedZoneHexKeys(tiles, c0.q, c0.r, c1.q, c1.r, config);
     const territory = calculateTerritory(cities, tiles);
+
+    const allTilesSpectate = Array.from(tiles.values());
+    const { scrollRelics: scrollRelicsSpec, scrollRelicClusters: scrollRelicClustersSpec } =
+      rebuildSpecialTerrainForCapitals(
+        allTilesSpectate,
+        tiles,
+        config,
+        cities.map(c => ({ q: c.q, r: c.r })),
+      );
 
     const allTileKeys = new Set<string>();
     tiles.forEach((_, key) => allTileKeys.add(key));
@@ -1415,16 +1716,19 @@ export const useGameStore = create<GameState>((set, get) => ({
       combatKillFeed: [],
       contestedZoneHexKeys,
       specialRegions: s.specialRegions ?? [],
-      scrollRelics: s.scrollRelics ?? [],
+      scrollRelics: scrollRelicsSpec,
+      scrollRelicClusters: scrollRelicClustersSpec,
+      scrollSearchVisited: {},
       scrollRegionClaimed: emptyScrollRegionClaimed(),
       scrollInventory: scrollInvBot,
       scrollAttachments: [],
       scrollRelicPickupModal: null,
+      scrollSearchPromptModal: null,
+      specialRegionSearchGuideModal: null,
       notifications: [
         { id: generateId('n'), turn: 0, message: `Spectating ${totalBots} AI empires.`, type: 'success' },
       ],
       battleModalHexKey: null,
-      majorEngagementStrategyByHex: {},
     });
     get().startRealTimeLoop();
     get().runCycle();
@@ -1667,6 +1971,15 @@ export const useGameStore = create<GameState>((set, get) => ({
       }
     }
 
+    const allTilesHuman = Array.from(tiles.values());
+    const { scrollRelics: scrollRelicsStart, scrollRelicClusters: scrollRelicClustersStart } =
+      rebuildSpecialTerrainForCapitals(
+        allTilesHuman,
+        tiles,
+        config,
+        cities.map(c => ({ q: c.q, r: c.r })),
+      );
+
     set({
       phase: 'playing',
       tiles,
@@ -1693,16 +2006,19 @@ export const useGameStore = create<GameState>((set, get) => ({
       scoutTowers: [],
       defenseInstallations: [],
       contestedZoneHexKeys,
-      scrollRelics: get().scrollRelics ?? [],
+      scrollRelics: scrollRelicsStart,
+      scrollRelicClusters: scrollRelicClustersStart,
+      scrollSearchVisited: {},
       scrollRegionClaimed: emptyScrollRegionClaimed(),
       scrollInventory: scrollInv,
       scrollAttachments: [],
       scrollRelicPickupModal: null,
+      scrollSearchPromptModal: null,
+      specialRegionSearchGuideModal: null,
       visibleHexes: initVisible,
       exploredHexes: initExplored,
       notifications: startNotifs,
       battleModalHexKey: null,
-      majorEngagementStrategyByHex: {},
       cityLogisticsOpen: false,
     });
 
@@ -1829,12 +2145,14 @@ export const useGameStore = create<GameState>((set, get) => ({
     }
     const isBot = s.gameMode === 'bot_vs_bot' || s.gameMode === 'bot_vs_bot_4' || s.gameMode === 'spectate';
     const isSolo = s.gameMode === 'human_solo';
+    const isBattleTest = s.gameMode === 'battle_test';
     const speed = isBot ? (s.simSpeedMultiplier || 1) : 1;
     const intervalMs = 1000 / speed;
 
     if (!opts?.preserveTimes) {
       const now = Date.now();
-      const matchDurationSec = isSolo ? 86400 * 365 : GAME_DURATION_SEC;
+      const matchDurationSec =
+        isBattleTest ? 86400 * 365 * 100 : isSolo ? 86400 * 365 : GAME_DURATION_SEC;
       set({
         gameEndTime: now + (matchDurationSec * 1000) / speed,
         nextCycleTime: now + (CYCLE_INTERVAL_SEC * 1000) / speed,
@@ -1876,16 +2194,6 @@ export const useGameStore = create<GameState>((set, get) => ({
       releaseMarchEchelonHolds(movingUnits, s.cities);
       syncCommandersToAssignments(movingCommanders, s.cities, movingUnits);
 
-      const majorEngagementEnabled =
-        s.gameMode !== 'bot_vs_bot' && s.gameMode !== 'bot_vs_bot_4' && s.gameMode !== 'spectate';
-      const majorMap = new Map<string, Record<string, MajorEngagementDoctrine>>();
-      for (const [hk, rec] of Object.entries(s.majorEngagementStrategyByHex)) {
-        majorMap.set(hk, { ...rec });
-      }
-      const majorOpts: CombatTickMajorEngagementOptions | undefined = majorEngagementEnabled
-        ? { byHex: majorMap, humanPlayerId: HUMAN_ID, enabled: true }
-        : undefined;
-
       // -- Combat tick (pass movingHeroes so hp mutations apply; then remove killed heroes) --
       const combatResult = combatTick(
         movingUnits,
@@ -1899,7 +2207,6 @@ export const useGameStore = create<GameState>((set, get) => ({
         s.scrollAttachments,
         movingCommanders,
         s.combatMoraleState,
-        majorOpts,
       );
 
       const wallSectionsMut = s.wallSections.map(w => ({ ...w }));
@@ -1947,13 +2254,6 @@ export const useGameStore = create<GameState>((set, get) => ({
 
       const aliveUnits = movingUnits.filter(u => u.hp > 0 && !mergedKilledUnitIds.includes(u.id));
       unassignCommandersWithDeadAnchors(movingCommanders, aliveUnits);
-
-      const majorEngagementStrategyByHexNext = majorEngagementEnabled
-        ? pruneEndedMajorEngagements(
-            Object.fromEntries([...majorMap.entries()].map(([k, v]) => [k, { ...v }])),
-            aliveUnits,
-          )
-        : pruneEndedMajorEngagements({ ...s.majorEngagementStrategyByHex }, aliveUnits);
 
       // Population: when a unit dies, its origin city loses 1 population (design doc §22)
       const killedIds = new Set(mergedKilledUnitIds);
@@ -2052,6 +2352,8 @@ export const useGameStore = create<GameState>((set, get) => ({
           clearAllTimers();
           captureNotifs.push({ id: generateId('n'), turn: s.cycle, message: 'Training target eliminated — victory!', type: 'success' });
         }
+      } else if (s.gameMode === 'battle_test') {
+        // No cities in arena mode; do not treat empty city lists as defeat/victory.
       } else {
         const humanCitiesAfter = citiesFinal.filter(c => c.ownerId === HUMAN_ID);
         const aiIds = s.players.filter(p => !p.isHuman).map(p => p.id);
@@ -2105,11 +2407,23 @@ export const useGameStore = create<GameState>((set, get) => ({
         scrollRelics: s.scrollRelics ?? [],
         scrollRegionClaimed: s.scrollRegionClaimed ?? emptyScrollRegionClaimed(),
         scrollInventory: scrollReturn.scrollInventory,
+        scrollRelicClusters: s.scrollRelicClusters ?? {
+          mexca: [],
+          hills_lost: [],
+          forest_secrets: [],
+          isle_lost: [],
+        },
+        scrollSearchVisited: s.scrollSearchVisited ?? {},
       });
       let scrollModalRt = s.scrollRelicPickupModal;
+      let scrollSearchPromptRt = s.scrollSearchPromptModal;
+      for (const ev of scrollPickupRt.scrollSearchPromptEvents) {
+        if (ev.playerId === HUMAN_ID) scrollSearchPromptRt = { regionKind: ev.regionKind };
+      }
       for (const ev of scrollPickupRt.scrollRelicPickupEvents) {
         if (ev.playerId === HUMAN_ID) {
           scrollModalRt = { regionKind: ev.regionKind, kind: ev.kind };
+          scrollSearchPromptRt = null;
         }
       }
       const notifsWithScrollRt =
@@ -2130,18 +2444,16 @@ export const useGameStore = create<GameState>((set, get) => ({
         scrollAttachments: scrollReturn.attachments,
         scrollInventory: scrollPickupRt.scrollInventory,
         scrollRegionClaimed: scrollPickupRt.scrollRegionClaimed,
+        scrollSearchVisited: scrollPickupRt.scrollSearchVisited,
         scrollRelicPickupModal: scrollModalRt,
+        scrollSearchPromptModal: scrollSearchPromptRt,
         lastCombatFxAtMs: hasFx ? fxNow : s.lastCombatFxAtMs,
         lastDefenseVolleyFx: defenseVolleyCombined,
         lastRangedShotFx: allRangedShotFx,
         rangedShooterUnitIds: [...new Set(allRangedShotFx.map(r => r.attackerId))],
         combatMoraleState: combatResult.moraleState,
         combatKillFeed: combatResult.killFeed,
-        majorEngagementStrategyByHex: majorEngagementStrategyByHexNext,
-        battleModalHexKey:
-          combatResult.newMajorEngagementHexKeys.length > 0
-            ? combatResult.newMajorEngagementHexKeys[0]!
-            : s.battleModalHexKey,
+        battleModalHexKey: s.battleModalHexKey,
       });
 
       // Tactical incorporate: queue one-cycle delayed incorporation when idle on target village
@@ -2425,8 +2737,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       // Recompute vision
       get().recomputeVision();
 
-      // Run economy cycle?
-      if (now >= s.nextCycleTime) {
+      // Run economy cycle? (skipped in battle test — no resources, upkeep, or AI empire plan)
+      if (now >= s.nextCycleTime && s.gameMode !== 'battle_test') {
         get().runCycle();
         const speedForCycle = (s.gameMode === 'bot_vs_bot' || s.gameMode === 'bot_vs_bot_4' || s.gameMode === 'spectate') ? (s.simSpeedMultiplier || 1) : 1;
         set({ nextCycleTime: now + (CYCLE_INTERVAL_SEC * 1000) / speedForCycle });
@@ -2435,7 +2747,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       // Game over?
       if (gameRem <= 0) {
         const st = get();
-        if (st.gameMode === 'human_solo') {
+        if (st.gameMode === 'human_solo' || st.gameMode === 'battle_test') {
           const now = Date.now();
           const extSec = 86400 * 365;
           set({
@@ -2443,7 +2755,15 @@ export const useGameStore = create<GameState>((set, get) => ({
             gameTimeRemaining: extSec,
             notifications: [
               ...st.notifications.slice(-8),
-              { id: generateId('n'), turn: st.cycle, message: 'Sandbox: match clock reset (no time limit).', type: 'success' },
+              {
+                id: generateId('n'),
+                turn: st.cycle,
+                message:
+                  st.gameMode === 'battle_test'
+                    ? 'Battle test: time limit reset.'
+                    : 'Sandbox: match clock reset (no time limit).',
+                type: 'success',
+              },
             ],
           });
         } else {
@@ -3017,12 +3337,24 @@ export const useGameStore = create<GameState>((set, get) => ({
       scrollRelics: s.scrollRelics ?? [],
       scrollRegionClaimed: s.scrollRegionClaimed ?? emptyScrollRegionClaimed(),
       scrollInventory: s.scrollInventory ?? {},
+      scrollRelicClusters: s.scrollRelicClusters ?? {
+        mexca: [],
+        hills_lost: [],
+        forest_secrets: [],
+        isle_lost: [],
+      },
+      scrollSearchVisited: s.scrollSearchVisited ?? {},
     });
     notifs.push(...scrollTick.notifications);
     let nextScrollModal = s.scrollRelicPickupModal;
+    let nextScrollSearchPrompt = s.scrollSearchPromptModal;
+    for (const ev of scrollTick.scrollSearchPromptEvents) {
+      if (ev.playerId === HUMAN_ID) nextScrollSearchPrompt = { regionKind: ev.regionKind };
+    }
     for (const ev of scrollTick.scrollRelicPickupEvents) {
       if (ev.playerId === HUMAN_ID) {
         nextScrollModal = { regionKind: ev.regionKind, kind: ev.kind };
+        nextScrollSearchPrompt = null;
       }
     }
 
@@ -3048,6 +3380,8 @@ export const useGameStore = create<GameState>((set, get) => ({
         phase = 'victory'; clearAllTimers();
         notifs.push({ id: generateId('n'), turn: newCycle, message: 'Training target eliminated — victory!', type: 'success' });
       }
+    } else if (s.gameMode === 'battle_test') {
+      // No cities; victory/defeat is not city-based (runCycle is skipped in RT loop, but keep consistent).
     } else {
       const humanCities = citiesForSet.filter(c => c.ownerId === HUMAN_ID);
       const aiIds = s.players.filter(p => !p.isHuman).map(p => p.id);
@@ -3114,7 +3448,9 @@ export const useGameStore = create<GameState>((set, get) => ({
       visibleHexes: flushVisible,
       exploredHexes: flushExplored,
       scrollRegionClaimed: scrollTick.scrollRegionClaimed,
+      scrollSearchVisited: scrollTick.scrollSearchVisited,
       scrollRelicPickupModal: nextScrollModal,
+      scrollSearchPromptModal: nextScrollSearchPrompt,
       scrollInventory: pendingScrollRemovals.length > 0
         ? Object.fromEntries(
             Object.entries(scrollTick.scrollInventory).map(([pid, items]) => [
@@ -3133,8 +3469,10 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   // ─── Hex Selection ──────────────────────────────────────────
 
-  selectHex: (q, r) => {
+  selectHex: (q, r, opts?: { focusUnitId?: string }) => {
     const s = get();
+    const nextNavalFocus =
+      opts?.focusUnitId != null ? resolveNavalStackMoveUnitId(s, q, r, opts.focusUnitId) : null;
     if (Date.now() < s.mapClickSuppressionUntilMs) return;
     const switchingHex = !s.selectedHex || s.selectedHex.q !== q || s.selectedHex.r !== r;
     if (switchingHex && s.cityLogisticsOpen) set({ cityLogisticsOpen: false });
@@ -3173,18 +3511,31 @@ export const useGameStore = create<GameState>((set, get) => ({
       get().setTacticalMoveTarget(q, r);
       return;
     }
-    // Split stack: click adjacent land hex to place the split-off units
+    // Split stack: adjacent land for armies, adjacent water for pure naval stacks
     if (s.splitStackPending !== null) {
-      const { fromQ, fromR, count } = s.splitStackPending;
+      const { fromQ, fromR } = s.splitStackPending;
       const dist = hexDistance(fromQ, fromR, q, r);
       const isSame = fromQ === q && fromR === r;
       const tile = s.tiles.get(tileKey(q, r));
-      if (!isSame && dist === 1 && tile && tile.biome !== 'water') {
+      const originStack = s.units.filter(
+        u => u.q === fromQ && u.r === fromR && u.ownerId === HUMAN_ID && u.hp > 0 && !u.aboardShipId,
+      );
+      const navalOnly =
+        originStack.length > 0 && originStack.every(u => isNavalUnitType(u.type));
+      const destOk =
+        !!tile &&
+        (navalOnly ? tile.biome === 'water' : tile.biome !== 'water');
+      if (!isSame && dist === 1 && destOk) {
         get().splitStackToHex(q, r);
       } else if (isSame) {
         get().cancelSplitStack();
       } else {
-        get().addNotification('Click an adjacent land hex to place the split stack.', 'warning');
+        get().addNotification(
+          navalOnly
+            ? 'Click an adjacent water hex to place the split ships.'
+            : 'Click an adjacent land hex to place the split stack.',
+          'warning',
+        );
       }
       return;
     }
@@ -3209,7 +3560,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     if (s.uiMode === 'move') {
       // Re-clicking the same hex (where units are) cancels move mode
       if (s.selectedHex && s.selectedHex.q === q && s.selectedHex.r === r) {
-        set({ selectedHex: null, uiMode: 'normal', pendingMove: null, cityLogisticsOpen: false });
+        set({ selectedHex: null, stackMoveUnitId: null, uiMode: 'normal', pendingMove: null, cityLogisticsOpen: false });
         return;
       }
       get().setPendingMove(q, r);
@@ -3223,10 +3574,22 @@ export const useGameStore = create<GameState>((set, get) => ({
     }
     if (s.uiMode === 'intercept') {
       if (s.selectedHex && s.selectedHex.q === q && s.selectedHex.r === r) {
-        set({ selectedHex: null, uiMode: 'normal', pendingMove: null, cityLogisticsOpen: false });
+        set({ selectedHex: null, stackMoveUnitId: null, uiMode: 'normal', pendingMove: null, cityLogisticsOpen: false });
         return;
       }
       get().setPendingMove(q, r);
+      return;
+    }
+
+    // Same hex: click another human ship to focus that ship for movement (do not deselect)
+    if (
+      s.selectedHex &&
+      s.selectedHex.q === q &&
+      s.selectedHex.r === r &&
+      opts?.focusUnitId != null &&
+      nextNavalFocus != null
+    ) {
+      set({ stackMoveUnitId: nextNavalFocus });
       return;
     }
 
@@ -3234,6 +3597,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     if (s.selectedHex && s.selectedHex.q === q && s.selectedHex.r === r) {
       set({
         selectedHex: null,
+        stackMoveUnitId: null,
         uiMode: 'normal',
         pendingMove: null,
         selectedClusterKey: s.supplyViewTab === 'supply' ? null : s.selectedClusterKey,
@@ -3267,7 +3631,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     // In supply view: resolve cluster from road or city hex, show cluster panel
     if (s.supplyViewTab === 'supply') {
       const clusterKey = s.getClusterForHex(q, r);
-      set({ selectedHex: { q, r }, uiMode: 'normal', pendingMove: null, selectedClusterKey: clusterKey });
+      set({ selectedHex: { q, r }, stackMoveUnitId: null, uiMode: 'normal', pendingMove: null, selectedClusterKey: clusterKey });
       return;
     }
 
@@ -3284,6 +3648,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         lastClickHex: { q, r },
         lastClickTime: now,
         selectedHex: { q, r },
+        stackMoveUnitId: nextNavalFocus,
         uiMode: isDoubleClick ? 'move' : 'normal',
         pendingMove: null,
       });
@@ -3291,10 +3656,10 @@ export const useGameStore = create<GameState>((set, get) => ({
     }
     set({ lastClickHex: { q, r }, lastClickTime: now });
     if (myUnits.length > 0) {
-      set({ selectedHex: { q, r }, uiMode: 'move', pendingMove: null });
+      set({ selectedHex: { q, r }, stackMoveUnitId: nextNavalFocus, uiMode: 'move', pendingMove: null });
       return;
     }
-    set({ selectedHex: { q, r }, uiMode: 'normal', pendingMove: null });
+    set({ selectedHex: { q, r }, stackMoveUnitId: nextNavalFocus, uiMode: 'normal', pendingMove: null });
   },
 
   escapeFromUi: () => {
@@ -3353,13 +3718,13 @@ export const useGameStore = create<GameState>((set, get) => ({
       set({ splitStackPending: null });
     }
     if (s.uiMode === 'build_mine' || s.uiMode === 'build_quarry' || s.uiMode === 'build_gold_mine' || s.uiMode === 'build_logging_hut' || s.uiMode === 'build_road') {
-      set({ selectedHex: null, uiMode: 'normal', pendingMove: null, roadPathSelection: [], selectedClusterKey: null, cityLogisticsOpen: false });
+      set({ selectedHex: null, stackMoveUnitId: null, uiMode: 'normal', pendingMove: null, roadPathSelection: [], selectedClusterKey: null, cityLogisticsOpen: false });
     } else if (s.uiMode === 'build_defense') {
-      set({ selectedHex: null, uiMode: 'normal', pendingMove: null, pendingDefenseBuild: null, cityLogisticsOpen: false });
+      set({ selectedHex: null, stackMoveUnitId: null, uiMode: 'normal', pendingMove: null, pendingDefenseBuild: null, cityLogisticsOpen: false });
     } else if (s.uiMode === 'defend' || s.uiMode === 'intercept') {
-      set({ selectedHex: null, uiMode: 'normal', pendingMove: null, cityLogisticsOpen: false });
+      set({ selectedHex: null, stackMoveUnitId: null, uiMode: 'normal', pendingMove: null, cityLogisticsOpen: false });
     } else {
-      set({ selectedHex: null, uiMode: 'normal', pendingMove: null, selectedClusterKey: null, cityLogisticsOpen: false });
+      set({ selectedHex: null, stackMoveUnitId: null, uiMode: 'normal', pendingMove: null, selectedClusterKey: null, cityLogisticsOpen: false });
     }
   },
 
@@ -3389,7 +3754,17 @@ export const useGameStore = create<GameState>((set, get) => ({
     if (player.gold < BUILDING_COSTS[type]) { get().addNotification('Not enough gold!', 'warning'); return; }
 
     const tile = s.tiles.get(tileKey(q, r));
-    if (!tile || tile.biome === 'water' || tile.biome === 'mountain') return;
+    if (!tile || tile.biome === 'water') return;
+    if (isFarmBuildingType(type) && !isValidFarmPlacementBiome(tile.biome)) {
+      get().addNotification(
+        tile.biome === 'mountain'
+          ? 'Farms cannot be built on mountains.'
+          : 'Farms cannot be built on forest tiles.',
+        'warning',
+      );
+      return;
+    }
+    if (tile.biome === 'mountain') return;
     if (s.cities.some(c => c.q === q && c.r === r)) return;
     if (s.constructions.some(cs => cs.q === q && cs.r === r)) {
       get().addNotification('Already under construction!', 'warning'); return;
@@ -5338,6 +5713,74 @@ export const useGameStore = create<GameState>((set, get) => ({
       if (dist > maxLeg) get().addNotification(`Too far! Max ${maxLeg} hexes for this destination.`, 'warning');
       return;
     }
+
+    /** Enemy city building at destination — same behavior as tactical “Raid building”, without the extra HUD step. */
+    let raidCityId: string | null = null;
+    for (const city of s.cities) {
+      if (city.ownerId === HUMAN_ID) continue;
+      const b = city.buildings.find(x => x.q === toQ && x.r === toR);
+      if (b && isCityBuildingOperational(ensureCityBuildingHp(b))) {
+        raidCityId = city.id;
+        break;
+      }
+    }
+    if (raidCityId) {
+      const stack = s.units.filter(
+        u => u.q === fromQ && u.r === fromR && u.ownerId === HUMAN_ID && u.hp > 0 && !u.aboardShipId,
+      );
+      const stackKey = tileKey(fromQ, fromR);
+      const pids =
+        s.pendingTacticalOrders !== null
+          ? resolveParticipatingUnitIdsForTactical(
+              stack,
+              stackKey,
+              s.tacticalIncludedUnitTypes,
+              s.tacticalStackUnitTypeFocus,
+            )
+          : resolveParticipatingUnitIds(stack, s.tacticalIncludedUnitTypes);
+      if (pids !== undefined && pids.length === 0) {
+        get().addNotification('No units match the current type filter on this stack.', 'warning');
+        return;
+      }
+      let marching = pids ? stack.filter(u => pids.includes(u.id)) : stack;
+      if (s.stackMoveUnitId) {
+        const focused = marching.find(u => u.id === s.stackMoveUnitId && isNavalUnitType(u.type));
+        if (focused) marching = [focused];
+      }
+      marching = marching.filter(u => isLandMilitaryUnit(u));
+      if (marching.length === 0) {
+        get().addNotification('Need combat units to raid an enemy building.', 'warning');
+        return;
+      }
+      const marchIds = new Set(marching.map(u => u.id));
+      const cityId = raidCityId;
+      const newUnits = s.units.map(u => {
+        if (u.q !== fromQ || u.r !== fromR || u.ownerId !== HUMAN_ID || u.hp <= 0) return u;
+        if (!marchIds.has(u.id) || !isLandMilitaryUnit(u)) return u;
+        const deployed = withoutPatrolFields(withDeployFlags(u, toQ, toR, s.cities));
+        return {
+          ...deployed,
+          attackBuildingTarget: { cityId, q: toQ, r: toR },
+          retaliateUnitId: undefined,
+          retaliateDefenseId: undefined,
+          targetQ: toQ,
+          targetR: toR,
+          status: 'moving' as const,
+          assaulting: false,
+          marchInitialHexDistance: marchHexDistanceAtOrder(u, toQ, toR),
+        };
+      });
+      set({
+        units: newUnits,
+        selectedHex: null,
+        stackMoveUnitId: null,
+        uiMode: 'normal',
+        pendingMove: null,
+      });
+      get().addNotification('Raiding enemy building — units march to destroy it.', 'info');
+      return;
+    }
+
     const stack = s.units.filter(
       u => u.q === fromQ && u.r === fromR && u.ownerId === HUMAN_ID && u.hp > 0 && !u.aboardShipId,
     );
@@ -5356,8 +5799,12 @@ export const useGameStore = create<GameState>((set, get) => ({
       get().addNotification('No units match the current type filter on this stack.', 'warning');
       return;
     }
-    const marching = pids ? stack.filter(u => pids.includes(u.id)) : stack;
+    let marching = pids ? stack.filter(u => pids.includes(u.id)) : stack;
     if (marching.length === 0) return;
+    if (s.stackMoveUnitId) {
+      const focused = marching.find(u => u.id === s.stackMoveUnitId && isNavalUnitType(u.type));
+      if (focused) marching = [focused];
+    }
     const naval = marching.some(u => isNavalUnitType(u.type));
     if (naval && !marching.every(u => isNavalUnitType(u.type))) {
       get().addNotification('Cannot mix ships and land units in one move order.', 'warning'); return;
@@ -5399,7 +5846,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       u => u.q === fromQ && u.r === fromR && u.ownerId === HUMAN_ID && u.hp > 0 && !u.aboardShipId,
     );
     if (readyUnits.length === 0) {
-      set({ uiMode: 'normal', selectedHex: null }); return;
+      set({ uiMode: 'normal', selectedHex: null, stackMoveUnitId: null }); return;
     }
 
     const stackKey = tileKey(fromQ, fromR);
@@ -5414,40 +5861,44 @@ export const useGameStore = create<GameState>((set, get) => ({
         : resolveParticipatingUnitIds(readyUnits, s.tacticalIncludedUnitTypes);
     if (pids !== undefined && pids.length === 0) {
       get().addNotification('No units match the current type filter on this stack.', 'warning');
-      set({ uiMode: 'normal', selectedHex: null });
+      set({ uiMode: 'normal', selectedHex: null, stackMoveUnitId: null });
       return;
     }
-    const marching = pids ? readyUnits.filter(u => pids.includes(u.id)) : readyUnits;
+    let marching = pids ? readyUnits.filter(u => pids.includes(u.id)) : readyUnits;
+    if (s.stackMoveUnitId) {
+      const focused = marching.find(u => u.id === s.stackMoveUnitId && isNavalUnitType(u.type));
+      if (focused) marching = [focused];
+    }
 
     const dist = hexDistance(fromQ, fromR, toQ, toR);
-    if (dist === 0) { set({ uiMode: 'normal', selectedHex: null }); return; }
+    if (dist === 0) { set({ uiMode: 'normal', selectedHex: null, stackMoveUnitId: null }); return; }
     const maxLeg = maxMoveOrderDistanceForDestination(toQ, toR, s.territory, HUMAN_ID);
     if (dist > maxLeg) {
       get().addNotification(`Too far! Max ${maxLeg} hexes for this destination.`, 'warning');
-      set({ uiMode: 'normal', selectedHex: null });
+      set({ uiMode: 'normal', selectedHex: null, stackMoveUnitId: null });
       return;
     }
 
     const naval = marching.some(u => isNavalUnitType(u.type));
     if (naval && !marching.every(u => isNavalUnitType(u.type))) {
       get().addNotification('Cannot mix ships and land units.', 'warning');
-      set({ uiMode: 'normal', selectedHex: null }); return;
+      set({ uiMode: 'normal', selectedHex: null, stackMoveUnitId: null }); return;
     }
 
     const destTile = s.tiles.get(tileKey(toQ, toR));
     if (!destTile) {
       get().addNotification('Cannot move there!', 'warning');
-      set({ uiMode: 'normal', selectedHex: null }); return;
+      set({ uiMode: 'normal', selectedHex: null, stackMoveUnitId: null }); return;
     }
     if (naval) {
       if (destTile.biome !== 'water') {
         get().addNotification('Ships can only move on water.', 'warning');
-        set({ uiMode: 'normal', selectedHex: null }); return;
+        set({ uiMode: 'normal', selectedHex: null, stackMoveUnitId: null }); return;
       }
     } else if (destTile.biome === 'water') {
       if (!canLandStackEmbarkFriendlyScoutAt(s.tiles, s.units, toQ, toR, marching, HUMAN_ID)) {
         get().addNotification('Land units cannot enter water (need a friendly scout ship with room at destination).', 'warning');
-        set({ uiMode: 'normal', selectedHex: null }); return;
+        set({ uiMode: 'normal', selectedHex: null, stackMoveUnitId: null }); return;
       }
     }
 
@@ -5485,7 +5936,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       });
     }
 
-    set({ units: newUnits, selectedHex: null, uiMode: 'normal' });
+    set({ units: newUnits, selectedHex: null, stackMoveUnitId: null, uiMode: 'normal' });
     get().addNotification(`Army moving to (${toQ}, ${toR})`, 'info');
   },
 
@@ -5586,33 +6037,41 @@ export const useGameStore = create<GameState>((set, get) => ({
       set({ battleModalHexKey: hexKey });
       return;
     }
-    const byHex: Record<string, import('@/types/game').Unit[]> = {};
-    for (const u of s.units) {
-      if (u.hp <= 0 || u.aboardShipId) continue;
-      const k = tileKey(u.q, u.r);
-      if (!byHex[k]) byHex[k] = [];
-      byHex[k].push(u);
-    }
-    const keys: string[] = [];
-    for (const [k, arr] of Object.entries(byHex)) {
-      if (new Set(arr.map(u => u.ownerId)).size < 2) continue;
-      if (arr.some(u => u.ownerId === HUMAN_ID)) keys.push(k);
-    }
-    if (keys.length === 0) return;
-    set({ battleModalHexKey: keys[0] });
+    const clusters = clusterHumanBattleEngagements(s.units);
+    if (clusters.length === 0) return;
+    const first = clusters[0]!;
+    const anchor =
+      first.find(k =>
+        s.units.some(
+          u =>
+            u.hp > 0 &&
+            !u.aboardShipId &&
+            tileKey(u.q, u.r) === k &&
+            u.ownerId === HUMAN_ID,
+        ),
+      ) ?? first[0]!;
+    set({ battleModalHexKey: anchor });
   },
 
   closeBattleModal: () => set({ battleModalHexKey: null }),
 
-  setMajorEngagementDoctrine: (hexKey, doctrine) => {
+  exitBattleReportToMoveMode: (q, r) => {
     const s = get();
-    const cur = s.majorEngagementStrategyByHex[hexKey];
-    if (!cur) return;
+    const myUnits = s.units.filter(
+      u => u.q === q && u.r === r && u.ownerId === HUMAN_ID && u.hp > 0 && !u.aboardShipId,
+    );
+    if (myUnits.length === 0) {
+      get().addNotification('No units to march from this hex.', 'warning');
+      set({ battleModalHexKey: null });
+      return;
+    }
     set({
-      majorEngagementStrategyByHex: {
-        ...s.majorEngagementStrategyByHex,
-        [hexKey]: { ...cur, [HUMAN_ID]: doctrine },
-      },
+      battleModalHexKey: null,
+      selectedHex: { q, r },
+      stackMoveUnitId: null,
+      uiMode: 'move',
+      pendingMove: null,
+      cityLogisticsOpen: false,
     });
   },
 
@@ -6564,7 +7023,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       const add = popByCity[c.id] ?? 0;
       return add > 0 ? { ...c, population: c.population + add } : c;
     });
-    set({ units: newUnits, cities: newCities, selectedHex: null, uiMode: 'normal' });
+    set({ units: newUnits, cities: newCities, selectedHex: null, stackMoveUnitId: null, uiMode: 'normal' });
     get().addNotification(`Disbanded ${toRemove.length} unit(s); population returned.`, 'info');
   },
 
@@ -6580,7 +7039,14 @@ export const useGameStore = create<GameState>((set, get) => ({
       return;
     }
     set({ splitStackPending: { fromQ, fromR, count: n } });
-    get().addNotification(`Splitting ${n} unit(s). Click an adjacent hex to place them.`, 'info');
+    const navalOnly =
+      stack.length > 0 && stack.every(u => isNavalUnitType(u.type));
+    get().addNotification(
+      navalOnly
+        ? `Splitting ${n} ship(s). Click an adjacent water hex to place them.`
+        : `Splitting ${n} unit(s). Click an adjacent land hex to place them.`,
+      'info',
+    );
   },
 
   startSplitStackByUnitType: (unitType, explicitQ?, explicitR?) => {
@@ -6604,7 +7070,14 @@ export const useGameStore = create<GameState>((set, get) => ({
     }
     const n = unitIds.length;
     set({ splitStackPending: { fromQ, fromR, count: n, unitIds } });
-    get().addNotification(`Splitting ${n} ${unitType.replace(/_/g, ' ')}(s). Click an adjacent hex to place them.`, 'info');
+    const navalOnly =
+      ofType.length > 0 && ofType.every(u => isNavalUnitType(u.type));
+    get().addNotification(
+      navalOnly
+        ? `Splitting ${n} ${unitType.replace(/_/g, ' ')}(s). Click an adjacent water hex.`
+        : `Splitting ${n} ${unitType.replace(/_/g, ' ')}(s). Click an adjacent land hex.`,
+      'info',
+    );
   },
 
   cancelSplitStack: () => {
@@ -6889,6 +7362,9 @@ export const useGameStore = create<GameState>((set, get) => ({
   },
 
   clearScrollRelicPickupModal: () => set({ scrollRelicPickupModal: null }),
+  clearScrollSearchPromptModal: () => set({ scrollSearchPromptModal: null }),
+  openSpecialRegionSearchGuideModal: (q, r) => set({ specialRegionSearchGuideModal: { q, r } }),
+  clearSpecialRegionSearchGuideModal: () => set({ specialRegionSearchGuideModal: null }),
 
   sendScout: (q, r) => {
     const s = get();

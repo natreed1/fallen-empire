@@ -7,13 +7,59 @@ import {
   hexNeighbors,
   hexDistance,
   tileKey,
-  SPECIAL_TERRAIN_CLUSTER_THRESHOLD,
-  SPECIAL_TERRAIN_NOISE_SCALE,
   createSpecialRegionMetadata,
+  SPECIAL_REGION_BLOB_SIZE_MAX,
+  SPECIAL_REGION_BLOB_SIZE_MIN,
+  SPECIAL_REGION_KINDS_MAX,
+  SPECIAL_REGION_KINDS_MIN,
+  SPECIAL_TERRAIN_CAPITAL_EXCLUSION_RADIUS,
   type SpecialRegion,
   type SpecialRegionKind,
   type ScrollRelicSite,
 } from '@/types/game';
+
+/** Connected component of `specialTerrainKind` containing the relic (search must cover this patch). */
+export function floodFillSpecialTerrainCluster(
+  tileMap: Map<string, Tile>,
+  startQ: number,
+  startR: number,
+  kind: SpecialRegionKind,
+): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const stack: { q: number; r: number }[] = [{ q: startQ, r: startR }];
+  while (stack.length > 0) {
+    const { q, r } = stack.pop()!;
+    const k = tileKey(q, r);
+    if (seen.has(k)) continue;
+    const t = tileMap.get(k);
+    if (!t || t.specialTerrainKind !== kind) continue;
+    seen.add(k);
+    out.push(k);
+    for (const [nq, nr] of hexNeighbors(q, r)) {
+      stack.push({ q: nq, r: nr });
+    }
+  }
+  return out;
+}
+
+export type ScrollRelicClusters = Record<SpecialRegionKind, string[]>;
+
+export function computeScrollRelicClusters(
+  tileMap: Map<string, Tile>,
+  scrollRelics: ScrollRelicSite[],
+): ScrollRelicClusters {
+  const empty: ScrollRelicClusters = {
+    mexca: [],
+    hills_lost: [],
+    forest_secrets: [],
+    isle_lost: [],
+  };
+  for (const site of scrollRelics) {
+    empty[site.regionKind] = floodFillSpecialTerrainCluster(tileMap, site.q, site.r, site.regionKind);
+  }
+  return empty;
+}
 
 // ─── Seeded PRNG (Mulberry32) ──────────────────────────────────────
 
@@ -35,6 +81,8 @@ export interface GeneratorResult {
   specialRegions: SpecialRegion[];
   /** One relic hex per special terrain flavor present (seeded). */
   scrollRelics: ScrollRelicSite[];
+  /** Per region, hex keys in the connected special-terrain patch that contains the relic. */
+  scrollRelicClusters: ScrollRelicClusters;
 }
 
 export function generateMap(config: MapConfig): GeneratorResult {
@@ -43,7 +91,6 @@ export function generateMap(config: MapConfig): GeneratorResult {
   const elevationNoise = createNoise2D(rng);
   const moistureNoise = createNoise2D(rng);
   const detailNoise = createNoise2D(rng);
-  const scrollTerrainNoise = createNoise2D(rng);
 
   // ── Pass 1: Generate biomes ────────────────────────────────────
   const tileMap = new Map<string, Tile>();
@@ -82,11 +129,15 @@ export function generateMap(config: MapConfig): GeneratorResult {
   sprinkleOceanIslands(allTiles, tileMap, config, rng);
   labelIslandLandmasses(allTiles, tileMap, config);
 
-  // ── Pass 2: Scroll terrain (noise-sprinkled, biome-integrated; before hubs & villages) ──
-  sprinkleSpecialTerrain(allTiles, tileMap, rng, scrollTerrainNoise);
-  finalizeSpecialTerrainVariety(allTiles, tileMap, rng);
+  // ── Pass 2: Named wilds — one connected patch per flavor (2–4 flavors); no capital avoids yet ──
+  placeSingleBlobSpecialRegions(allTiles, tileMap, rng, {
+    avoidCenters: [],
+    avoidRadius: SPECIAL_TERRAIN_CAPITAL_EXCLUSION_RADIUS,
+    excludeInfrastructure: false,
+  });
   const specialRegions = createSpecialRegionMetadata();
   const scrollRelics = placeScrollRelics(allTiles, rng);
+  const scrollRelicClusters = computeScrollRelicClusters(tileMap, scrollRelics);
 
   // ── Pass 3: Empire overlay — province centers avoid scroll terrain ───
   const landTiles = allTiles.filter((t) => t.biome !== 'water' && !t.specialTerrainKind);
@@ -105,7 +156,7 @@ export function generateMap(config: MapConfig): GeneratorResult {
   // ── Pass 5: Quarry & Mine deposits (biome-based) ───────────────────────
   scatterResourceDeposits(allTiles, rng);
 
-  return { tiles: allTiles, provinceCenters, specialRegions, scrollRelics };
+  return { tiles: allTiles, provinceCenters, specialRegions, scrollRelics, scrollRelicClusters };
 }
 
 function waterTouchesIslandLand(t: Tile, tileMap: Map<string, Tile>): boolean {
@@ -115,115 +166,213 @@ function waterTouchesIslandLand(t: Tile, tileMap: Map<string, Tile>): boolean {
   });
 }
 
-function pickSpecialTerrainKind(t: Tile, rng: () => number): SpecialRegionKind {
-  if (t.isIsland && t.biome !== 'water') {
-    if (rng() < 0.4) return 'isle_lost';
+const ALL_SPECIAL_REGION_KINDS: SpecialRegionKind[] = ['mexca', 'hills_lost', 'forest_secrets', 'isle_lost'];
+
+function clearAllSpecialTerrain(allTiles: Tile[]): void {
+  for (const t of allTiles) t.specialTerrainKind = undefined;
+}
+
+function hexOutsideCapitalExclusion(
+  q: number,
+  r: number,
+  avoidCenters: { q: number; r: number }[],
+  radius: number,
+): boolean {
+  if (avoidCenters.length === 0) return true;
+  return avoidCenters.every(c => hexDistance(q, r, c.q, c.r) > radius);
+}
+
+function tileBlockedForSpecialBlob(t: Tile, excludeInfrastructure: boolean): boolean {
+  if (excludeInfrastructure) {
+    if (t.isProvinceCenter || t.hasAncientCity || t.hasVillage || t.hasRuins) return true;
   }
-  switch (t.biome) {
-    case 'desert':
-      return rng() < 0.52 ? 'mexca' : rng() < 0.5 ? 'hills_lost' : 'forest_secrets';
-    case 'forest':
-      return rng() < 0.64 ? 'forest_secrets' : rng() < 0.5 ? 'hills_lost' : 'mexca';
-    case 'mountain':
-      return rng() < 0.7 ? 'hills_lost' : rng() < 0.55 ? 'forest_secrets' : 'mexca';
-    case 'plains':
-      return rng() < 0.4 ? 'mexca' : rng() < 0.5 ? 'hills_lost' : 'forest_secrets';
+  return false;
+}
+
+/** Tile can be part of a blob of this kind (biome / isle rules). */
+export function tileEligibleForSpecialKind(kind: SpecialRegionKind, t: Tile, tileMap: Map<string, Tile>): boolean {
+  if (kind === 'isle_lost') {
+    if (t.biome === 'water') return waterTouchesIslandLand(t, tileMap);
+    if (t.biome === 'mountain') return false;
+    return t.isIsland;
+  }
+  if (t.biome === 'water') return false;
+  switch (kind) {
+    case 'mexca':
+      return t.biome === 'desert' || t.biome === 'plains' || t.biome === 'forest';
+    case 'hills_lost':
+      return (
+        t.biome === 'mountain' || t.biome === 'desert' || t.biome === 'plains' || t.biome === 'forest'
+      );
+    case 'forest_secrets':
+      return t.biome === 'forest' || t.biome === 'plains' || t.biome === 'desert';
     default:
-      return 'mexca';
+      return false;
   }
 }
 
-/**
- * Sprinkles scroll-discovery terrain using simplex clusters (biome-like patches, higher coverage than old disks).
- */
-function sprinkleSpecialTerrain(
-  allTiles: Tile[],
-  tileMap: Map<string, Tile>,
-  rng: () => number,
-  clusterNoise: (x: number, y: number) => number,
-): void {
-  const scale = SPECIAL_TERRAIN_NOISE_SCALE;
-  const thresh = SPECIAL_TERRAIN_CLUSTER_THRESHOLD;
-
-  for (const t of allTiles) {
-    if (t.biome === 'water') continue;
-    const n = (clusterNoise(t.q * scale, t.r * scale) + 1) / 2;
-    if (n < thresh) continue;
-    const tile = tileMap.get(tileKey(t.q, t.r));
-    if (!tile) continue;
-    tile.specialTerrainKind = pickSpecialTerrainKind(t, rng);
+function shuffleKinds(rng: () => number): SpecialRegionKind[] {
+  const a = [...ALL_SPECIAL_REGION_KINDS];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [a[i], a[j]] = [a[j]!, a[i]!];
   }
-
-  const waterScale = scale * 1.02;
-  for (const t of allTiles) {
-    if (t.biome !== 'water') continue;
-    if (!waterTouchesIslandLand(t, tileMap)) continue;
-    const n = (clusterNoise(t.q * waterScale + 31.7, t.r * waterScale + 12.4) + 1) / 2;
-    if (n < thresh + 0.02) continue;
-    if (rng() > 0.48) continue;
-    const tile = tileMap.get(tileKey(t.q, t.r));
-    if (tile && !tile.specialTerrainKind) tile.specialTerrainKind = 'isle_lost';
-  }
+  return a;
 }
 
-/**
- * Each match uses a random subset of scroll terrain lines (not all four every time), but at least
- * one special terrain flavor remains somewhere on the map.
- */
-function finalizeSpecialTerrainVariety(
-  allTiles: Tile[],
+function tryGrowBlob(
+  startTile: Tile,
+  kind: SpecialRegionKind,
   tileMap: Map<string, Tile>,
+  used: Set<string>,
+  targetSize: number,
+  avoidCenters: { q: number; r: number }[],
+  avoidRadius: number,
+  excludeInfrastructure: boolean,
   rng: () => number,
-): void {
-  const kinds: SpecialRegionKind[] = ['mexca', 'hills_lost', 'forest_secrets', 'isle_lost'];
-  const shuffled = [...kinds].sort(() => rng() - 0.5);
-  const subsetSize = 1 + Math.floor(rng() * kinds.length);
-  const active = new Set<SpecialRegionKind>(shuffled.slice(0, subsetSize));
+): string[] | null {
+  const startKey = tileKey(startTile.q, startTile.r);
+  const assigned: string[] = [];
+  const queue: string[] = [startKey];
+  const seen = new Set<string>();
 
-  for (const t of allTiles) {
-    if (t.specialTerrainKind && !active.has(t.specialTerrainKind)) {
-      t.specialTerrainKind = undefined;
+  while (queue.length > 0 && assigned.length < targetSize) {
+    const k = queue.shift()!;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    const t = tileMap.get(k);
+    if (!t) continue;
+    if (!tileEligibleForSpecialKind(kind, t, tileMap)) continue;
+    if (used.has(k)) continue;
+    if (tileBlockedForSpecialBlob(t, excludeInfrastructure)) continue;
+    if (!hexOutsideCapitalExclusion(t.q, t.r, avoidCenters, avoidRadius)) continue;
+
+    assigned.push(k);
+    if (assigned.length >= targetSize) break;
+
+    const neigh = hexNeighbors(t.q, t.r);
+    const order = [...neigh].sort(() => rng() - 0.5);
+    for (const [nq, nr] of order) {
+      const nt = tileMap.get(tileKey(nq, nr));
+      if (!nt || !tileEligibleForSpecialKind(kind, nt, tileMap)) continue;
+      const nk = tileKey(nq, nr);
+      if (!seen.has(nk)) queue.push(nk);
     }
   }
 
-  // Each active flavor must have at least one tile so relics and discovery can target it.
-  for (const kind of active) {
-    const has = allTiles.some(t => t.specialTerrainKind === kind);
-    if (has) continue;
-    const bare = allTiles.filter(
-      t => t.biome !== 'water' && t.biome !== 'mountain' && !t.isProvinceCenter && !t.specialTerrainKind,
+  const minOk = Math.min(4, targetSize);
+  if (assigned.length < minOk) return null;
+  return assigned;
+}
+
+export type PlaceSpecialTerrainOpts = {
+  avoidCenters: { q: number; r: number }[];
+  /** Default {@link SPECIAL_TERRAIN_CAPITAL_EXCLUSION_RADIUS} when capitals are known. */
+  avoidRadius: number;
+  /** When true (after full map gen), never paint province centers, villages, ruins, ancient sites. */
+  excludeInfrastructure: boolean;
+};
+
+/**
+ * Clears prior wilds and places 2–4 disjoint connected regions (one per flavor). Guarantees at least two flavors when the map allows it.
+ */
+export function placeSingleBlobSpecialRegions(
+  allTiles: Tile[],
+  tileMap: Map<string, Tile>,
+  rng: () => number,
+  opts: PlaceSpecialTerrainOpts,
+): void {
+  clearAllSpecialTerrain(allTiles);
+  const { avoidCenters, avoidRadius, excludeInfrastructure } = opts;
+
+  const used = new Set<string>();
+  const kindTarget =
+    SPECIAL_REGION_KINDS_MIN + Math.floor(rng() * (SPECIAL_REGION_KINDS_MAX - SPECIAL_REGION_KINDS_MIN + 1));
+  const kindsOrder = shuffleKinds(rng);
+
+  const tryPlaceKind = (kind: SpecialRegionKind, radius: number): boolean => {
+    const targetSize =
+      SPECIAL_REGION_BLOB_SIZE_MIN +
+      Math.floor(rng() * (SPECIAL_REGION_BLOB_SIZE_MAX - SPECIAL_REGION_BLOB_SIZE_MIN + 1));
+    const candidates = allTiles.filter(
+      t =>
+        !used.has(tileKey(t.q, t.r)) &&
+        !tileBlockedForSpecialBlob(t, excludeInfrastructure) &&
+        tileEligibleForSpecialKind(kind, t, tileMap) &&
+        hexOutsideCapitalExclusion(t.q, t.r, avoidCenters, radius),
     );
-    const pool = bare.length > 0 ? bare : allTiles.filter(t => t.biome !== 'water' && t.biome !== 'mountain' && !t.specialTerrainKind);
-    if (pool.length === 0) continue;
-    const pick = pool[Math.floor(rng() * pool.length)]!;
-    const tile = tileMap.get(tileKey(pick.q, pick.r));
-    if (tile) tile.specialTerrainKind = kind;
-  }
+    if (candidates.length === 0) return false;
 
-  const hasAny = allTiles.some(t => t.specialTerrainKind);
-  if (hasAny) return;
-
-  const pickKind = (): SpecialRegionKind => {
-    const arr = [...active];
-    return arr[Math.floor(rng() * arr.length)]!;
+    for (let attempt = 0; attempt < 160; attempt++) {
+      const seed = candidates[Math.floor(rng() * candidates.length)]!;
+      const blob = tryGrowBlob(
+        seed,
+        kind,
+        tileMap,
+        used,
+        targetSize,
+        avoidCenters,
+        radius,
+        excludeInfrastructure,
+        rng,
+      );
+      if (!blob) continue;
+      for (const k of blob) {
+        const t = tileMap.get(k);
+        if (t) t.specialTerrainKind = kind;
+        used.add(k);
+      }
+      return true;
+    }
+    return false;
   };
 
-  const landCandidates = allTiles.filter(
-    t => t.biome !== 'water' && t.biome !== 'mountain' && !t.isProvinceCenter,
-  );
-  if (landCandidates.length > 0) {
-    const t = landCandidates[Math.floor(rng() * landCandidates.length)]!;
-    const tile = tileMap.get(tileKey(t.q, t.r));
-    if (tile) tile.specialTerrainKind = pickKind();
-    return;
+  let placed = 0;
+  for (const kind of kindsOrder) {
+    if (placed >= kindTarget) break;
+    if (tryPlaceKind(kind, avoidRadius)) placed++;
   }
 
-  const anyLand = allTiles.filter(t => t.biome !== 'water' && t.biome !== 'mountain');
-  if (anyLand.length > 0) {
-    const t = anyLand[Math.floor(rng() * anyLand.length)]!;
-    const tile = tileMap.get(tileKey(t.q, t.r));
-    if (tile) tile.specialTerrainKind = pickKind();
+  const countKinds = () =>
+    new Set(allTiles.map(t => t.specialTerrainKind).filter(Boolean) as SpecialRegionKind[]).size;
+
+  if (countKinds() < SPECIAL_REGION_KINDS_MIN) {
+    for (const kind of ALL_SPECIAL_REGION_KINDS) {
+      if (countKinds() >= SPECIAL_REGION_KINDS_MIN) break;
+      if (allTiles.some(t => t.specialTerrainKind === kind)) continue;
+      tryPlaceKind(kind, avoidRadius);
+    }
   }
+
+  if (countKinds() < SPECIAL_REGION_KINDS_MIN) {
+    for (const kind of ALL_SPECIAL_REGION_KINDS) {
+      if (countKinds() >= SPECIAL_REGION_KINDS_MIN) break;
+      if (allTiles.some(t => t.specialTerrainKind === kind)) continue;
+      tryPlaceKind(kind, 0);
+    }
+  }
+}
+
+/**
+ * After capitals exist: repaints named wilds so no hex lies within {@link SPECIAL_TERRAIN_CAPITAL_EXCLUSION_RADIUS}
+ * of any capital. Province centers / villages / ruins / ancient sites are avoided.
+ */
+export function rebuildSpecialTerrainForCapitals(
+  allTiles: Tile[],
+  tileMap: Map<string, Tile>,
+  config: MapConfig,
+  capitalHexes: { q: number; r: number }[],
+): { scrollRelics: ScrollRelicSite[]; scrollRelicClusters: ScrollRelicClusters } {
+  const rng = mulberry32((config.seed ^ 0x7363726f) >>> 0);
+  placeSingleBlobSpecialRegions(allTiles, tileMap, rng, {
+    avoidCenters: capitalHexes,
+    avoidRadius: SPECIAL_TERRAIN_CAPITAL_EXCLUSION_RADIUS,
+    excludeInfrastructure: true,
+  });
+  const rngRelic = mulberry32((config.seed ^ 0x72656c) >>> 0);
+  const scrollRelics = placeScrollRelics(allTiles, rngRelic);
+  const scrollRelicClusters = computeScrollRelicClusters(tileMap, scrollRelics);
+  return { scrollRelics, scrollRelicClusters };
 }
 
 /** Pick one relic hex per special terrain flavor present (deterministic from rng). */

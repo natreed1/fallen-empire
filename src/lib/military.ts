@@ -31,15 +31,8 @@ import {
   type ScrollAttachment,
   type Commander,
   MORALE_ROUT_THRESHOLD,
-  type MajorEngagementDoctrine,
   isCityBuildingOperational,
 } from '@/types/game';
-import {
-  bothSidesMeetMajorThreshold,
-  majorEngagementAttackMult,
-  majorEngagementDamageTakenMult,
-} from '@/lib/majorEngagement';
-import { pickAiMajorEngagementDoctrine } from '@/lib/majorEngagementAi';
 import { armyHasMovementScroll, hexHasScrollKind } from '@/lib/scrolls';
 import {
   commanderAttackMultiplierForUnit,
@@ -937,16 +930,6 @@ export interface CombatTickResult {
   moraleState: MoraleState;
   /** Kill events this tick for UI kill feed */
   killFeed: CombatKillEvent[];
-  /** Same-hex major engagement just started; human involved — UI may open battle modal. */
-  newMajorEngagementHexKeys: string[];
-}
-
-export interface CombatTickMajorEngagementOptions {
-  /** Mutated when a qualifying major engagement is first detected (same-hex land). */
-  byHex: Map<string, Record<string, MajorEngagementDoctrine>>;
-  /** Human keeps balanced until UI confirms; null = all AI (e.g. headless). */
-  humanPlayerId: string | null;
-  enabled: boolean;
 }
 
 function tileIsWater(tiles: Map<string, Tile>, q: number, r: number): boolean {
@@ -987,7 +970,6 @@ export function combatTick(
   scrollAttachments?: ScrollAttachment[],
   commanders: Commander[] = [],
   prevMoraleState?: MoraleState,
-  majorEngagement?: CombatTickMajorEngagementOptions,
 ): CombatTickResult {
   const killed: string[] = [];
   const killedHeroIds: string[] = [];
@@ -995,18 +977,9 @@ export function combatTick(
   const combatHexKeys: string[] = [];
   const rangedShotFx: RangedShotFx[] = [];
   const killFeed: CombatKillEvent[] = [];
-  const newMajorEngagementHexKeys: string[] = [];
   const processed = new Set<string>();
   const now = nowMs;
   const moraleState: MoraleState = prevMoraleState ?? initMorale();
-
-  const doctrineForOwner = (ownerId: string, ...hexKeys: string[]): MajorEngagementDoctrine => {
-    for (const hk of hexKeys) {
-      const m = majorEngagement?.byHex.get(hk);
-      if (m?.[ownerId]) return m[ownerId]!;
-    }
-    return 'balanced';
-  };
 
   const byHex: Record<string, Unit[]> = {};
   for (const u of units) {
@@ -1046,31 +1019,6 @@ export function combatTick(
     }
     if (side1.length === 0 || side2.length === 0) continue;
 
-    if (!s1Nav && majorEngagement?.enabled && bothSidesMeetMajorThreshold(side1, side2, owners[0], owners[1], units)) {
-      if (!majorEngagement.byHex.has(hexKey)) {
-        const init: Record<string, MajorEngagementDoctrine> = {
-          [owners[0]]: 'balanced',
-          [owners[1]]: 'balanced',
-        };
-        if (majorEngagement.humanPlayerId == null) {
-          init[owners[0]] = pickAiMajorEngagementDoctrine(side1, side2);
-          init[owners[1]] = pickAiMajorEngagementDoctrine(side2, side1);
-        } else {
-          for (const oid of owners) {
-            if (oid !== majorEngagement.humanPlayerId) {
-              const my = oid === owners[0] ? side1 : side2;
-              const en = oid === owners[0] ? side2 : side1;
-              init[oid] = pickAiMajorEngagementDoctrine(my, en);
-            }
-          }
-        }
-        majorEngagement.byHex.set(hexKey, init);
-        if (majorEngagement.humanPlayerId != null && owners.includes(majorEngagement.humanPlayerId)) {
-          newMajorEngagementHexKeys.push(hexKey);
-        }
-      }
-    }
-
     const hero1 = heroes.find(h => h.q === side1[0]?.q && h.r === side1[0]?.r && h.ownerId === owners[0]);
     const hero2 = heroes.find(h => h.q === side2[0]?.q && h.r === side2[0]?.r && h.ownerId === owners[1]);
 
@@ -1082,10 +1030,9 @@ export function combatTick(
     tickMorale(moraleState, hexKey, owners[1], side2.length, side1.length, hasCmd2, isHome2);
 
     combatHexKeys.push(hexKey);
-    const doctrineByOwner = majorEngagement?.byHex.get(hexKey);
     resolveMeleeRound(
       side1, side2, hero1, hero2, killed, killedHeroIds, notifications, cycle, cities, now, units, scrollAttachments,
-      commanders, tiles, moraleState, killFeed, byHex, doctrineByOwner, defenseInstallations,
+      commanders, tiles, moraleState, killFeed, byHex, defenseInstallations,
     );
     for (const u of side1.concat(side2)) processed.add(u.id);
   }
@@ -1152,16 +1099,6 @@ export function combatTick(
           damage = applyDamageResist(damage, target, cities, units, scrollAttachments, tiles);
           damage = Math.max(1, Math.floor(damage * commanderDefenseDamageFactorForUnit(target, commanders, cities, units)));
           damage = scaleLandCombatDamageToUnit(damage);
-          const docAA = doctrineForOwner(atk.ownerId, hexKey, otherKey);
-          const docDD = doctrineForOwner(target.ownerId, hexKey, otherKey);
-          damage = Math.max(
-            1,
-            Math.floor(
-              damage *
-                majorEngagementAttackMult(docAA, atk.type, flankBonus) *
-                majorEngagementDamageTakenMult(docDD),
-            ),
-          );
           const ro = combatRoll01(cycle, now, atk.id, target.id, 210);
           damage = applyHitOutcomeDamage(damage, hitOutcomeFromRoll(ro));
           target.hp -= damage;
@@ -1185,14 +1122,6 @@ export function combatTick(
           const cmdAtk = commanderAttackMultiplierForUnit(atk, commanders, cities, units);
           let damage = scaleLandCombatDamageToUnit(
             applyTowerDefense(getUnitAttack(atk, attackerHero, { attackMult: atkMult, commanderAttackMult: cmdAtk }), oq, or_, cities),
-          );
-          const docAA = doctrineForOwner(atk.ownerId, hexKey, otherKey);
-          const docDH = doctrineForOwner(enemyHero.ownerId, hexKey, otherKey);
-          damage = Math.max(
-            1,
-            Math.floor(
-              damage * majorEngagementAttackMult(docAA, atk.type, 0) * majorEngagementDamageTakenMult(docDH),
-            ),
           );
           const ro = combatRoll01(cycle, now, atk.id, enemyHero.id, 211);
           damage = applyHitOutcomeDamage(damage, hitOutcomeFromRoll(ro));
@@ -1235,16 +1164,6 @@ export function combatTick(
         damage = applyDamageResist(damage, counterTarget, cities, units, scrollAttachments, tiles);
         damage = Math.max(1, Math.floor(damage * commanderDefenseDamageFactorForUnit(counterTarget, commanders, cities, units)));
         damage = scaleLandCombatDamageToUnit(damage);
-        const docDef = doctrineForOwner(def.ownerId, hexKey, otherKey);
-        const docCt = doctrineForOwner(counterTarget.ownerId, hexKey, otherKey);
-        damage = Math.max(
-          1,
-          Math.floor(
-            damage *
-              majorEngagementAttackMult(docDef, def.type, flankDef) *
-              majorEngagementDamageTakenMult(docCt),
-          ),
-        );
         const ro2 = combatRoll01(cycle, now, def.id, counterTarget.id, 212);
         damage = applyHitOutcomeDamage(damage, hitOutcomeFromRoll(ro2));
         counterTarget.hp -= damage;
@@ -1368,16 +1287,6 @@ export function combatTick(
           damage = applyDamageResist(damage, target, cities, units, scrollAttachments, tiles);
           damage = Math.max(1, Math.floor(damage * commanderDefenseDamageFactorForUnit(target, commanders, cities, units)));
           damage = scaleLandCombatDamageToUnit(damage);
-          const docAA = doctrineForOwner(atk.ownerId, cityHexKey, otherKey);
-          const docDD = doctrineForOwner(target.ownerId, cityHexKey, otherKey);
-          damage = Math.max(
-            1,
-            Math.floor(
-              damage *
-                majorEngagementAttackMult(docAA, atk.type, flankBonus) *
-                majorEngagementDamageTakenMult(docDD),
-            ),
-          );
           const ro = combatRoll01(cycle, now, atk.id, target.id, 214);
           damage = applyHitOutcomeDamage(damage, hitOutcomeFromRoll(ro));
           target.hp -= damage;
@@ -1404,14 +1313,6 @@ export function combatTick(
           const cmdAtk = commanderAttackMultiplierForUnit(atk, commanders, cities, units);
           let damage = scaleLandCombatDamageToUnit(
             applyTowerDefense(getUnitAttack(atk, atkHero, { attackMult: atkMult, commanderAttackMult: cmdAtk }), oq, or_, cities),
-          );
-          const docAA = doctrineForOwner(atk.ownerId, cityHexKey, otherKey);
-          const docDH = doctrineForOwner(targetHero.ownerId, cityHexKey, otherKey);
-          damage = Math.max(
-            1,
-            Math.floor(
-              damage * majorEngagementAttackMult(docAA, atk.type, 0) * majorEngagementDamageTakenMult(docDH),
-            ),
           );
           const ro = combatRoll01(cycle, now, atk.id, targetHero.id, 215);
           damage = applyHitOutcomeDamage(damage, hitOutcomeFromRoll(ro));
@@ -1490,7 +1391,6 @@ export function combatTick(
     rangedShotFx,
     moraleState,
     killFeed,
-    newMajorEngagementHexKeys,
   };
 }
 
@@ -1613,11 +1513,18 @@ export function coastalBombardmentTick(
       if (!combatHexKeys.includes(k)) combatHexKeys.push(k);
     }
 
+    const wallDmg =
+      ship.type === 'capital_ship' ? COASTAL_BOMBARD_WALL_DAMAGE + 2 : COASTAL_BOMBARD_WALL_DAMAGE;
+    const unitBaseDmg =
+      ship.type === 'capital_ship'
+        ? Math.round(COASTAL_BOMBARD_UNIT_BASE * 1.5)
+        : COASTAL_BOMBARD_UNIT_BASE;
+
     for (const w of wallSections) {
       if (w.ownerId === ship.ownerId) continue;
       if ((w.hp ?? 0) <= 0) continue;
       if (!splashKeysSet.has(tileKey(w.q, w.r))) continue;
-      w.hp = Math.max(0, (w.hp ?? 0) - COASTAL_BOMBARD_WALL_DAMAGE);
+      w.hp = Math.max(0, (w.hp ?? 0) - wallDmg);
     }
 
     let salt = 400;
@@ -1626,7 +1533,7 @@ export function coastalBombardmentTick(
       if (u.ownerId === ship.ownerId) continue;
       if (!splashKeysSet.has(tileKey(u.q, u.r))) continue;
       salt++;
-      let damage = applyTowerDefense(COASTAL_BOMBARD_UNIT_BASE, u.q, u.r, cities);
+      let damage = applyTowerDefense(unitBaseDmg, u.q, u.r, cities);
       damage = applyDamageResist(damage, u, cities, units, scrollAttachments);
       if (commanders.length) {
         const f = commanderDefenseDamageFactorForUnit(u, commanders, cities, units);
@@ -1656,7 +1563,7 @@ export function coastalBombardmentTick(
       if (h.ownerId === ship.ownerId || heroHp(h) <= 0) continue;
       if (!splashKeysSet.has(tileKey(h.q, h.r))) continue;
       if (tileIsWater(tiles, h.q, h.r)) continue;
-      let dmg = scaleLandCombatDamageToUnit(applyTowerDefense(COASTAL_BOMBARD_UNIT_BASE, h.q, h.r, cities));
+      let dmg = scaleLandCombatDamageToUnit(applyTowerDefense(unitBaseDmg, h.q, h.r, cities));
       const ro = combatRoll01(cycle, now, ship.id, h.id, 450);
       dmg = applyBombardSplashDamage(dmg, hitOutcomeFromBombardSplashRoll(ro));
       if (dmg <= 0) continue;
@@ -1682,7 +1589,6 @@ export function coastalBombardmentTick(
     rangedShotFx,
     moraleState: initMorale(),
     killFeed: [],
-    newMajorEngagementHexKeys: [],
   };
 }
 
@@ -1711,7 +1617,6 @@ function resolveMeleeRound(
   moraleState?: MoraleState,
   killFeed?: CombatKillEvent[],
   byHex?: Record<string, Unit[]>,
-  doctrineByOwner?: Record<string, MajorEngagementDoctrine>,
   defenseInstallations?: DefenseInstallation[],
 ) {
   const hexKey = side1[0] ? tileKey(side1[0].q, side1[0].r) : '';
@@ -1752,16 +1657,6 @@ function resolveMeleeRound(
       dmg = applyDamageResist(dmg, unitTarget, cities, allUnits, scrollAttachments, tiles);
       dmg = Math.max(1, Math.floor(dmg * commanderDefenseDamageFactorForUnit(unitTarget, commanders, cities, allUnits)));
       dmg = scaleLandCombatDamageToUnit(dmg);
-      const docA = doctrineByOwner?.[atk.ownerId] ?? 'balanced';
-      const docD = doctrineByOwner?.[unitTarget.ownerId] ?? 'balanced';
-      dmg = Math.max(
-        1,
-        Math.floor(
-          dmg *
-            majorEngagementAttackMult(docA, atk.type, flankBonus) *
-            majorEngagementDamageTakenMult(docD),
-        ),
-      );
       const ro = combatRoll01(cycle, nowMs, atk.id, unitTarget.id, salt);
       dmg = applyHitOutcomeDamage(dmg, hitOutcomeFromRoll(ro));
       unitTarget.hp -= dmg;
@@ -1776,12 +1671,6 @@ function resolveMeleeRound(
       }
     } else if (defHero) {
       let dmg = scaleLandCombatDamageToUnit(applyTowerDefense(rawDmg, defHero.q, defHero.r, cities));
-      const docA = doctrineByOwner?.[atk.ownerId] ?? 'balanced';
-      const docD = doctrineByOwner?.[defHero.ownerId] ?? 'balanced';
-      dmg = Math.max(
-        1,
-        Math.floor(dmg * majorEngagementAttackMult(docA, atk.type, flankBonus) * majorEngagementDamageTakenMult(docD)),
-      );
       const ro = combatRoll01(cycle, nowMs, atk.id, defHero.id, salt + 1);
       dmg = applyHitOutcomeDamage(dmg, hitOutcomeFromRoll(ro));
       const hp = (defHero.hp ?? HERO_BASE_HP) - dmg;
@@ -1805,12 +1694,6 @@ function resolveMeleeRound(
       let scaled = scaleLandCombatDamageToUnit(
         Math.max(1, Math.floor(afterResist * commanderDefenseDamageFactorForUnit(target, commanders, cities, allUnits))),
       );
-      const docA = doctrineByOwner?.[hero1.ownerId ?? ''] ?? 'balanced';
-      const docD = doctrineByOwner?.[target.ownerId] ?? 'balanced';
-      scaled = Math.max(
-        1,
-        Math.floor(scaled * majorEngagementAttackMult(docA, 'infantry', 0) * majorEngagementDamageTakenMult(docD)),
-      );
       const ro = combatRoll01(cycle, nowMs, hero1.id, target.id, 41);
       scaled = applyHitOutcomeDamage(scaled, hitOutcomeFromRoll(ro));
       target.hp -= scaled;
@@ -1827,12 +1710,6 @@ function resolveMeleeRound(
       const afterResist = applyDamageResist(dmg, target, cities, allUnits, scrollAttachments, tiles);
       let scaled = scaleLandCombatDamageToUnit(
         Math.max(1, Math.floor(afterResist * commanderDefenseDamageFactorForUnit(target, commanders, cities, allUnits))),
-      );
-      const docA = doctrineByOwner?.[hero2.ownerId ?? ''] ?? 'balanced';
-      const docD = doctrineByOwner?.[target.ownerId] ?? 'balanced';
-      scaled = Math.max(
-        1,
-        Math.floor(scaled * majorEngagementAttackMult(docA, 'infantry', 0) * majorEngagementDamageTakenMult(docD)),
       );
       const ro = combatRoll01(cycle, nowMs, hero2.id, target.id, 42);
       scaled = applyHitOutcomeDamage(scaled, hitOutcomeFromRoll(ro));

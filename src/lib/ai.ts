@@ -11,6 +11,8 @@ import {
   SpecialRegionKind,
   ScrollRelicSite,
   isNavalUnitType,
+  isFarmBuildingType,
+  isValidFarmPlacementBiome,
 } from '@/types/game';
 import { computeCityProductionRate } from '@/lib/gameLoop';
 import {
@@ -491,7 +493,9 @@ export function planAiTurn(
       if (toBuild === 'quarry' && quarrySpot) spot = quarrySpot;
       else if (toBuild === 'mine' && mineSpot) spot = mineSpot;
       else if (toBuild === 'gold_mine' && goldMineSpot) spot = goldMineSpot;
-      else if (toBuild !== 'quarry' && toBuild !== 'mine' && toBuild !== 'gold_mine') spot = findEmptyTerritoryTile(city, territory, tiles, cities);
+      else if (toBuild !== 'quarry' && toBuild !== 'mine' && toBuild !== 'gold_mine') {
+        spot = findEmptyTerritoryTile(city, territory, tiles, cities, toBuild);
+      }
 
       if (spot) {
         actions.builds.push({ cityId: city.id, type: toBuild, q: spot[0], r: spot[1] });
@@ -1011,13 +1015,19 @@ function findEmptyTerritoryTile(
   territory: Map<string, TerritoryInfo>,
   tiles: Map<string, Tile>,
   allCities: City[],
+  buildingType: BuildingType,
 ): [number, number] | null {
   const cityKeys = new Set(allCities.map(c => tileKey(c.q, c.r)));
 
   for (const [key, info] of Array.from(territory.entries())) {
     if (info.cityId !== city.id) continue;
     const tile = tiles.get(key);
-    if (!tile || tile.biome === 'water' || tile.biome === 'mountain') continue;
+    if (!tile || tile.biome === 'water') continue;
+    if (isFarmBuildingType(buildingType)) {
+      if (!isValidFarmPlacementBiome(tile.biome)) continue;
+    } else if (tile.biome === 'mountain') {
+      continue;
+    }
     if (cityKeys.has(key)) continue;
 
     const hasBuilding = allCities.some(c => c.buildings.some(b => tileKey(b.q, b.r) === key));

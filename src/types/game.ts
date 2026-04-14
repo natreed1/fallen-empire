@@ -170,15 +170,24 @@ export interface ScrollAttachment {
 /** Legacy disk radius (no longer used for generation; kept for tools/docs). */
 export const SPECIAL_REGION_HEX_RADIUS = 5;
 
-/** Noise scale for clustering special scroll terrain (simplex input). */
+/** Noise scale for clustering special scroll terrain (legacy; named wilds now use single blobs). */
 export const SPECIAL_TERRAIN_NOISE_SCALE = 0.088;
 /**
- * Cluster threshold in 0..1 space (higher = fewer special tiles).
+ * Cluster threshold in 0..1 space (legacy; named wilds now use single blobs).
  * ~0.72 leaves ~28% of land candidates in the noise “upper” band before biome pick.
  */
 export const SPECIAL_TERRAIN_CLUSTER_THRESHOLD = 0.72;
 
-/** @deprecated Relic pickup is instant; kept for any legacy UI references. */
+/** Each named wilds flavor is one connected patch; a match has 2–4 flavors. */
+export const SPECIAL_REGION_KINDS_MIN = 2;
+export const SPECIAL_REGION_KINDS_MAX = 4;
+/** Min / max hexes per connected wilds patch (approximate target for BFS growth). */
+export const SPECIAL_REGION_BLOB_SIZE_MIN = 6;
+export const SPECIAL_REGION_BLOB_SIZE_MAX = 24;
+/** No wilds hex may lie within this axial distance of a capital (game uses rebuild after capitals). */
+export const SPECIAL_TERRAIN_CAPITAL_EXCLUSION_RADIUS = 10;
+
+/** Humans must walk every hex of the relic's connected special-terrain patch before claiming (see scroll search). */
 export const SCROLL_SEARCH_CYCLES_REQUIRED = 3;
 
 /** Seeded relic site: one per special terrain flavor present on the map. */
@@ -1065,6 +1074,11 @@ export function isFarmBuildingType(t: BuildingType): boolean {
   return t === 'farm' || t === 'banana_farm';
 }
 
+/** Land biomes where a farm / banana farm may be placed (cleared fields — not forest or mountain). */
+export function isValidFarmPlacementBiome(biome: Biome): boolean {
+  return biome !== 'water' && biome !== 'mountain' && biome !== 'forest';
+}
+
 /** Level-aware job count (e.g. L2 farm has 3 jobs). Use when the building instance is available. */
 export function getBuildingJobs(b: { type: BuildingType; level?: number }): number {
   const base = BUILDING_JOBS[b.type] ?? 0;
@@ -1103,7 +1117,7 @@ export const BUILDING_PRODUCTION: Record<BuildingType, BuildingProduction> = {
   siege_workshop: { food: 0, goods: 0, guns: 0 },
   market:      { food: 0, goods: 0, guns: 0 },
   quarry:      { food: 0, goods: 0, guns: 0, stone: 3 },
-  mine:        { food: 0, goods: 0, guns: 0, iron: 1.5 },
+  mine:        { food: 0, goods: 0, guns: 0, iron: 3 },
   gold_mine:   { food: 0, goods: 0, guns: 0, gold: 7 },
   sawmill:     { food: 0, goods: 0, guns: 0, refinedWood: 1 },
   port:        { food: 0, goods: 0, guns: 0 },
@@ -1261,7 +1275,7 @@ export const UNIT_BASE_STATS: Record<UnitType, {
   warship:        { maxHp: 110, attack: 18, range: 2, speed: 1.0, foodUpkeep: 2, gunUpkeep: 0 },
   transport_ship: { maxHp: 140, attack: 0,  range: 0, speed: 0.75, foodUpkeep: 2, gunUpkeep: 0 },
   fisher_transport: { maxHp: 55, attack: 0, range: 0, speed: 0.9, foodUpkeep: 1, gunUpkeep: 0 },
-  capital_ship:   { maxHp: 160, attack: 28, range: 2, speed: 0.85, foodUpkeep: 3, gunUpkeep: 0 },
+  capital_ship:   { maxHp: 160, attack: 36, range: 2, speed: 0.85, foodUpkeep: 3, gunUpkeep: 0 },
 };
 
 // Level 2 unit stats (require L2 arms); siege and defender have no L2 variant
@@ -1285,7 +1299,7 @@ export const UNIT_L2_STATS: Record<UnitType, {
   warship:        { maxHp: 110, attack: 18, range: 2, speed: 1.0, foodUpkeep: 2, gunUpkeep: 0, gunL2Upkeep: 0 },
   transport_ship: { maxHp: 140, attack: 0,  range: 0, speed: 0.75, foodUpkeep: 2, gunUpkeep: 0, gunL2Upkeep: 0 },
   fisher_transport: { maxHp: 55, attack: 0, range: 0, speed: 0.9, foodUpkeep: 1, gunUpkeep: 0, gunL2Upkeep: 0 },
-  capital_ship:   { maxHp: 160, attack: 28, range: 2, speed: 0.85, foodUpkeep: 3, gunUpkeep: 0, gunL2Upkeep: 0 },
+  capital_ship:   { maxHp: 160, attack: 36, range: 2, speed: 0.85, foodUpkeep: 3, gunUpkeep: 0, gunL2Upkeep: 0 },
 };
 
 /** Same ranged reach as field {@link UNIT_BASE_STATS} trebuchet. */
@@ -1313,7 +1327,7 @@ export const UNIT_L3_STATS: Record<UnitType, {
   warship:        { maxHp: 110, attack: 18, range: 2, speed: 1.0, foodUpkeep: 2, gunUpkeep: 0, gunL2Upkeep: 0 },
   transport_ship: { maxHp: 140, attack: 0,  range: 0, speed: 0.75, foodUpkeep: 2, gunUpkeep: 0, gunL2Upkeep: 0 },
   fisher_transport: { maxHp: 55, attack: 0, range: 0, speed: 0.9, foodUpkeep: 1, gunUpkeep: 0, gunL2Upkeep: 0 },
-  capital_ship:   { maxHp: 160, attack: 28, range: 2, speed: 0.85, foodUpkeep: 3, gunUpkeep: 0, gunL2Upkeep: 0 },
+  capital_ship:   { maxHp: 160, attack: 36, range: 2, speed: 0.85, foodUpkeep: 3, gunUpkeep: 0, gunL2Upkeep: 0 },
 };
 
 /** L3 iron Marksman: short range, high attack (same upkeep as L3 ranged). */
@@ -1502,18 +1516,6 @@ export const COMBAT_KILL_XP = 4;
 export const COMBAT_HIT_FULL_CHANCE = 0.72;
 export const COMBAT_HIT_GLANCE_CHANCE = 0.18;
 export const COMBAT_GLANCE_DAMAGE_MULT = 0.42;
-
-/** Major engagement: each side’s engaged stack must be at least this fraction of the enemy’s global land army (sum maxHp). */
-export const MAJOR_ENGAGEMENT_ARMY_FRACTION = 0.2;
-
-/** Player-chosen doctrine for a major engagement (modifiers in majorEngagement.ts). */
-export type MajorEngagementDoctrine =
-  | 'balanced'
-  | 'shield_wall'
-  | 'volley_focus'
-  | 'flank_emphasis'
-  | 'hold_the_line'
-  | 'cavalry_push';
 
 /** Battleship shore bombardment: max hex distance from ship (on water) to aim point on land. */
 export const COASTAL_BOMBARD_RANGE = 3;
