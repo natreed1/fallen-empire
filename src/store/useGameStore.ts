@@ -98,6 +98,8 @@ import {
   placeAiStartingCitiesSequential,
   placeManyAiCapitalsApart,
 } from '@/lib/ai';
+import { spawnUnitFromPendingLand, type PendingLandRecruit } from '@/lib/pendingLandRecruit';
+import { applyAiInstantBuilds, applyAiUpgrades, applyAiRecruitsAsPending } from '@/lib/applyAiPlan';
 import { getAiParams } from '@/lib/aiParams';
 import {
   movementTick,
@@ -627,20 +629,6 @@ export type TacticalAssignOrderType =
   | 'patrol_pick'
   | 'patrol_paint';
 
-type PendingLandRecruit = {
-  id: string;
-  playerId: string;
-  cityId: string;
-  type: UnitType;
-  effectiveArmsLevel: 1 | 2 | 3;
-  rangedVariant?: RangedVariant;
-  spawnQ: number;
-  spawnR: number;
-  completesAtCycle: number;
-  stackId?: string;
-  moveToRallyAfterSpawn?: { q: number; r: number };
-};
-
 type PendingShipRecruit = {
   id: string;
   playerId: string;
@@ -960,54 +948,6 @@ function incorporateVillagePatch(
     territory,
   );
   return { players: newPlayers, cities: newCities, tiles: newTiles, territory, visibleHexes, newCity };
-}
-
-function spawnUnitFromPendingLand(item: PendingLandRecruit, cities: City[]): Unit | null {
-  if (item.type === 'builder') return null;
-  const city = cities.find(c => c.id === item.cityId);
-  if (!city) return null;
-  const rv =
-    item.type === 'ranged' && item.effectiveArmsLevel === 3
-      ? (item.rangedVariant ?? 'marksman')
-      : undefined;
-  const stats = getUnitStats({
-    type: item.type,
-    armsLevel: item.effectiveArmsLevel,
-    rangedVariant: rv,
-  });
-  const u: Unit = {
-    id: generateId('unit'),
-    type: item.type,
-    q: item.spawnQ,
-    r: item.spawnR,
-    ownerId: item.playerId,
-    hp: stats.maxHp,
-    maxHp: stats.maxHp,
-    xp: 0,
-    level: 0,
-    status: 'idle',
-    stance: 'aggressive',
-    nextMoveAt: 0,
-    originCityId: item.cityId,
-  };
-  if (item.effectiveArmsLevel === 2 && item.type !== 'defender') u.armsLevel = 2;
-  if (item.effectiveArmsLevel === 3 || item.type === 'defender') u.armsLevel = 3;
-  if (item.type === 'ranged' && item.effectiveArmsLevel === 3) {
-    u.rangedVariant = rv;
-  }
-  if (item.stackId) u.stackId = item.stackId;
-  if (item.moveToRallyAfterSpawn) {
-    const rq = item.moveToRallyAfterSpawn.q;
-    const rr = item.moveToRallyAfterSpawn.r;
-    u.targetQ = rq;
-    u.targetR = rr;
-    u.status = 'moving';
-    u.marchInitialHexDistance = marchHexDistanceAtOrder(u, rq, rr);
-  } else if (!isNavalUnitType(item.type)) {
-    u.garrisonCityId = city.id;
-    u.defendCityId = city.id;
-  }
-  return u;
 }
 
 function spawnUnitFromPendingShip(item: PendingShipRecruit, cities: City[]): Unit | null {
@@ -2749,7 +2689,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       cities: flushCities,
       players: flushPlayers,
       cycle: newCycle,
-      pendingRecruits: [...pendingRecruitsAcc, ...s.pendingRecruits.filter(p => p.completesAtCycle !== newCycle)],
+      pendingRecruits: pendingRecruitsAcc,
     });
     flushCities = replen.cities;
     flushPlayers = replen.players;
@@ -2839,106 +2779,42 @@ export const useGameStore = create<GameState>((set, get) => ({
       const aiPlayer = players.find(p => p.id === aiPlayerId);
       if (!aiPlayer) continue;
 
-      for (const build of aiPlan.builds) {
-        const city = cities.find(c => c.id === build.cityId);
-        if (!city || city.ownerId !== aiPlayerId) continue;
-        if (aiPlayer.gold < BUILDING_COSTS[build.type]) continue;
-        const ironCost = (BUILDING_IRON_COSTS[build.type] ?? 0);
-        if (ironCost > 0 && (city.storage.iron ?? 0) < ironCost) continue;
-        const b: CityBuilding = { type: build.type, q: build.q, r: build.r };
-        if (['quarry', 'mine', 'gold_mine', 'barracks', 'factory', 'academy', 'siege_workshop', 'farm', 'banana_farm', 'market', 'social_bar'].includes(build.type)) b.level = 1;
-        if (build.type === 'quarry' || build.type === 'mine' || build.type === 'gold_mine') {
-          const toAssign = Math.min(WORKERS_PER_LEVEL, Math.max(0, city.population - 1));
-          b.assignedWorkers = toAssign;
-          city.population -= toAssign;
-        }
-        city.buildings.push(b);
-        aiPlayer.gold -= BUILDING_COSTS[build.type];
-        if (ironCost > 0) city.storage.iron = (city.storage.iron ?? 0) - ironCost;
-      }
+      applyAiInstantBuilds(
+        aiPlan.builds.filter(b => b.type !== 'city_center'),
+        {
+          aiPlayerId,
+          cities,
+          getPlayer: () => players.find(p => p.id === aiPlayerId),
+          onSpendGold: d => {
+            const p = players.find(pl => pl.id === aiPlayerId);
+            if (p) p.gold -= d;
+          },
+        },
+      );
 
-      for (const up of aiPlan.upgrades ?? []) {
-        const city = cities.find(c => c.id === up.cityId);
-        if (!city || city.ownerId !== aiPlayerId || !aiPlayer) continue;
-        const cost = up.type === 'barracks' ? BARACKS_UPGRADE_COST : (up.type === 'farm' || up.type === 'banana_farm') ? FARM_UPGRADE_COST : FACTORY_UPGRADE_COST;
-        if (aiPlayer.gold < cost) continue;
-        const building = city.buildings.find(b => b.type === up.type && b.q === up.buildingQ && b.r === up.buildingR);
-        if (!building || (building.level ?? 1) >= 2) continue;
-        building.level = 2;
-        aiPlayer.gold -= cost;
-      }
+      applyAiUpgrades(aiPlan.upgrades, {
+        aiPlayerId,
+        cities,
+        getPlayer: () => players.find(p => p.id === aiPlayerId),
+        onSpendGold: d => {
+          const p = players.find(pl => pl.id === aiPlayerId);
+          if (p) p.gold -= d;
+        },
+      });
 
-      const aiRecruitCities = cities.filter(c => c.ownerId === aiPlayerId);
-      const aiTotalPopForRecruit = aiRecruitCities.reduce((s, c) => s + c.population, 0);
-      let aiTroopCount = units.filter(u => u.ownerId === aiPlayerId && u.hp > 0).length;
-      for (const rec of aiPlan.recruits) {
-        const city = cities.find(c => c.id === rec.cityId);
-        if (!city || city.ownerId !== aiPlayerId || city.population <= 0 || aiTroopCount >= aiTotalPopForRecruit) continue;
-        const effectiveLevel = rec.type === 'defender' ? 3 : (rec.armsLevel ?? 1);
-        const wantL2 = effectiveLevel === 2;
-        const wantL3 = effectiveLevel === 3;
-        const goldCost = wantL3 ? UNIT_L3_COSTS[rec.type].gold : wantL2 ? UNIT_L2_COSTS[rec.type].gold : UNIT_COSTS[rec.type].gold;
-        const stoneCost = wantL2 ? (UNIT_L2_COSTS[rec.type].stone ?? 0) : 0;
-        const ironCost = wantL3 ? (UNIT_L3_COSTS[rec.type].iron ?? 0) : 0;
-        const refinedWoodCost = wantL3
-          ? (UNIT_L3_COSTS[rec.type].refinedWood ?? 0)
-          : wantL2
-            ? (UNIT_L2_COSTS[rec.type].refinedWood ?? 0)
-            : (UNIT_COSTS[rec.type].refinedWood ?? 0);
-        if (aiPlayer.gold < goldCost) continue;
-        if (stoneCost > 0 && (city.storage.stone ?? 0) < stoneCost) continue;
-        if (ironCost > 0 && (city.storage.iron ?? 0) < ironCost) continue;
-        if (refinedWoodCost > 0 && (city.storage.refinedWood ?? 0) < refinedWoodCost) continue;
-        const stats = getUnitStats({ type: rec.type, armsLevel: effectiveLevel as 1 | 2 | 3 });
-        const gunL2Upkeep = (stats as { gunL2Upkeep?: number }).gunL2Upkeep ?? 0;
-        if (gunL2Upkeep > 0) {
-          const totalGunsL2 = cities.filter(c => c.ownerId === aiPlayerId).reduce((sum, c) => sum + (c.storage.gunsL2 ?? 0), 0);
-          if (totalGunsL2 < gunL2Upkeep) continue;
-        }
-        if (rec.type === 'builder') continue;
-        const barracks = city.buildings.find(b => b.type === 'barracks');
-        if (rec.type === 'defender' || wantL2 || wantL3) {
-          if ((barracks?.level ?? 1) < 2) continue;
-        }
-        const sq = city.q;
-        const sr = city.r;
-        const effArms: 1 | 2 | 3 = rec.type === 'defender' ? 3 : wantL3 ? 3 : wantL2 ? 2 : 1;
-        if (gunL2Upkeep > 0) {
-          for (const oc of cities.filter(c => c.ownerId === aiPlayerId)) {
-            if ((oc.storage.gunsL2 ?? 0) >= gunL2Upkeep) {
-              oc.storage.gunsL2 = (oc.storage.gunsL2 ?? 0) - gunL2Upkeep;
-              break;
-            }
-          }
-        }
-        aiPlayer.gold -= goldCost;
-        if (stoneCost > 0 || ironCost > 0 || refinedWoodCost > 0) {
-          const idx = cities.indexOf(city);
-          if (idx >= 0) {
-            const c = cities[idx];
-            cities[idx] = {
-              ...c,
-              storage: {
-                ...c.storage,
-                stone: Math.max(0, (c.storage.stone ?? 0) - stoneCost),
-                iron: Math.max(0, (c.storage.iron ?? 0) - ironCost),
-                refinedWood: Math.max(0, (c.storage.refinedWood ?? 0) - refinedWoodCost),
-              },
-            };
-          }
-        }
-        pendingRecruitsAcc.push({
-          id: generateId('pr'),
-          playerId: aiPlayerId,
-          cityId: city.id,
-          type: rec.type,
-          effectiveArmsLevel: effArms,
-          spawnQ: sq,
-          spawnR: sr,
-          completesAtCycle: newCycle + 1,
-        });
-        aiTroopCount += 1;
-      }
+      applyAiRecruitsAsPending(aiPlan.recruits, {
+        aiPlayerId,
+        newCycle,
+        cities,
+        units,
+        getPlayer: () => players.find(p => p.id === aiPlayerId),
+        onSpendGold: d => {
+          const p = players.find(pl => pl.id === aiPlayerId);
+          if (p) p.gold -= d;
+        },
+        pendingRecruitsOut: pendingRecruitsAcc,
+        generateId,
+      });
 
       for (const scout of aiPlan.scouts ?? []) {
         const key = tileKey(scout.targetQ, scout.targetR);

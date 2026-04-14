@@ -16,13 +16,10 @@ import {
   DefenseInstallation, UnitStack, OperationalArmy,
   ensureCityBuildingHp, UNIT_HP_REGEN_FRACTION_PER_CYCLE, isNavalUnitType,
   STARTING_GOLD, VILLAGE_CITY_TEMPLATE, CITY_CENTER_STORAGE,
-  BUILDING_COSTS, BUILDING_IRON_COSTS, BUILDING_BP_COST, BUILDING_JOBS, getBuildingJobs,
+  BUILDING_BP_COST, BUILDING_JOBS, getBuildingJobs,
   BP_RATE_BASE,
-  WORKERS_PER_LEVEL,
-  BARACKS_UPGRADE_COST, FACTORY_UPGRADE_COST, FARM_UPGRADE_COST,
-  UNIT_COSTS, UNIT_L2_COSTS, UNIT_L3_COSTS, getUnitStats, type RangedVariant,
-  SCOUT_MISSION_COST, SCOUT_MISSION_DURATION_SEC, VILLAGE_INCORPORATE_COST,
-  DEFENDER_IRON_COST,
+  getUnitStats,
+  SCOUT_MISSION_COST, SCOUT_MISSION_DURATION_SEC,   VILLAGE_INCORPORATE_COST,
   FRONTIER_CYCLES, CITY_NAMES, PLAYER_COLORS,
   CITY_CAPTURE_HOLD_MS,
   WALL_SECTION_STONE_COST, WALL_SECTION_HP, WALL_SECTION_BP_COST, getHexRing,
@@ -55,6 +52,8 @@ import { computeConstructionAvailableBp, fillUniversitySlotTasks } from '../lib/
 import { computeContestedZoneHexKeys, applyContestedZonePayout } from '../lib/contestedZone';
 import { rollCommanderIdentity, createCommanderRecord, syncCommandersToAssignments, unassignCommandersWithDeadAnchors, clearInvalidCommanderAssignments } from '../lib/commanders';
 import { tickScrollRelicPickup, returnScrollsForDeadCarriers } from '../lib/scrolls';
+import { spawnUnitFromPendingLand, type PendingLandRecruit } from '../lib/pendingLandRecruit';
+import { applyAiInstantBuilds, applyAiUpgrades, applyAiRecruitsAsPending } from '../lib/applyAiPlan';
 
 export type { AiParams };
 export { DEFAULT_AI_PARAMS };
@@ -105,6 +104,8 @@ export type SimState = {
   operationalArmies: OperationalArmy[];
   /** Persistent morale stacks from land combat (same as live game). */
   combatMoraleState: MoraleState;
+  /** Land recruits completing next cycle (parity with useGameStore pendingRecruits). */
+  pendingRecruits: PendingLandRecruit[];
 };
 
 let _cityNameIdx = 0;
@@ -114,6 +115,23 @@ function nextCityName(): string {
 
 /** Create initial bot-vs-bot state: map with two AI capitals at corners. */
 export function initBotVsBotGame(
+  seed: number,
+  _paramsA?: AiParams,
+  _paramsB?: AiParams,
+  mapConfigOverride?: Partial<MapConfig>,
+): SimState {
+  let lastErr: Error | null = null;
+  for (let bump = 0; bump < 128; bump++) {
+    try {
+      return initBotVsBotGameOnce(seed + bump, _paramsA, _paramsB, mapConfigOverride);
+    } catch (e) {
+      lastErr = e instanceof Error ? e : new Error(String(e));
+    }
+  }
+  throw lastErr ?? new Error('initBotVsBotGame: could not place capitals after 128 seed bumps');
+}
+
+function initBotVsBotGameOnce(
   seed: number,
   _paramsA?: AiParams,
   _paramsB?: AiParams,
@@ -215,6 +233,7 @@ export function initBotVsBotGame(
     unitStacks: [],
     operationalArmies: [],
     combatMoraleState: new Map(),
+    pendingRecruits: [],
   };
 }
 
@@ -477,12 +496,21 @@ export function stepSimulation(
   const newCycle = state.cycle + 1;
   const newSimTimeMs = state.simTimeMs + 30_000;
 
-  // ── Building HP migration + passive HP regen + army rally/replenish (matches runCycle pre-economy) ──
+  let pendingRecruitsAcc = state.pendingRecruits.filter(pr => pr.completesAtCycle !== newCycle);
+
+  // ── Building HP migration + land recruits completing this cycle (matches runCycle) ──
   let citiesPrep = state.cities.map(c => ({
     ...c,
     buildings: c.buildings.map(b => ensureCityBuildingHp(b)),
   }));
-  let unitsPrep = state.units.map(u => {
+  let unitsPrep = [...state.units];
+  for (const pr of state.pendingRecruits.filter(p => p.completesAtCycle === newCycle)) {
+    const u = spawnUnitFromPendingLand(pr, citiesPrep);
+    if (u) unitsPrep.push(u);
+  }
+
+  // ── Passive HP regen + army rally/replenish ──
+  unitsPrep = unitsPrep.map(u => {
     if (u.hp <= 0 || u.hp >= u.maxHp || u.aboardShipId || isNavalUnitType(u.type) || u.type === 'builder') {
       return u;
     }
@@ -498,11 +526,14 @@ export function stepSimulation(
     cities: citiesPrep,
     players: playersPrep,
     cycle: newCycle,
-    pendingRecruits: [],
+    pendingRecruits: pendingRecruitsAcc,
   });
   citiesPrep = replen.cities;
   playersPrep = replen.players;
   unitStacksState = replen.unitStacks;
+  for (const pr of replen.newPending) {
+    pendingRecruitsAcc.push(pr as PendingLandRecruit);
+  }
 
   // ── Weather ──
   let currentWeather = state.activeWeather;
@@ -723,172 +754,57 @@ export function stepSimulation(
     if (!aiPlayer) continue;
 
     const cityById = new Map(cities.map(c => [c.id, c]));
-    const occupiedTileKeys = new Set<string>();
-    for (const c of cities) {
-      for (const b of c.buildings) occupiedTileKeys.add(tileKey(b.q, b.r));
-    }
-    for (const cs of constructions) occupiedTileKeys.add(tileKey(cs.q, cs.r));
 
-    for (const build of aiPlan.builds) {
-      if (build.type === 'city_center') continue;
-      const city = cityById.get(build.cityId);
-      if (!city || city.ownerId !== aiPlayerId) continue;
-      if (aiPlayer.gold < BUILDING_COSTS[build.type]) continue;
-      const ironCost = BUILDING_IRON_COSTS[build.type] ?? 0;
-      if (ironCost > 0 && (city.storage.iron ?? 0) < ironCost) continue;
-      // Only start construction in own territory (city provides BP; outside territory would need builders)
-      const terr = state.territory.get(tileKey(build.q, build.r));
-      if (!terr || terr.playerId !== aiPlayerId) continue;
-      if (occupiedTileKeys.has(tileKey(build.q, build.r))) continue;
+    applyAiInstantBuilds(
+      aiPlan.builds.filter(b => b.type !== 'city_center'),
+      {
+        aiPlayerId,
+        cities,
+        getPlayer: () => players.find(p => p.id === aiPlayerId),
+        onSpendGold: d => {
+          const p = players.find(pl => pl.id === aiPlayerId);
+          if (p) p.gold -= d;
+        },
+        onInstantBuild: diagnostics
+          ? bt => {
+              const early = newCycle <= 100;
+              if (aiPlayerId === AI_ID) {
+                diagnostics.buildsAi1![bt] = (diagnostics.buildsAi1![bt] ?? 0) + 1;
+                if (early) diagnostics.buildsAi1Early![bt] = (diagnostics.buildsAi1Early![bt] ?? 0) + 1;
+                else diagnostics.buildsAi1Late![bt] = (diagnostics.buildsAi1Late![bt] ?? 0) + 1;
+              } else {
+                diagnostics.buildsAi2![bt] = (diagnostics.buildsAi2![bt] ?? 0) + 1;
+                if (early) diagnostics.buildsAi2Early![bt] = (diagnostics.buildsAi2Early![bt] ?? 0) + 1;
+                else diagnostics.buildsAi2Late![bt] = (diagnostics.buildsAi2Late![bt] ?? 0) + 1;
+              }
+            }
+          : undefined,
+      },
+    );
 
-      const bpRequired = BUILDING_BP_COST[build.type];
-      const site: ConstructionSite = {
-        id: generateId('con'),
-        type: build.type as BuildingType,
-        q: build.q,
-        r: build.r,
-        cityId: city.id,
-        ownerId: aiPlayerId,
-        bpRequired,
-        bpAccumulated: 0,
-      };
-      constructions.push(site);
-      occupiedTileKeys.add(tileKey(build.q, build.r));
-      aiPlayer.gold -= BUILDING_COSTS[build.type];
-      if (ironCost > 0) {
-        const cityIdx = cities.indexOf(city);
-        if (cityIdx >= 0) {
-          const c = cities[cityIdx];
-          cities[cityIdx] = {
-            ...c,
-            storage: { ...c.storage, iron: Math.max(0, (c.storage.iron ?? 0) - ironCost) },
-          };
-        }
-      }
+    applyAiUpgrades(aiPlan.upgrades, {
+      aiPlayerId,
+      cities,
+      getPlayer: () => players.find(p => p.id === aiPlayerId),
+      onSpendGold: d => {
+        const p = players.find(pl => pl.id === aiPlayerId);
+        if (p) p.gold -= d;
+      },
+    });
 
-      if (diagnostics) {
-        const key = build.type;
-        const early = newCycle <= 100;
-        if (aiPlayerId === AI_ID) {
-          diagnostics.buildsAi1![key] = (diagnostics.buildsAi1![key] ?? 0) + 1;
-          if (early) diagnostics.buildsAi1Early![key] = (diagnostics.buildsAi1Early![key] ?? 0) + 1;
-          else diagnostics.buildsAi1Late![key] = (diagnostics.buildsAi1Late![key] ?? 0) + 1;
-        } else {
-          diagnostics.buildsAi2![key] = (diagnostics.buildsAi2![key] ?? 0) + 1;
-          if (early) diagnostics.buildsAi2Early![key] = (diagnostics.buildsAi2Early![key] ?? 0) + 1;
-          else diagnostics.buildsAi2Late![key] = (diagnostics.buildsAi2Late![key] ?? 0) + 1;
-        }
-      }
-    }
-
-    for (const up of aiPlan.upgrades ?? []) {
-      const city = cityById.get(up.cityId);
-      if (!city || city.ownerId !== aiPlayerId || !aiPlayer) continue;
-      const cost = up.type === 'barracks' ? BARACKS_UPGRADE_COST : (up.type === 'farm' || up.type === 'banana_farm') ? FARM_UPGRADE_COST : FACTORY_UPGRADE_COST;
-      if (aiPlayer.gold < cost) continue;
-      const building = city.buildings.find(b => b.type === up.type && b.q === up.buildingQ && b.r === up.buildingR);
-      if (!building || (building.level ?? 1) >= 2) continue;
-      building.level = 2;
-      aiPlayer.gold -= cost;
-    }
-
-    const aiRecruitCities = cities.filter(c => c.ownerId === aiPlayerId);
-    const aiTotalPopForRecruit = aiRecruitCities.reduce((s, c) => s + c.population, 0);
-    let aiTroopCount = units.filter(u => u.ownerId === aiPlayerId && u.hp > 0).length;
-    for (const rec of aiPlan.recruits) {
-      const city = cityById.get(rec.cityId);
-      if (!city || city.ownerId !== aiPlayerId || city.population <= 0 || aiTroopCount >= aiTotalPopForRecruit) continue;
-      if (rec.type === 'trebuchet' || rec.type === 'battering_ram') {
-        if (!city.buildings.some(b => b.type === 'siege_workshop')) continue;
-      }
-      const effectiveLevel = rec.type === 'defender' ? 3 : (rec.armsLevel ?? 1);
-      const wantL2 = effectiveLevel === 2;
-      const wantL3 = effectiveLevel === 3;
-      const goldCost = wantL3 ? UNIT_L3_COSTS[rec.type].gold : wantL2 ? UNIT_L2_COSTS[rec.type].gold : UNIT_COSTS[rec.type].gold;
-      const stoneCost = wantL2 ? (UNIT_L2_COSTS[rec.type].stone ?? 0) : 0;
-      const ironCost = wantL3 ? (UNIT_L3_COSTS[rec.type].iron ?? 0) : 0;
-      const refinedWoodCost = wantL3
-        ? (UNIT_L3_COSTS[rec.type].refinedWood ?? 0)
-        : wantL2
-          ? (UNIT_L2_COSTS[rec.type].refinedWood ?? 0)
-          : (UNIT_COSTS[rec.type].refinedWood ?? 0);
-      if (aiPlayer.gold < goldCost) continue;
-      if (stoneCost > 0 && (city.storage.stone ?? 0) < stoneCost) continue;
-      if (ironCost > 0 && (city.storage.iron ?? 0) < ironCost) continue;
-      if (refinedWoodCost > 0 && (city.storage.refinedWood ?? 0) < refinedWoodCost) continue;
-      if (rec.type === 'defender' || wantL2 || wantL3) {
-        const barracks = city.buildings.find(b => b.type === 'barracks');
-        if ((barracks?.level ?? 1) < 2) continue;
-      }
-      let rangedRv: RangedVariant | undefined;
-      if (rec.type === 'ranged' && effectiveLevel === 3) {
-        rangedRv = rec.rangedVariant ?? 'marksman';
-        const cidx = cities.findIndex(c => c.id === city.id);
-        if (cidx >= 0) {
-          const cd = cities[cidx].archerDoctrineL3;
-          if (cd !== 'marksman' && cd !== 'longbowman') {
-            cities[cidx] = { ...cities[cidx], archerDoctrineL3: rangedRv };
-          }
-        }
-      }
-      const stats = getUnitStats({
-        type: rec.type,
-        armsLevel: effectiveLevel as 1 | 2 | 3,
-        rangedVariant: rangedRv,
-      });
-      const gunL2Upkeep = (stats as { gunL2Upkeep?: number }).gunL2Upkeep ?? 0;
-      if (gunL2Upkeep > 0) {
-        const totalGunsL2 = cities.filter(c => c.ownerId === aiPlayerId).reduce((sum, c) => sum + (c.storage.gunsL2 ?? 0), 0);
-        if (totalGunsL2 < gunL2Upkeep) continue;
-      }
-      if (rec.type === 'builder') continue;
-      const sq = city.q;
-      const sr = city.r;
-      const newUnit: Unit = {
-        id: generateId('unit'), type: rec.type,
-        q: sq, r: sr, ownerId: aiPlayerId,
-        hp: stats.maxHp, maxHp: stats.maxHp,
-        xp: 0, level: 0,
-        status: 'idle', stance: 'aggressive',
-        nextMoveAt: 0,
-        originCityId: city.id,
-      };
-      if (wantL2) newUnit.armsLevel = 2;
-      if (wantL3 || rec.type === 'defender') newUnit.armsLevel = 3;
-      if (rec.type === 'ranged' && effectiveLevel === 3 && rangedRv) {
-        newUnit.rangedVariant = rangedRv;
-      }
-      if (!isNavalUnitType(rec.type)) {
-        newUnit.garrisonCityId = city.id;
-        newUnit.defendCityId = city.id;
-      }
-      if (gunL2Upkeep > 0) {
-        for (const oc of cities.filter(c => c.ownerId === aiPlayerId)) {
-          if ((oc.storage.gunsL2 ?? 0) >= gunL2Upkeep) {
-            oc.storage.gunsL2 = (oc.storage.gunsL2 ?? 0) - gunL2Upkeep;
-            break;
-          }
-        }
-      }
-      aiPlayer.gold -= goldCost;
-      if (stoneCost > 0 || ironCost > 0 || refinedWoodCost > 0) {
-        const cityIdx = cities.indexOf(city);
-        if (cityIdx >= 0) {
-          const c = cities[cityIdx];
-          cities[cityIdx] = {
-            ...c,
-            storage: {
-              ...c.storage,
-              stone: Math.max(0, (c.storage.stone ?? 0) - stoneCost),
-              iron: Math.max(0, (c.storage.iron ?? 0) - ironCost),
-              refinedWood: Math.max(0, (c.storage.refinedWood ?? 0) - refinedWoodCost),
-            },
-          };
-        }
-      }
-      units.push(newUnit);
-      aiTroopCount += 1;
-    }
+    applyAiRecruitsAsPending(aiPlan.recruits, {
+      aiPlayerId,
+      newCycle,
+      cities,
+      units,
+      getPlayer: () => players.find(p => p.id === aiPlayerId),
+      onSpendGold: d => {
+        const p = players.find(pl => pl.id === aiPlayerId);
+        if (p) p.gold -= d;
+      },
+      pendingRecruitsOut: pendingRecruitsAcc,
+      generateId,
+    });
 
     for (const scout of aiPlan.scouts ?? []) {
       const key = tileKey(scout.targetQ, scout.targetR);
@@ -1321,5 +1237,6 @@ export function stepSimulation(
     unitStacks: unitStacksState,
     operationalArmies: state.operationalArmies ?? [],
     combatMoraleState: combatResult.moraleState,
+    pendingRecruits: pendingRecruitsAcc,
   };
 }

@@ -10,12 +10,23 @@ The game can **self-improve** the AI by running many headless bot-vs-bot simulat
 
 ## 1. Headless core (`src/core/gameCore.ts`)
 
-- **`SimState`** – Full game state including tiles, cities, units, players, heroes, territory, cycle, phase, weather, scouts, **contested zone hex keys**, **commanders**, **scroll progress/inventory/attachments**, and more.
+- **`SimState`** – Full game state including tiles, cities, units, players, heroes, territory, cycle, phase, weather, scouts, **pending land recruits** (same delayed-completion pipeline as the live store), **contested zone hex keys**, **commanders**, **scroll progress/inventory/attachments**, and more.
 - **`initBotVsBotGame(seed, paramsA?, paramsB?)`** – Generates a map with the given seed and places two AI capitals at opposite corners. Sets up **contested zone**, **starting commanders** (5 per AI), and **scroll inventory**. Returns initial `SimState`.
 - **`stepSimulation(state, paramsA, paramsB)`** – One step = one economy cycle + contested zone payouts + scroll search progress + AI planning (including new actions) + movement/combat/siege/capture + commander sync + scroll carrier cleanup.
 - **`runSimulation(paramsA, paramsB, seed, maxCycles?)`** – Runs a full game until one side has no cities or `maxCycles` is reached. Returns **`SimResult`** (winner, cycle, cities/pop per side).
 
 The core reuses the same logic as the main game (economy, upkeep, AI planning, movement, combat, siege, city capture, victory, **contested zone payouts**, **scroll discovery**, **commander syncing**). **Simulation clock consistency:** headless runs use simulated time (`simTimeMs`, 30s per cycle) for movement/combat gating so units advance and engage correctly; the live game still uses wall-clock time.
+
+### Live parity checklist (headless vs `useGameStore.runCycle`)
+
+Shared code applies AI **instant** building placement, **upgrades**, and **pending land recruits** (`src/lib/applyAiPlan.ts`, `src/lib/pendingLandRecruit.ts`). Each step:
+
+1. Completes pending recruits whose `completesAtCycle` equals the new cycle, then HP regen and `computeArmyReplenishment`.
+2. Runs economy, contested zone, upkeep, then **`planAiTurn`**.
+3. Applies the same instant builds/recruit queue as the client; **wall rings** still use construction sites + BP.
+4. Ticks constructions (walls), scouts, movement/combat/siege.
+
+**Mutation:** `MUTATION_EXCLUDED_KEYS` in `aiParamsSchema.ts` holds parameters not yet read by `planAiTurn`, so evolution does not waste budget on them; `l3AcquisitionWeight` and `l2AdoptionRate` are wired (L3 tier pick and L3 ranged variant when no doctrine).
 
 ## 2. Training script (`scripts/train-ai.ts`)
 
@@ -83,7 +94,7 @@ Defined in `src/lib/ai.ts`, schema in `src/lib/aiParamsSchema.ts`. Used by both 
 - `villageDefensePriority`, `villageRecapturePriority`
 
 ### Army Composition & Formation
-- `l2AdoptionRate`, `l3AcquisitionWeight`, `l3IronPerUnitTarget`, `l2StonePerUnitTarget`
+- `l2AdoptionRate` (also **L3 marksman vs longbowman** when city has no archer doctrine), `l3AcquisitionWeight` (biases **L3 vs L2** arm tier when recruiting), `l3IronPerUnitTarget`, `l2StonePerUnitTarget`
 - `militaryLevelMixTarget` (L1/L2/L3 shares), `militaryLevelMixCorrectionStrength`
 - `targetRangedShare`, `targetSiegeShare`, `compositionCorrectionStrength`
 - `assaultWingShare`, `screenWingShare`, `frontlineMeleeShare`, `flankCavalryShare`
@@ -98,7 +109,6 @@ Defined in `src/lib/ai.ts`, schema in `src/lib/aiParamsSchema.ts`. Used by both 
 ### Supply & Logistics
 - `supplyExpansionPriority`, `supplyAnchorDistanceWeight`
 - `supplyStarvationRiskWeight`, `supplyCityAcquisitionBias`
-- `clusterInterdictionPriority`, `clusterIsolationCommitShare`, `clusterIsolationDuration`
 
 ### Contested Zone (new)
 - `contestedZoneCommitShare` – Share of idle military to divert toward contested hex band (0–0.5).

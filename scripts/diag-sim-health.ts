@@ -59,14 +59,26 @@ function main() {
   let sumGoldMines = 0;
 
   for (let i = 0; i < runs; i++) {
-    const seed = (1000 + i * 7919) % 1_000_000;
-    const { winner, diagnostics } = runSimulationWithDiagnostics(
-      DEFAULT_AI_PARAMS,
-      DEFAULT_AI_PARAMS,
-      seed,
-      MAX_CYCLES,
-      opts,
-    );
+    const baseSeed = (1000 + i * 7919) % 1_000_000;
+    let simResult: ReturnType<typeof runSimulationWithDiagnostics> | null = null;
+    for (let bump = 0; bump < 200; bump++) {
+      try {
+        simResult = runSimulationWithDiagnostics(
+          DEFAULT_AI_PARAMS,
+          DEFAULT_AI_PARAMS,
+          baseSeed + bump,
+          MAX_CYCLES,
+          opts,
+        );
+        break;
+      } catch {
+        /* rare maps where corner capitals cannot be placed — try next seed */
+      }
+    }
+    if (!simResult) {
+      throw new Error(`diag-sim-health: could not init any of 200 seeds starting at ${baseSeed}`);
+    }
+    const { winner, diagnostics } = simResult;
     if (diagnostics.totalKills > 0) gamesWithDeaths++;
     if (diagnostics.hadOwnerFlip) gamesWithOwnerFlip++;
     totalKillsAll += diagnostics.totalKills;

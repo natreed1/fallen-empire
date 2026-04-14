@@ -151,7 +151,7 @@ export interface AiParams {
   targetPopWeight: number;
   /** When food surplus is above this, prefer building mine over quarry (0–30). */
   minePriorityThreshold: number;
-  /** Rate at which to adopt L2 units when available (0–1). */
+  /** Rate at which to adopt L2 units when available (0–1); also biases L3 marksman vs longbowman when city has no archer doctrine. */
   l2AdoptionRate: number;
   /** Target share of ranged units in composition (0–1). */
   targetRangedShare: number;
@@ -546,7 +546,8 @@ export function planAiTurn(
           const canL3 = barracksLvl >= 2 && hasGunsL2 && goldBudget >= UNIT_L3_COSTS[pick].gold && ironBudget >= (UNIT_L3_COSTS[pick].iron ?? 0) && refinedWoodBudget >= rwL3;
           const canL2 = barracksLvl >= 2 && hasGunsL2 && goldBudget >= UNIT_L2_COSTS[pick].gold && stoneBudget >= (UNIT_L2_COSTS[pick].stone ?? 0) && refinedWoodBudget >= rwL2;
           const canL1 = goldBudget >= UNIT_COSTS[pick].gold && refinedWoodBudget >= rwL1;
-          if (canL3 && (Math.random() < 0.35 || !canL2)) {
+          const l3TierBias = Math.min(1, Math.max(0, (params.l3AcquisitionWeight ?? 1) * 0.35));
+          if (canL3 && (Math.random() < l3TierBias || !canL2)) {
             armsLevel = 3;
             goldCost = UNIT_L3_COSTS[pick].gold;
             ironCost = UNIT_L3_COSTS[pick].iron ?? 0;
@@ -570,7 +571,7 @@ export function planAiTurn(
             if (doc === 'marksman' || doc === 'longbowman') {
               rangedVariant = doc;
             } else {
-              rangedVariant = Math.random() < 0.5 ? 'marksman' : 'longbowman';
+              rangedVariant = Math.random() < (params.l2AdoptionRate ?? 0.5) ? 'marksman' : 'longbowman';
             }
           }
           actions.recruits.push({ cityId: city.id, type: pick, armsLevel, rangedVariant });

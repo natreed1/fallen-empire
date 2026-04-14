@@ -48,7 +48,11 @@ function main(): void {
   console.log('  Reason:', summary.excludedReason);
   console.log('');
 
-  const missing = inDefaultsNotMutated.filter(k => !ALLOWLIST.has(k));
+  const missing = inDefaultsNotMutated.filter(
+    k =>
+      !ALLOWLIST.has(k) &&
+      !MUTATION_EXCLUDED_KEYS.includes(k as (typeof EVOLVABLE_PARAM_KEYS)[number]),
+  );
   const orphan = mutatedNotInDefaults.filter(k => !ALLOWLIST.has(k));
 
   if (missing.length > 0) {

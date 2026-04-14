@@ -145,8 +145,38 @@ export const MUTATION_RANGES: Record<Exclude<EvolvableParamKey, 'militaryLevelMi
   universityCityDefenseThreshold: { min: 0, max: 1, exploration: 'medium' },
 };
 
-/** Params intentionally excluded from mutation (fixed). Empty unless we add allowlisted fixed params. */
-export const MUTATION_EXCLUDED_KEYS: EvolvableParamKey[] = [];
+/**
+ * Params not yet consumed by planAiTurn (or fixed by design); excluded so train-ai does not waste mutation budget.
+ * Wired params (l3AcquisitionWeight, l2AdoptionRate, etc.) stay in the mutable set.
+ */
+export const MUTATION_EXCLUDED_KEYS: EvolvableParamKey[] = [
+  'builderRecruitChance',
+  'builderRecruitForMinesAndSiege',
+  'minePriorityThreshold',
+  'targetRangedShare',
+  'targetSiegeShare',
+  'compositionCorrectionStrength',
+  'militaryLevelMixTarget',
+  'militaryLevelMixCorrectionStrength',
+  'l3IronPerUnitTarget',
+  'l2StonePerUnitTarget',
+  'assaultWingShare',
+  'screenWingShare',
+  'maxChaseDistance',
+  'targetDispersion',
+  'villageDefensePriority',
+  'villageRecapturePriority',
+  'frontlineMeleeShare',
+  'backlineRangedDistance',
+  'siegeBacklineDistance',
+  'flankCavalryShare',
+  'formationCohesion',
+  'defenderCityHexCoverageTarget',
+  'defenderAssignmentPriority',
+  'wallBuildPerCityTarget',
+  'wallToDefenderSynergyWeight',
+  'wallClosureUptimeWeight',
+];
 
 /** Normalize L1+L2+L3 to sum to 1; clamp each to [0,1]. */
 export function normalizeMilitaryLevelMix(m: MilitaryLevelMix): MilitaryLevelMix {
@@ -237,6 +267,7 @@ export function mutateParams(
   const out: AiParams = { ...base };
 
   for (const key of SCALAR_PARAM_KEYS) {
+    if (MUTATION_EXCLUDED_KEYS.includes(key)) continue;
     (out as unknown as Record<string, number>)[key] = mutateScalar(
       out,
       key,
@@ -245,12 +276,13 @@ export function mutateParams(
     );
   }
 
-  // Structured: mutate L1,L2,L3 then normalize
-  const mix = base.militaryLevelMixTarget ?? { L1: 0.6, L2: 0.3, L3: 0.1 };
-  const L1 = Math.max(0, Math.min(1, mix.L1 + (Math.random() - 0.5) * 2 * strength * 0.3));
-  const L2 = Math.max(0, Math.min(1, mix.L2 + (Math.random() - 0.5) * 2 * strength * 0.3));
-  const L3 = Math.max(0, Math.min(1, mix.L3 + (Math.random() - 0.5) * 2 * strength * 0.3));
-  out.militaryLevelMixTarget = normalizeMilitaryLevelMix({ L1, L2, L3 });
+  if (!MUTATION_EXCLUDED_KEYS.includes('militaryLevelMixTarget')) {
+    const mix = base.militaryLevelMixTarget ?? { L1: 0.6, L2: 0.3, L3: 0.1 };
+    const L1 = Math.max(0, Math.min(1, mix.L1 + (Math.random() - 0.5) * 2 * strength * 0.3));
+    const L2 = Math.max(0, Math.min(1, mix.L2 + (Math.random() - 0.5) * 2 * strength * 0.3));
+    const L3 = Math.max(0, Math.min(1, mix.L3 + (Math.random() - 0.5) * 2 * strength * 0.3));
+    out.militaryLevelMixTarget = normalizeMilitaryLevelMix({ L1, L2, L3 });
+  }
 
   return out;
 }
