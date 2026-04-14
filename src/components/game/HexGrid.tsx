@@ -55,6 +55,17 @@ function unitSpriteTint(
   return base;
 }
 
+/** Slight cyan (L2) / amber (L3) lerp on unit sprite tint for tier readability. */
+function blendArmsTierTint(baseTint: string, u: Unit): string {
+  if (isNavalUnitType(u.type)) return baseTint;
+  const al = u.type === 'defender' || u.type === 'crusader_knight' ? 3 : (u.armsLevel ?? 1);
+  if (al <= 1) return baseTint;
+  const tierHex = al === 2 ? '#22d3ee' : '#f59e0b';
+  const c = new THREE.Color(baseTint);
+  c.lerp(new THREE.Color(tierHex), 0.2);
+  return '#' + c.getHexString();
+}
+
 /** Procedural radial-gradient dot texture for the colored owner ring beneath enemy units. */
 const _ownerRingTexCache = new Map<string, THREE.Texture>();
 function getOwnerRingTexture(): THREE.Texture {
@@ -113,6 +124,10 @@ const SPRITE_PATHS: Record<string, string> = {
   infantry: '/sprites/units/infantry.png',
   cavalry:  '/sprites/units/cavalry.png',
   archer:   '/sprites/units/archer.png',
+  marksman: '/sprites/units/marksman.png',
+  longbowman: '/sprites/units/longbowman.png',
+  paladin: '/sprites/units/paladin.png',
+  knight: '/sprites/units/knight.png',
   builder:  '/sprites/units/builder.png',
   trebuchet: '/sprites/units/trebuchet.png',
   defender:  '/sprites/units/infantry.png', // placeholder until defender.png exists
@@ -2039,6 +2054,20 @@ const UNIT_SPRITE_KEY: Record<string, string> = {
   capital_ship: 'capital_ship',
 };
 
+/** Texture key for map sprites (Theme A tier visuals + L3 ranged variants). */
+function getUnitSpriteTextureKey(u: Unit): string {
+  if (isNavalUnitType(u.type)) {
+    return UNIT_SPRITE_KEY[u.type] ?? u.type;
+  }
+  const al = u.type === 'defender' || u.type === 'crusader_knight' ? 3 : (u.armsLevel ?? 1);
+  if (u.type === 'ranged' && al === 3) {
+    return u.rangedVariant === 'longbowman' ? 'longbowman' : 'marksman';
+  }
+  if (u.type === 'infantry' && al === 3) return 'paladin';
+  if (u.type === 'cavalry' && al === 3) return 'knight';
+  return UNIT_SPRITE_KEY[u.type] ?? u.type;
+}
+
 const COMBAT_FX_DURATION_MS = 480;
 
 function hexElevWorld(q: number, r: number, tiles: Map<string, Tile>, yBoost: number): [number, number, number] {
@@ -2634,11 +2663,16 @@ const UNIT_SPRITE_SCALE: Record<string, [number, number]> = {
   capital_ship: [1.35, 1.35],
   horse_archer: [1.25, 1.25],
   crusader_knight: [1.15, 1.15],
+  marksman: [1.1, 1.1],
+  longbowman: [1.1, 1.1],
+  paladin: [1.1, 1.1],
+  knight: [1.3, 1.3],
 };
 
 function UnitMarkers({ units, tiles, cities, players }: { units: Unit[]; tiles: Map<string, Tile>; cities: City[]; players: Player[] }) {
   const textures = useGameTextures([
-    'infantry', 'cavalry', 'archer', 'horse_archer', 'crusader_knight', 'builder', 'trebuchet', 'defender',
+    'infantry', 'cavalry', 'archer', 'marksman', 'longbowman', 'paladin', 'knight',
+    'horse_archer', 'crusader_knight', 'builder', 'trebuchet', 'defender',
     'scout_ship', 'warship', 'transport_ship', 'fisher_transport', 'capital_ship',
   ]);
 
@@ -2666,12 +2700,13 @@ function UnitMarkers({ units, tiles, cities, players }: { units: Unit[]; tiles: 
         }
       }
 
-      const tintColor = unitSpriteTint(players, u.ownerId, u.status);
+      const tintColor = blendArmsTierTint(unitSpriteTint(players, u.ownerId, u.status), u);
       const ownerColor = playerColorOrDefault(players, u.ownerId);
 
       return {
         id: u.id,
         type: u.type,
+        spriteKey: getUnitSpriteTextureKey(u),
         q: u.q,
         r: u.r,
         x: wx,
@@ -2690,9 +2725,9 @@ function UnitMarkers({ units, tiles, cities, players }: { units: Unit[]; tiles: 
   return (
     <group>
       {positioned.map(u => {
-        const spriteKey = UNIT_SPRITE_KEY[u.type] ?? u.type;
-        const tex = textures[spriteKey];
-        const [sx, sy] = UNIT_SPRITE_SCALE[u.type] ?? [1.0, 1.0];
+        const spriteKey = u.spriteKey;
+        const tex = textures[spriteKey] ?? textures[UNIT_SPRITE_KEY[u.type] ?? u.type];
+        const [sx, sy] = UNIT_SPRITE_SCALE[spriteKey] ?? UNIT_SPRITE_SCALE[u.type] ?? [1.0, 1.0];
         const isEnemy = u.ownerId !== PLAYER_HUMAN_ID;
         const ring = isEnemy ? (
           <sprite

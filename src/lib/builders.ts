@@ -38,7 +38,9 @@ export function fillUniversitySlotTasks(
 export function getCityUniversityTask(city: City): BuilderTask {
   const academy = city.buildings.find(b => b.type === 'academy');
   const tasks = getUniversitySlotTasks(city, academy);
-  return tasks[0] ?? city.universityBuilderTask ?? DEFAULT_BUILDER_TASK;
+  if (tasks.length === 0) return city.universityBuilderTask ?? DEFAULT_BUILDER_TASK;
+  const first = tasks.find(t => t !== 'idle');
+  return first ?? 'idle';
 }
 
 /** True if at least one workforce slot is assigned this task. */
@@ -56,6 +58,8 @@ export function getUniversityBuilderSlots(academy: CityBuilding | undefined | nu
 
 export function universityTaskMatchesSiteType(task: BuilderTask, siteType: ConstructionSite['type']): boolean {
   switch (task) {
+    case 'idle':
+      return false;
     case 'expand_quarries':
       return siteType === 'quarry';
     case 'expand_iron_mines':
@@ -89,14 +93,25 @@ export function findNearestCityWithAcademy(
   return best;
 }
 
+const UNIVERSITY_BP_TASKS: BuilderTask[] = ['expand_quarries', 'expand_iron_mines', 'expand_forestry', 'city_defenses'];
+
+function constructionOrderIndex(site: ConstructionSite, allConstructions: ConstructionSite[]): number {
+  const i = allConstructions.findIndex(s => s.id === site.id);
+  return i >= 0 ? i : Infinity;
+}
+
 /**
  * Live-game construction BP (territory city power + university workforce when task matches).
  * Trebuchet / scout towers use nearest city's academy (field engineering).
+ *
+ * When several sites share the same University task (e.g. three quarries), **workforce BP stacks on one
+ * site at a time**: the earliest in `allConstructions` gets all matching slots; others get territory power only.
  */
 export function computeConstructionAvailableBp(
   site: ConstructionSite,
   territory: Map<string, TerritoryInfo>,
   cities: City[],
+  allConstructions: ConstructionSite[],
 ): number {
   const key = tileKey(site.q, site.r);
   let avail = 0;
@@ -108,9 +123,16 @@ export function computeConstructionAvailableBp(
   }
 
   if (site.type === 'trebuchet' || site.type === 'scout_tower') {
-    const nc = findNearestCityWithAcademy(site.q, site.r, cities, site.ownerId);
-    const ac = nc?.buildings.find(b => b.type === 'academy');
-    avail += getUniversityBuilderSlots(ac) * BUILDER_POWER;
+    const fieldPeers = allConstructions.filter(
+      s => s.ownerId === site.ownerId && (s.type === 'trebuchet' || s.type === 'scout_tower'),
+    );
+    fieldPeers.sort((a, b) => constructionOrderIndex(a, allConstructions) - constructionOrderIndex(b, allConstructions));
+    const firstField = fieldPeers[0];
+    if (firstField && firstField.id === site.id) {
+      const nc = findNearestCityWithAcademy(site.q, site.r, cities, site.ownerId);
+      const ac = nc?.buildings.find(b => b.type === 'academy');
+      avail += getUniversityBuilderSlots(ac) * BUILDER_POWER;
+    }
     return avail;
   }
 
@@ -126,11 +148,26 @@ export function computeConstructionAvailableBp(
   if (slots <= 0) return avail;
 
   const slotTasks = getUniversitySlotTasks(city, academy);
-  let matching = 0;
-  for (const t of slotTasks) {
-    if (universityTaskMatchesSiteType(t, site.type)) matching++;
+  const indexById = new Map(allConstructions.map((s, i) => [s.id, i]));
+
+  for (const task of UNIVERSITY_BP_TASKS) {
+    if (!universityTaskMatchesSiteType(task, site.type)) continue;
+    const slotCountForTask = slotTasks.filter(t => t === task).length;
+    if (slotCountForTask === 0) continue;
+
+    const sameTaskSites = allConstructions.filter(
+      s =>
+        s.cityId === site.cityId &&
+        s.ownerId === site.ownerId &&
+        universityTaskMatchesSiteType(task, s.type),
+    );
+    sameTaskSites.sort((a, b) => (indexById.get(a.id) ?? Infinity) - (indexById.get(b.id) ?? Infinity));
+    const winner = sameTaskSites[0];
+    if (winner?.id === site.id) {
+      avail += slotCountForTask * BUILDER_POWER;
+    }
+    break;
   }
-  if (matching > 0) avail += matching * BUILDER_POWER;
   return avail;
 }
 

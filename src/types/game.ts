@@ -343,6 +343,9 @@ export type UnitType =
   | 'infantry' | 'cavalry' | 'ranged' | 'horse_archer' | 'crusader_knight' | 'builder' | 'trebuchet' | 'battering_ram' | 'defender'
   | 'scout_ship' | 'warship' | 'transport_ship' | 'fisher_transport' | 'capital_ship';
 
+/** L3 iron archer specialization (chosen once per city with L3 barracks). */
+export type RangedVariant = 'marksman' | 'longbowman';
+
 /** Naval units: move on water only; ship-vs-ship combat on water. Warships/capital ships also shore-bombard land (separate tick). */
 export const NAVAL_UNIT_TYPES: ReadonlySet<UnitType> = new Set([
   'scout_ship', 'warship', 'transport_ship', 'fisher_transport', 'capital_ship',
@@ -453,7 +456,13 @@ export interface CityBuilding {
 }
 
 /** University workforce directive — drives automated builds and which sites get extra BP. */
-export type BuilderTask = 'expand_quarries' | 'expand_iron_mines' | 'expand_forestry' | 'city_defenses';
+export type BuilderTask =
+  | 'expand_quarries'
+  | 'expand_iron_mines'
+  | 'expand_forestry'
+  | 'city_defenses'
+  /** Slot contributes no BP to construction sites and is skipped by automation. */
+  | 'idle';
 
 export const DEFAULT_BUILDER_TASK: BuilderTask = 'expand_quarries';
 
@@ -462,6 +471,7 @@ export const BUILDER_TASK_LABELS: Record<BuilderTask, string> = {
   expand_iron_mines: 'Expand iron mines',
   expand_forestry: 'Expand forestry',
   city_defenses: 'Walls',
+  idle: 'Unassigned',
 };
 
 /** Gold to upgrade University (academy) one level; L1→L2 … L4→L5. */
@@ -520,6 +530,12 @@ export interface City {
   lastMigration?: number;
   /** Smoothed carrying capacity (population expectations); lags actual production by ~2–4 cycles */
   expectedCarryingCapacity?: number;
+  /**
+   * L3 iron archer line for this city (set once when barracks first reaches L3).
+   * `undefined` = pre-feature / never set; `null` = L3 barracks but player must choose;
+   * `'marksman' | 'longbowman'` = locked doctrine.
+   */
+  archerDoctrineL3?: RangedVariant | null;
 }
 
 // ─── Unit stack (training template + optional auto-replenish) ─────
@@ -529,6 +545,8 @@ export interface StackCompositionEntry {
   unitType: UnitType;
   armsLevel: 1 | 2 | 3;
   count: number;
+  /** L3 ranged only: must match {@link Unit.rangedVariant} for that row. */
+  rangedVariant?: RangedVariant;
 }
 
 /** @deprecated Use StackCompositionEntry */
@@ -595,6 +613,8 @@ export interface Unit {
   xp: number;
   level: number;
   armsLevel?: 1 | 2 | 3;  // 1 = L1, 2 = L2 (stone), 3 = L3 (iron); defender is L3 only
+  /** L3 ranged (`type === 'ranged'`) only: Marksman vs Longbowman. */
+  rangedVariant?: RangedVariant;
   status: UnitStatus;
   stance: ArmyStance;
   targetQ?: number;
@@ -1057,6 +1077,8 @@ export const BARACKS_UPGRADE_COST = 25;
 export const BARACKS_L3_UPGRADE_COST = 40;
 export const FACTORY_UPGRADE_COST = 15;
 export const FARM_UPGRADE_COST = 20;
+/** Quarry / iron mine / gold mine L1 → L2 (same economy slot as farm upgrade). */
+export const RESOURCE_MINE_UPGRADE_COST = 20;
 /** L2 farm total food per cycle (higher productivity per job than L1). */
 export const FARM_L2_FOOD_PER_CYCLE = 60;
 export const WALL_SECTION_STONE_COST = 5;
@@ -1279,6 +1301,7 @@ export const UNIT_L3_STATS: Record<UnitType, {
 }> = {
   infantry:       { maxHp: 140, attack: 21, range: 1, speed: 1.0, foodUpkeep: 1, gunUpkeep: 0, gunL2Upkeep: 2 },
   cavalry:        { maxHp: 105, attack: 28, range: 1, speed: 1.5, foodUpkeep: 2, gunUpkeep: 0, gunL2Upkeep: 2 },
+  /** Legacy baseline; L3 ranged uses {@link UNIT_L3_RANGED_MARKSMAN} / {@link UNIT_L3_RANGED_LONGBOW} via {@link getUnitStats}. */
   ranged:         { maxHp: 70,  attack: 17, range: 2, speed: 1.0, foodUpkeep: 1, gunUpkeep: 0, gunL2Upkeep: 2 },
   horse_archer:   { maxHp: 92,  attack: 20, range: 2, speed: 1.35, foodUpkeep: 2, gunUpkeep: 0, gunL2Upkeep: 2 },
   crusader_knight:{ maxHp: 175, attack: 32, range: 1, speed: 0.95, foodUpkeep: 2, gunUpkeep: 0, gunL2Upkeep: 3, damageResist: 0.15 },
@@ -1293,12 +1316,80 @@ export const UNIT_L3_STATS: Record<UnitType, {
   capital_ship:   { maxHp: 160, attack: 28, range: 2, speed: 0.85, foodUpkeep: 3, gunUpkeep: 0, gunL2Upkeep: 0 },
 };
 
+/** L3 iron Marksman: short range, high attack (same upkeep as L3 ranged). */
+export const UNIT_L3_RANGED_MARKSMAN: (typeof UNIT_L3_STATS)['ranged'] = {
+  maxHp: 70, attack: 24, range: 1, speed: 1.0, foodUpkeep: 1, gunUpkeep: 0, gunL2Upkeep: 2,
+};
+
+/** L3 iron Longbowman: long range, lower attack. */
+export const UNIT_L3_RANGED_LONGBOW: (typeof UNIT_L3_STATS)['ranged'] = {
+  maxHp: 65, attack: 13, range: 3, speed: 1.0, foodUpkeep: 1, gunUpkeep: 0, gunL2Upkeep: 2,
+};
+
+/** Short UI labels for arms tiers (units). */
+export const ARMS_TIER_LABELS: Record<1 | 2 | 3, string> = {
+  1: 'Standard',
+  2: 'Stone-forged',
+  3: 'Iron-forged',
+};
+
+/** Theme A — display names by tier (excludes L3 ranged; use variant + {@link getUnitDisplayName}). */
+export const UNIT_DISPLAY_BY_ARMS: Partial<Record<UnitType, Record<1 | 2 | 3, string>>> = {
+  infantry: { 1: 'Infantry', 2: 'Man-at-Arms', 3: 'Paladin' },
+  cavalry: { 1: 'Cavalry', 2: 'Lancer', 3: 'Knight' },
+  ranged: { 1: 'Archer', 2: 'Skirmisher', 3: 'Archer' },
+  horse_archer: { 1: 'Horse Archer', 2: 'Steppe Rider', 3: 'Keshik' },
+  crusader_knight: { 1: 'Crusader', 2: 'Crusader', 3: 'Grand Crusader' },
+  defender: { 1: 'Defender', 2: 'Defender', 3: 'Warden' },
+};
+
+/**
+ * Player-facing unit name (Theme A + L3 ranged variants).
+ * Naval types ignore arms tier.
+ */
+export function getUnitDisplayName(
+  type: UnitType,
+  armsLevel?: 1 | 2 | 3,
+  rangedVariant?: RangedVariant,
+): string {
+  if (isNavalUnitType(type)) return UNIT_DISPLAY_NAMES[type];
+  const al = armsLevel ?? 1;
+  if (type === 'ranged' && al === 3) {
+    if (rangedVariant === 'longbowman') return 'Longbowman';
+    return 'Marksman';
+  }
+  if (type === 'crusader_knight') return UNIT_DISPLAY_BY_ARMS.crusader_knight?.[3] ?? UNIT_DISPLAY_NAMES.crusader_knight;
+  if (type === 'defender') return UNIT_DISPLAY_BY_ARMS.defender?.[3] ?? UNIT_DISPLAY_NAMES.defender;
+  const row = UNIT_DISPLAY_BY_ARMS[type];
+  if (row && row[al]) return row[al];
+  return UNIT_DISPLAY_NAMES[type];
+}
+
+/** Old saves: L3 barracks but no doctrine field → default marksman so recruitment works. */
+export function migrateLegacyArcherDoctrine(cities: City[]): City[] {
+  return cities.map(c => {
+    const hasL3 = c.buildings.some(b => b.type === 'barracks' && (b.level ?? 1) >= 3);
+    if (hasL3 && c.archerDoctrineL3 === undefined) {
+      return { ...c, archerDoctrineL3: 'marksman' };
+    }
+    return c;
+  });
+}
+
+export function cityHasL3Barracks(city: City): boolean {
+  return city.buildings.some(b => b.type === 'barracks' && (b.level ?? 1) >= 3);
+}
+
 /** Resolve unit stats by arms level (L1/L2/L3). Defender uses L3. Ships ignore arms tiers. */
-export function getUnitStats(u: { type: UnitType; armsLevel?: 1 | 2 | 3 }) {
+export function getUnitStats(u: { type: UnitType; armsLevel?: 1 | 2 | 3; rangedVariant?: RangedVariant }) {
   if (isNavalUnitType(u.type)) return UNIT_BASE_STATS[u.type];
   /** Crusader knight is always treated as L3-tier stats (recruit requires L3 barracks). */
   if (u.type === 'crusader_knight') return UNIT_L3_STATS.crusader_knight;
   const level = u.armsLevel ?? 1;
+  if (u.type === 'ranged' && level === 3) {
+    if (u.rangedVariant === 'longbowman') return UNIT_L3_RANGED_LONGBOW;
+    return UNIT_L3_RANGED_MARKSMAN;
+  }
   if (level === 3) return UNIT_L3_STATS[u.type];
   if (level === 2) return UNIT_L2_STATS[u.type];
   return UNIT_BASE_STATS[u.type];

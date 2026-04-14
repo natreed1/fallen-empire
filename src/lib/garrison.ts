@@ -44,11 +44,23 @@ export function applyDeployFlagsForMoveMutable(u: Unit, targetQ: number, targetR
     delete u.cityDefenseMode;
   }
   if (shouldClearIncorporateForMove(u, targetQ, targetR)) delete u.incorporateVillageAt;
-  if (u.patrolCenterQ !== undefined && (targetQ !== u.q || targetR !== u.r)) {
-    delete u.patrolCenterQ;
-    delete u.patrolCenterR;
-    delete u.patrolRadius;
-  }
+  // Patrol is NOT cleared here: this helper runs every time a unit receives a move target (including
+  // automatic patrol wander in military.ts). Clearing patrol belongs on explicit player/AI orders only
+  // — use {@link withoutPatrolFields} / {@link clearPatrolFieldsMutable} there.
+}
+
+/** Drop patrol assignment (player or AI replaced roaming with a concrete order). */
+export function clearPatrolFieldsMutable(u: Unit): void {
+  delete u.patrolCenterQ;
+  delete u.patrolCenterR;
+  delete u.patrolRadius;
+  delete u.patrolHexKeys;
+}
+
+export function withoutPatrolFields<U extends Unit>(u: U): U {
+  const next = { ...u };
+  clearPatrolFieldsMutable(next);
+  return next;
 }
 
 /** When issuing movement to targetQ,targetR, strip garrison if leaving the garrison city hex; clear defend if destination is not that city. */

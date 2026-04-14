@@ -20,7 +20,7 @@ import {
   BP_RATE_BASE,
   WORKERS_PER_LEVEL,
   BARACKS_UPGRADE_COST, FACTORY_UPGRADE_COST, FARM_UPGRADE_COST,
-  UNIT_COSTS, UNIT_L2_COSTS, UNIT_L3_COSTS, getUnitStats,
+  UNIT_COSTS, UNIT_L2_COSTS, UNIT_L3_COSTS, getUnitStats, type RangedVariant,
   SCOUT_MISSION_COST, SCOUT_MISSION_DURATION_SEC, VILLAGE_INCORPORATE_COST,
   DEFENDER_IRON_COST,
   FRONTIER_CYCLES, CITY_NAMES, PLAYER_COLORS,
@@ -49,7 +49,7 @@ import {
 import { updateArmyRallyFromUnits, computeArmyReplenishment } from '../lib/armyReplenishment';
 import type { MoraleState } from '../lib/combat';
 import { releaseAttackWaveHolds, releaseMarchEchelonHolds } from '../lib/siege';
-import { applyDeployFlagsForMoveMutable, marchHexDistanceAtOrder } from '../lib/garrison';
+import { applyDeployFlagsForMoveMutable, clearPatrolFieldsMutable, marchHexDistanceAtOrder } from '../lib/garrison';
 import { rollForWeatherEvent, tickWeatherEvent, getWeatherHarvestMultiplier } from '../lib/weather';
 import { computeConstructionAvailableBp, fillUniversitySlotTasks } from '../lib/builders';
 import { computeContestedZoneHexKeys, applyContestedZonePayout } from '../lib/contestedZone';
@@ -820,7 +820,22 @@ export function stepSimulation(
         const barracks = city.buildings.find(b => b.type === 'barracks');
         if ((barracks?.level ?? 1) < 2) continue;
       }
-      const stats = getUnitStats({ type: rec.type, armsLevel: effectiveLevel as 1 | 2 | 3 });
+      let rangedRv: RangedVariant | undefined;
+      if (rec.type === 'ranged' && effectiveLevel === 3) {
+        rangedRv = rec.rangedVariant ?? 'marksman';
+        const cidx = cities.findIndex(c => c.id === city.id);
+        if (cidx >= 0) {
+          const cd = cities[cidx].archerDoctrineL3;
+          if (cd !== 'marksman' && cd !== 'longbowman') {
+            cities[cidx] = { ...cities[cidx], archerDoctrineL3: rangedRv };
+          }
+        }
+      }
+      const stats = getUnitStats({
+        type: rec.type,
+        armsLevel: effectiveLevel as 1 | 2 | 3,
+        rangedVariant: rangedRv,
+      });
       const gunL2Upkeep = (stats as { gunL2Upkeep?: number }).gunL2Upkeep ?? 0;
       if (gunL2Upkeep > 0) {
         const totalGunsL2 = cities.filter(c => c.ownerId === aiPlayerId).reduce((sum, c) => sum + (c.storage.gunsL2 ?? 0), 0);
@@ -840,6 +855,9 @@ export function stepSimulation(
       };
       if (wantL2) newUnit.armsLevel = 2;
       if (wantL3 || rec.type === 'defender') newUnit.armsLevel = 3;
+      if (rec.type === 'ranged' && effectiveLevel === 3 && rangedRv) {
+        newUnit.rangedVariant = rangedRv;
+      }
       if (!isNavalUnitType(rec.type)) {
         newUnit.garrisonCityId = city.id;
         newUnit.defendCityId = city.id;
@@ -915,6 +933,7 @@ export function stepSimulation(
       // Allow idle, moving, or starving units to receive move targets (not fighting) so headless sims stay decisive
       if (unit && unit.hp > 0 && unit.status !== 'fighting') {
         applyDeployFlagsForMoveMutable(unit, mt.toQ, mt.toR, cities);
+        clearPatrolFieldsMutable(unit);
         unit.targetQ = mt.toQ;
         unit.targetR = mt.toR;
         unit.status = 'moving';
@@ -1018,7 +1037,7 @@ export function stepSimulation(
     const updatedCities = cities.map(c => ({ ...c, buildings: [...c.buildings] }));
 
     for (const site of constructions) {
-      const availBP = computeConstructionAvailableBp(site, state.territory, cities);
+      const availBP = computeConstructionAvailableBp(site, state.territory, cities, constructions);
 
       if (availBP === 0) {
         remaining.push(site);

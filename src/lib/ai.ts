@@ -1,6 +1,6 @@
 import {
   City, Unit, Player, Tile, TerritoryInfo, WallSection,
-  BuildingType, UnitType, BUILDING_COSTS, UNIT_COSTS, UNIT_L2_COSTS, UNIT_L3_COSTS, getUnitStats,
+  BuildingType, UnitType, type RangedVariant, BUILDING_COSTS, UNIT_COSTS, UNIT_L2_COSTS, UNIT_L3_COSTS, getUnitStats,
   BARACKS_UPGRADE_COST, FACTORY_UPGRADE_COST, FARM_UPGRADE_COST,
   hexDistance, hexNeighbors, tileKey, generateId, getHexRing, parseTileKey,
   STARTING_CITY_TEMPLATE, CITY_CENTER_STORAGE,
@@ -42,6 +42,7 @@ export interface AiRecruitAction {
   cityId: string;
   type: UnitType;
   armsLevel?: 1 | 2 | 3;
+  rangedVariant?: RangedVariant;
 }
 
 export interface AiMoveAction {
@@ -563,7 +564,16 @@ export function planAiTurn(
           }
         }
         if (goldBudget >= goldCost && stoneBudget >= stoneCost && ironBudget >= ironCost && refinedWoodBudget >= refinedWoodCost) {
-          actions.recruits.push({ cityId: city.id, type: pick, armsLevel });
+          let rangedVariant: RangedVariant | undefined;
+          if (pick === 'ranged' && armsLevel === 3) {
+            const doc = city.archerDoctrineL3;
+            if (doc === 'marksman' || doc === 'longbowman') {
+              rangedVariant = doc;
+            } else {
+              rangedVariant = Math.random() < 0.5 ? 'marksman' : 'longbowman';
+            }
+          }
+          actions.recruits.push({ cityId: city.id, type: pick, armsLevel, rangedVariant });
           goldBudget -= goldCost;
           stoneBudget -= stoneCost;
           ironBudget -= ironCost;

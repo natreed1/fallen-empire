@@ -8,7 +8,7 @@ import {
   hexNeighbors,
   tileKey,
 } from '@/types/game';
-import { withDeployFlags, isLandMilitaryUnit, marchHexDistanceAtOrder } from '@/lib/garrison';
+import { withDeployFlags, withoutPatrolFields, isLandMilitaryUnit, marchHexDistanceAtOrder } from '@/lib/garrison';
 
 /** Land military types that can appear in tactical unit-type filters (excludes builder, naval). */
 export const TACTICAL_FILTER_LAND_TYPES: UnitType[] = [
@@ -156,7 +156,7 @@ export function releaseMarchEchelonHolds(units: Unit[], cities: City[]): void {
     if (!released) continue;
 
     delete u.marchEchelonHold;
-    const deployed = withDeployFlags(u, hold.destQ, hold.destR, cities);
+    const deployed = withoutPatrolFields(withDeployFlags(u, hold.destQ, hold.destR, cities));
     Object.assign(u, {
       ...deployed,
       targetQ: hold.destQ,
@@ -187,7 +187,7 @@ export function releaseAttackWaveHolds(units: Unit[], cities: City[]): void {
     const targetR = isSiege ? hold.rallyR : hold.centerR;
     const wantAssault = hold.attackStyle === 'assault' && !isSiege;
 
-    const deployed = withDeployFlags(u, targetQ, targetR, cities);
+    const deployed = withoutPatrolFields(withDeployFlags(u, targetQ, targetR, cities));
     Object.assign(u, {
       ...deployed,
       targetQ,

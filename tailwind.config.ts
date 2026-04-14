@@ -19,6 +19,18 @@ const config: Config = {
           dark: "#1a1a2e",
           parchment: "#f0e6d3",
         },
+        cottage: {
+          wood: "#3d2e22",
+          plank: "#5c4332",
+          brass: "#a07848",
+          glow: "#d4b896",
+        },
+        maproom: {
+          ink: "#2c4a52",
+          sea: "#4a8a7a",
+          parchment: "#d4c4a8",
+          grid: "rgba(74, 120, 110, 0.35)",
+        },
       },
     },
   },

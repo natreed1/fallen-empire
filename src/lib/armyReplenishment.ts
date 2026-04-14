@@ -4,6 +4,7 @@ import {
   type Player,
   type Unit,
   type UnitType,
+  type RangedVariant,
   UNIT_COSTS,
   UNIT_L2_COSTS,
   UNIT_L3_COSTS,
@@ -18,6 +19,7 @@ export type ReplenishPendingLand = {
   cityId: string;
   type: UnitType;
   effectiveArmsLevel: 1 | 2 | 3;
+  rangedVariant?: RangedVariant;
   spawnQ: number;
   spawnR: number;
   completesAtCycle: number;
@@ -35,10 +37,15 @@ function countStackUnits(
   stackId: string,
   type: UnitType,
   armsLevel: 1 | 2 | 3,
+  rangedVariant?: RangedVariant,
 ): number {
   return units.filter(u => {
     if (u.stackId !== stackId || u.hp <= 0 || isNavalUnitType(u.type)) return false;
-    return u.type === type && effectiveArmsForUnit(u) === armsLevel;
+    if (u.type !== type || effectiveArmsForUnit(u) !== armsLevel) return false;
+    if (type === 'ranged' && armsLevel === 3) {
+      return (u.rangedVariant ?? 'marksman') === (rangedVariant ?? 'marksman');
+    }
+    return true;
   }).length;
 }
 
@@ -61,11 +68,22 @@ export function mergeCompositionEntry(
   unitType: UnitType,
   armsLevel: 1 | 2 | 3,
   delta: number,
+  rangedVariant?: RangedVariant,
 ): UnitStack['composition'] {
-  const idx = composition.findIndex(e => e.unitType === unitType && e.armsLevel === armsLevel);
+  const idx = composition.findIndex(e => {
+    if (e.unitType !== unitType || e.armsLevel !== armsLevel) return false;
+    if (unitType === 'ranged' && armsLevel === 3) {
+      return (e.rangedVariant ?? 'marksman') === (rangedVariant ?? 'marksman');
+    }
+    return true;
+  });
   if (idx < 0) {
     if (delta <= 0) return composition;
-    return [...composition, { unitType, armsLevel, count: delta }];
+    const entry: import('@/types/game').StackCompositionEntry =
+      unitType === 'ranged' && armsLevel === 3
+        ? { unitType, armsLevel, count: delta, rangedVariant: rangedVariant ?? 'marksman' }
+        : { unitType, armsLevel, count: delta };
+    return [...composition, entry];
   }
   const next = composition.slice();
   const c = next[idx].count + delta;
@@ -99,11 +117,13 @@ export function computeArmyReplenishment(input: ReplenishInput): ReplenishResult
   let players = input.players.map(p => ({ ...p }));
   const unitStacks = input.unitStacks.map(a => ({ ...a, composition: a.composition.map(e => ({ ...e })) }));
 
-  const pendingKey = (pid: string, sid: string, t: UnitType, ar: number) => `${pid}|${sid}|${t}|${ar}`;
+  const pendingKey = (pid: string, sid: string, t: UnitType, ar: number, rv?: RangedVariant) =>
+    `${pid}|${sid}|${t}|${ar}|${rv ?? ''}`;
   const pendingSet = new Set<string>();
   for (const pr of input.pendingRecruits) {
     if (pr.type && pr.stackId != null && pr.effectiveArmsLevel != null && pr.playerId) {
-      pendingSet.add(pendingKey(pr.playerId, pr.stackId, pr.type, pr.effectiveArmsLevel));
+      const prv = (pr as { rangedVariant?: RangedVariant }).rangedVariant;
+      pendingSet.add(pendingKey(pr.playerId, pr.stackId, pr.type, pr.effectiveArmsLevel, prv));
     }
   }
 
@@ -128,7 +148,14 @@ export function computeArmyReplenishment(input: ReplenishInput): ReplenishResult
 
     for (const entry of army.composition) {
       if (entry.count <= 0) continue;
-      const have = countStackUnits(input.units, army.id, entry.unitType, entry.armsLevel);
+      const entryRv = entry.unitType === 'ranged' && entry.armsLevel === 3 ? entry.rangedVariant : undefined;
+      const have = countStackUnits(
+        input.units,
+        army.id,
+        entry.unitType,
+        entry.armsLevel,
+        entryRv,
+      );
       if (have >= entry.count) continue;
       if (livingTroops + pendingLand >= totalPop) break;
 
@@ -162,7 +189,14 @@ export function computeArmyReplenishment(input: ReplenishInput): ReplenishResult
                 ? 2
                 : 1;
 
-      const pk = pendingKey(army.ownerId, army.id, t, effArms);
+      let effRangedVariant: RangedVariant | undefined;
+      if (t === 'ranged' && effArms === 3) {
+        const doc = home.archerDoctrineL3;
+        if (doc !== 'marksman' && doc !== 'longbowman') continue;
+        effRangedVariant = entry.rangedVariant ?? doc;
+      }
+
+      const pk = pendingKey(army.ownerId, army.id, t, effArms, effRangedVariant);
       if (pendingSet.has(pk)) continue;
 
       const goldCost = wantL3 ? UNIT_L3_COSTS[t].gold : wantL2 ? UNIT_L2_COSTS[t].gold : UNIT_COSTS[t].gold;
@@ -179,7 +213,11 @@ export function computeArmyReplenishment(input: ReplenishInput): ReplenishResult
       if (ironCost > 0 && (home.storage.iron ?? 0) < ironCost) continue;
       if (refinedWoodCost > 0 && (home.storage.refinedWood ?? 0) < refinedWoodCost) continue;
 
-      const stats = getUnitStats({ type: t, armsLevel: effArms });
+      const stats = getUnitStats({
+        type: t,
+        armsLevel: effArms,
+        rangedVariant: effRangedVariant,
+      });
       const gunL2Upkeep = (stats as { gunL2Upkeep?: number }).gunL2Upkeep ?? 0;
       if (gunL2Upkeep > 0) {
         const totalGunsL2 = playerCities.reduce((sum, c) => sum + (c.storage.gunsL2 ?? 0), 0);
@@ -226,6 +264,7 @@ export function computeArmyReplenishment(input: ReplenishInput): ReplenishResult
         cityId: home.id,
         type: t,
         effectiveArmsLevel: effArms,
+        ...(effRangedVariant ? { rangedVariant: effRangedVariant } : {}),
         spawnQ: home.q,
         spawnR: home.r,
         completesAtCycle: input.cycle + 1,

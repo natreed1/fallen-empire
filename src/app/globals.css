@@ -106,3 +106,146 @@ body {
 .medieval-scroll::-webkit-scrollbar-thumb:hover {
   background: rgba(201, 168, 76, 0.5);
 }
+
+/* ─── In-game HUD panel themes ─── */
+
+.panel-cottage {
+  position: relative;
+  padding: 3px;
+  border-radius: 6px;
+  background: linear-gradient(
+    160deg,
+    #6b5344 0%,
+    #4a3728 25%,
+    #5c4332 50%,
+    #3d2e22 75%,
+    #5a4636 100%
+  );
+  box-shadow:
+    0 0 0 1px rgba(30, 22, 14, 0.9),
+    0 0 0 2px rgba(139, 105, 60, 0.35),
+    0 6px 24px rgba(0, 0, 0, 0.55);
+}
+
+.panel-cottage::before {
+  content: '';
+  position: absolute;
+  inset: 3px;
+  border-radius: 4px;
+  background: repeating-linear-gradient(
+    90deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 0, 0, 0.04) 2px,
+    rgba(0, 0, 0, 0.04) 3px
+  );
+  pointer-events: none;
+  opacity: 0.45;
+}
+
+.panel-cottage-inner {
+  position: relative;
+  border-radius: 4px;
+  background:
+    radial-gradient(ellipse 120% 80% at 50% 0%, rgba(201, 152, 90, 0.12) 0%, transparent 55%),
+    linear-gradient(175deg, #2a1f18 0%, #1a1410 48%, #221a14 100%);
+  border: 1px solid rgba(160, 120, 72, 0.35);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.cottage-title {
+  font-family: var(--font-cinzel-decorative), serif;
+  letter-spacing: 0.06em;
+  color: #d4b896;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+
+.cottage-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+
+.cottage-scroll::-webkit-scrollbar-track {
+  background: rgba(20, 14, 10, 0.6);
+}
+
+.cottage-scroll::-webkit-scrollbar-thumb {
+  background: rgba(160, 120, 72, 0.45);
+  border-radius: 3px;
+}
+
+.cottage-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(180, 140, 88, 0.55);
+}
+
+.panel-map {
+  position: relative;
+  padding: 3px;
+  border-radius: 6px;
+  background: linear-gradient(
+    145deg,
+    rgba(45, 72, 62, 0.95) 0%,
+    rgba(28, 42, 48, 0.98) 40%,
+    rgba(32, 38, 52, 0.98) 100%
+  );
+  box-shadow:
+    0 0 0 1px rgba(20, 35, 40, 0.95),
+    0 0 0 2px rgba(74, 120, 110, 0.28),
+    0 6px 28px rgba(0, 0, 0, 0.5);
+}
+
+.panel-map::before {
+  content: '';
+  position: absolute;
+  inset: 3px;
+  border-radius: 4px;
+  background-image:
+    linear-gradient(rgba(74, 120, 110, 0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(74, 120, 110, 0.05) 1px, transparent 1px);
+  background-size: 12px 12px;
+  pointer-events: none;
+  opacity: 0.5;
+}
+
+.panel-map-inner {
+  position: relative;
+  border-radius: 4px;
+  background:
+    radial-gradient(ellipse 100% 70% at 50% 0%, rgba(212, 196, 168, 0.07) 0%, transparent 52%),
+    linear-gradient(168deg, #1c2430 0%, #121820 55%, #161c28 100%);
+  border: 1px solid rgba(90, 130, 125, 0.32);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+.map-title {
+  font-family: var(--font-medieval), cursive;
+  letter-spacing: 0.04em;
+  color: #c9dcc8;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.55);
+}
+
+.map-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+
+.map-scroll::-webkit-scrollbar-track {
+  background: rgba(14, 22, 28, 0.7);
+}
+
+.map-scroll::-webkit-scrollbar-thumb {
+  background: rgba(74, 120, 110, 0.45);
+  border-radius: 3px;
+}
+
+.map-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 150, 140, 0.5);
+}
+
+/* Lighter ornamental frame for floating HUD (less padding than main menu) */
+.medieval-frame--hud {
+  padding: 3px;
+  border-radius: 6px;
+  box-shadow:
+    0 0 0 1px #3d2e08,
+    0 0 0 2px rgba(201, 168, 76, 0.22),
+    0 4px 24px rgba(0, 0, 0, 0.45);
+}

@@ -18,13 +18,18 @@ import {
   isNavalUnitType, SHIP_RECRUIT_COSTS, getShipMaxCargo,
   PLAYER_COLORS, CITY_NAMES,
   BUILDING_COSTS, UNIT_COSTS, UNIT_L2_COSTS, UNIT_L3_COSTS, UNIT_BASE_STATS, UNIT_L2_STATS, UNIT_DISPLAY_NAMES,
+  getUnitDisplayName,
+  migrateLegacyArcherDoctrine,
+  cityHasL3Barracks,
+  ARMS_TIER_LABELS,
+  type RangedVariant,
   BUILDING_BP_COST, BUILDING_JOBS, getBuildingJobs, getUnitStats, BP_RATE_BASE,
   TREBUCHET_FIELD_BP_COST, TREBUCHET_FIELD_GOLD_COST, TREBUCHET_REFINED_WOOD_COST,
   DEFENDER_IRON_COST,
   SCOUT_TOWER_BP_COST, SCOUT_TOWER_GOLD_COST,
   SCOUT_MISSION_COST, SCOUT_MISSION_DURATION_SEC,
   GAME_DURATION_SEC, CYCLE_INTERVAL_SEC,
-  BARACKS_UPGRADE_COST, BARACKS_L3_UPGRADE_COST, FACTORY_UPGRADE_COST, FARM_UPGRADE_COST, WALL_SECTION_STONE_COST,
+  BARACKS_UPGRADE_COST, BARACKS_L3_UPGRADE_COST, FACTORY_UPGRADE_COST, FARM_UPGRADE_COST, RESOURCE_MINE_UPGRADE_COST, WALL_SECTION_STONE_COST,
   WALL_BUILDER_STONE_PER_CYCLE_PER_SLOT,
   UNIVERSITY_UPGRADE_COSTS,
   BUILDER_TASK_LABELS,
@@ -112,7 +117,14 @@ import {
 import { computeArmyReplenishment, updateArmyRallyFromUnits, mergeCompositionEntry } from '@/lib/armyReplenishment';
 import { computeVisibleHexes } from '@/lib/vision';
 import { rollForWeatherEvent, tickWeatherEvent, weatherAnnouncement, getWeatherHarvestMultiplier } from '@/lib/weather';
-import { withDeployFlags, applyDeployFlagsForMoveMutable, isLandMilitaryUnit, marchHexDistanceAtOrder } from '@/lib/garrison';
+import {
+  withDeployFlags,
+  applyDeployFlagsForMoveMutable,
+  withoutPatrolFields,
+  clearPatrolFieldsMutable,
+  isLandMilitaryUnit,
+  marchHexDistanceAtOrder,
+} from '@/lib/garrison';
 import {
   getAttackMarchParams,
   selectUnitIdsByTypeCounts,
@@ -265,6 +277,8 @@ interface GameState {
   cityLogisticsOpen: boolean;
   /** City capture: cityId -> { attackerId, startedAt } when attacker holds center; capture after 5s */
   cityCaptureHold: Record<string, { attackerId: string; startedAt: number }>;
+  /** Human: show L3 archer doctrine modal for this city id. */
+  archerDoctrineModalCityId: string | null;
 
   /** Units/ships spawn at end of `completesAtCycle` (one economy cycle delay). */
   pendingRecruits: PendingRecruitItem[];
@@ -367,6 +381,8 @@ interface GameState {
   upgradeBarracks: (cityId: string, buildingQ: number, buildingR: number) => void;
   upgradeFactory: (cityId: string, buildingQ: number, buildingR: number) => void;
   upgradeFarm: (cityId: string, buildingQ: number, buildingR: number) => void;
+  /** Quarry, iron mine, or gold mine L1 → L2. */
+  upgradeResourceMine: (cityId: string, buildingQ: number, buildingR: number) => void;
   upgradeSocialBar: (cityId: string, buildingQ: number, buildingR: number) => void;
   buyTradeMapQuadrant: (quadrant: MapQuadrantId) => void;
   buyTradeMapFullAtlas: () => void;
@@ -383,8 +399,13 @@ interface GameState {
     cityId: string,
     type: UnitType,
     armsLevel?: 1 | 2 | 3,
-    stackOpts?: { stackMode: 'new'; name?: string } | { stackMode: 'existing'; stackId: string },
+    stackOpts?:
+      | { stackMode: 'new'; name?: string; rangedVariant?: RangedVariant }
+      | { stackMode: 'existing'; stackId: string; rangedVariant?: RangedVariant },
   ) => void;
+  /** One-time per city: L3 iron archer line (Marksman vs Longbowman). */
+  setCityArcherDoctrineL3: (cityId: string, doctrine: RangedVariant) => void;
+  migrateLegacyArcherDoctrineIfNeeded: () => void;
   /** Queue one recruit per template row (affordable rows) into the unit stack. */
   trainAllStackTemplate: (cityId: string, stackId: string) => void;
   updateStackComposition: (stackId: string, composition: ArmyCompositionEntry[]) => void;
@@ -612,6 +633,7 @@ type PendingLandRecruit = {
   cityId: string;
   type: UnitType;
   effectiveArmsLevel: 1 | 2 | 3;
+  rangedVariant?: RangedVariant;
   spawnQ: number;
   spawnR: number;
   completesAtCycle: number;
@@ -851,7 +873,7 @@ function applyEchelonForLandMove(
     if (!marchIds.has(u.id)) return u;
     const pos = assignments.get(u.id);
     if (!pos) return u;
-    const deployed = withDeployFlags(u, pos.q, pos.r, cities);
+    const deployed = withoutPatrolFields(withDeployFlags(u, pos.q, pos.r, cities));
     const next: Unit = {
       ...deployed,
       targetQ: pos.q,
@@ -944,7 +966,15 @@ function spawnUnitFromPendingLand(item: PendingLandRecruit, cities: City[]): Uni
   if (item.type === 'builder') return null;
   const city = cities.find(c => c.id === item.cityId);
   if (!city) return null;
-  const stats = getUnitStats({ type: item.type, armsLevel: item.effectiveArmsLevel });
+  const rv =
+    item.type === 'ranged' && item.effectiveArmsLevel === 3
+      ? (item.rangedVariant ?? 'marksman')
+      : undefined;
+  const stats = getUnitStats({
+    type: item.type,
+    armsLevel: item.effectiveArmsLevel,
+    rangedVariant: rv,
+  });
   const u: Unit = {
     id: generateId('unit'),
     type: item.type,
@@ -962,6 +992,9 @@ function spawnUnitFromPendingLand(item: PendingLandRecruit, cities: City[]): Uni
   };
   if (item.effectiveArmsLevel === 2 && item.type !== 'defender') u.armsLevel = 2;
   if (item.effectiveArmsLevel === 3 || item.type === 'defender') u.armsLevel = 3;
+  if (item.type === 'ranged' && item.effectiveArmsLevel === 3) {
+    u.rangedVariant = rv;
+  }
   if (item.stackId) u.stackId = item.stackId;
   if (item.moveToRallyAfterSpawn) {
     const rq = item.moveToRallyAfterSpawn.q;
@@ -1063,6 +1096,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   mapClickSuppressionUntilMs: 0,
   cityLogisticsOpen: false,
   cityCaptureHold: {},
+  archerDoctrineModalCityId: null,
   pendingRecruits: [],
   pendingIncorporations: [],
   pendingTacticalOrders: null,
@@ -1155,7 +1189,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       cities: [], units: [], heroes: [], commanders: [], unitStacks: [], operationalArmies: [],
       commanderDraftOptions: [], commanderDraftSelectedIds: [], commanderDraftAssignment: {},
       constructions: [], roadConstructions: [], scoutTowers: [], defenseInstallations: [],       scoutMissions: [], scoutedHexes: new Set(),
-      territory: new Map(), cycle: 0, notifications: [], wallSections: [], cityCaptureHold: {}, pendingRecruits: [], pendingIncorporations: [],
+      territory: new Map(), cycle: 0, notifications: [], wallSections: [], cityCaptureHold: {}, archerDoctrineModalCityId: null, pendingRecruits: [], pendingIncorporations: [],
       combatHexesThisCycle: new Set(),
       lastCombatFxAtMs: 0,
       lastDefenseVolleyFx: [],
@@ -1197,7 +1231,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       cities: [], units: [], heroes: [], commanders: [], unitStacks: [], operationalArmies: [],
       commanderDraftOptions: [], commanderDraftSelectedIds: [], commanderDraftAssignment: {},
       constructions: [], roadConstructions: [], scoutTowers: [], defenseInstallations: [],       scoutMissions: [], scoutedHexes: new Set(),
-      territory: new Map(), cycle: 0, notifications: [], wallSections: [], cityCaptureHold: {}, pendingRecruits: [], pendingIncorporations: [],
+      territory: new Map(), cycle: 0, notifications: [], wallSections: [], cityCaptureHold: {}, archerDoctrineModalCityId: null, pendingRecruits: [], pendingIncorporations: [],
       combatHexesThisCycle: new Set(),
       lastCombatFxAtMs: 0,
       lastDefenseVolleyFx: [],
@@ -1298,6 +1332,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       exploredHexes: allTileKeys,
       wallSections: [],
       cityCaptureHold: {},
+      archerDoctrineModalCityId: null,
       pendingRecruits: [],
       pendingIncorporations: [],
       constructions: [],
@@ -1424,6 +1459,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       exploredHexes: allTileKeys,
       wallSections: [],
       cityCaptureHold: {},
+      archerDoctrineModalCityId: null,
       pendingRecruits: [],
       pendingIncorporations: [],
       constructions: [],
@@ -1708,6 +1744,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         p.id === HUMAN_ID ? { ...p, kingdomId: get().selectedKingdom } : p,
       ),
       cityCaptureHold: {},
+      archerDoctrineModalCityId: null,
       pendingRecruits: [],
       pendingIncorporations: [],
       units: [],
@@ -2119,6 +2156,25 @@ export const useGameStore = create<GameState>((set, get) => ({
       const allRangedShotFx = [...closingFire.rangedShotFx, ...combatResult.rangedShotFx];
       const hasFx =
         defenseVolleyCombined.length > 0 || allRangedShotFx.length > 0;
+
+      const scrollPickupRt = tickScrollRelicPickup({
+        newCycle: s.cycle,
+        tiles: s.tiles,
+        units: aliveUnits,
+        players: s.players,
+        scrollRelics: s.scrollRelics ?? [],
+        scrollRegionClaimed: s.scrollRegionClaimed ?? emptyScrollRegionClaimed(),
+        scrollInventory: scrollReturn.scrollInventory,
+      });
+      let scrollModalRt = s.scrollRelicPickupModal;
+      for (const ev of scrollPickupRt.scrollRelicPickupEvents) {
+        if (ev.playerId === HUMAN_ID) {
+          scrollModalRt = { regionKind: ev.regionKind, kind: ev.kind };
+        }
+      }
+      const notifsWithScrollRt =
+        scrollPickupRt.notifications.length > 0 ? [...newNotifs, ...scrollPickupRt.notifications] : newNotifs;
+
       set({
         units: aliveUnits,
         cities: citiesFinal,
@@ -2128,11 +2184,13 @@ export const useGameStore = create<GameState>((set, get) => ({
         cityCaptureHold: captureHoldNext,
         heroes: aliveHeroes,
         commanders: movingCommanders,
-        notifications: newNotifs,
+        notifications: notifsWithScrollRt,
         combatHexesThisCycle: nextCombatHexes,
         defenseInstallations: syncedDefenses,
         scrollAttachments: scrollReturn.attachments,
-        scrollInventory: scrollReturn.scrollInventory,
+        scrollInventory: scrollPickupRt.scrollInventory,
+        scrollRegionClaimed: scrollPickupRt.scrollRegionClaimed,
+        scrollRelicPickupModal: scrollModalRt,
         lastCombatFxAtMs: hasFx ? fxNow : s.lastCombatFxAtMs,
         lastDefenseVolleyFx: defenseVolleyCombined,
         lastRangedShotFx: allRangedShotFx,
@@ -2188,7 +2246,7 @@ export const useGameStore = create<GameState>((set, get) => ({
           const queueWallAfterComplete: string[] = [];
 
           for (const site of st.constructions) {
-            let availBP = computeConstructionAvailableBp(site, st.territory, st.cities);
+            let availBP = computeConstructionAvailableBp(site, st.territory, st.cities, st.constructions);
 
             if (
               site.type === 'wall_section' &&
@@ -2916,6 +2974,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         const unit = units.find(u => u.id === mt.unitId);
         if (unit && unit.hp > 0 && unit.status !== 'fighting') {
           applyDeployFlagsForMoveMutable(unit, mt.toQ, mt.toR, cities);
+          clearPatrolFieldsMutable(unit);
           unit.targetQ = mt.toQ;
           unit.targetR = mt.toR;
           unit.status = 'moving';
@@ -3364,6 +3423,10 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   escapeFromUi: () => {
     const s = get();
+    if (s.archerDoctrineModalCityId !== null) {
+      set({ archerDoctrineModalCityId: null });
+      return;
+    }
     if (s.battleModalHexKey !== null) {
       set({ battleModalHexKey: null });
       return;
@@ -3785,21 +3848,35 @@ export const useGameStore = create<GameState>((set, get) => ({
     const newLevel = lvl === 1 ? 2 : 3;
     const newCities = s.cities.map(c => {
       if (c.id !== cityId) return c;
+      const nextDoc =
+        newLevel === 3
+          ? (c.archerDoctrineL3 === 'marksman' || c.archerDoctrineL3 === 'longbowman'
+              ? c.archerDoctrineL3
+              : null)
+          : c.archerDoctrineL3;
       return {
         ...c,
+        archerDoctrineL3: newLevel === 3 ? nextDoc : c.archerDoctrineL3,
         buildings: c.buildings.map(b =>
           b.type === 'barracks' && b.q === buildingQ && b.r === buildingR ? { ...b, level: newLevel } : b
         ),
       };
     });
+    const upgradedCity = newCities.find(c => c.id === cityId);
+    const showArcherModal =
+      newLevel === 3 &&
+      upgradedCity &&
+      upgradedCity.archerDoctrineL3 !== 'marksman' &&
+      upgradedCity.archerDoctrineL3 !== 'longbowman';
     set({
       players: s.players.map(p => p.id === HUMAN_ID ? { ...p, gold: p.gold - cost } : { ...p }),
       cities: newCities,
+      ...(showArcherModal ? { archerDoctrineModalCityId: cityId } : {}),
     });
     get().addNotification(
       newLevel === 2
         ? 'Barracks upgraded to L2! Can recruit L2 units.'
-        : 'Barracks upgraded to L3! Crusaders can recruit Crusader Knights.',
+        : 'Barracks upgraded to L3! Choose your archer doctrine; Crusaders can recruit Grand Crusaders.',
       'success',
     );
   },
@@ -3870,6 +3947,49 @@ export const useGameStore = create<GameState>((set, get) => ({
       cities: newCities,
     });
     get().addNotification('Farm upgraded! +50 grain/cycle (L2).', 'success');
+  },
+
+  upgradeResourceMine: (cityId, buildingQ, buildingR) => {
+    const s = get();
+    const player = s.players.find(p => p.id === HUMAN_ID);
+    const city = s.cities.find(c => c.id === cityId);
+    if (!player || !city) return;
+    if (player.gold < RESOURCE_MINE_UPGRADE_COST) {
+      get().addNotification(`Need ${RESOURCE_MINE_UPGRADE_COST} gold!`, 'warning');
+      return;
+    }
+    const building = city.buildings.find(
+      b =>
+        (b.type === 'quarry' || b.type === 'mine' || b.type === 'gold_mine') &&
+        b.q === buildingQ &&
+        b.r === buildingR,
+    );
+    if (!building) return;
+    const lvl = building.level ?? 1;
+    if (lvl >= 2) {
+      get().addNotification('This site is already upgraded (L2).', 'info');
+      return;
+    }
+    const label =
+      building.type === 'quarry' ? 'Quarry' : building.type === 'gold_mine' ? 'Gold mine' : 'Mine';
+    const newCities = s.cities.map(c => {
+      if (c.id !== cityId) return c;
+      return {
+        ...c,
+        buildings: c.buildings.map(b =>
+          (b.type === 'quarry' || b.type === 'mine' || b.type === 'gold_mine') &&
+          b.q === buildingQ &&
+          b.r === buildingR
+            ? { ...b, level: 2 }
+            : b,
+        ),
+      };
+    });
+    set({
+      players: s.players.map(p => (p.id === HUMAN_ID ? { ...p, gold: p.gold - RESOURCE_MINE_UPGRADE_COST } : p)),
+      cities: newCities,
+    });
+    get().addNotification(`${label} upgraded — higher output per cycle (L2).`, 'success');
   },
 
   upgradeSocialBar: (cityId, buildingQ, buildingR) => {
@@ -4092,7 +4212,12 @@ export const useGameStore = create<GameState>((set, get) => ({
           : c,
       ),
     });
-    get().addNotification(`University workforce: all slots → ${BUILDER_TASK_LABELS[task]}.`, 'info');
+    get().addNotification(
+      task === 'idle'
+        ? 'University workforce: all slots unassigned.'
+        : `University workforce: all slots → ${BUILDER_TASK_LABELS[task]}.`,
+      'info',
+    );
   },
 
   setUniversityBuilderSlotTask: (cityId, slotIndex, task) => {
@@ -4214,6 +4339,26 @@ export const useGameStore = create<GameState>((set, get) => ({
         get().addNotification('Upgrade barracks first to recruit L2/L3 units!', 'warning'); return;
       }
     }
+
+    let resolvedRangedVariant: RangedVariant | undefined;
+    if (type === 'ranged' && wantL3) {
+      const stackRv = stackOpts && 'rangedVariant' in stackOpts ? stackOpts.rangedVariant : undefined;
+      if (barracksLvl >= 3) {
+        const doc = city.archerDoctrineL3;
+        if (doc !== 'marksman' && doc !== 'longbowman') {
+          set({ archerDoctrineModalCityId: cityId });
+          get().addNotification(
+            'Choose your city archer doctrine (Marksman vs Longbowman) to train L3 iron archers.',
+            'warning',
+          );
+          return;
+        }
+        resolvedRangedVariant = stackRv ?? doc;
+      } else {
+        resolvedRangedVariant = stackRv ?? 'marksman';
+      }
+    }
+
     // Resolve cost by tier: L1 = UNIT_COSTS, L2 = UNIT_L2_COSTS (gold+stone), L3/defender = UNIT_L3_COSTS (gold+iron; defender iron only)
     const goldCost = wantL3 ? UNIT_L3_COSTS[type].gold : wantL2 ? UNIT_L2_COSTS[type].gold : UNIT_COSTS[type].gold;
     const stoneCost = wantL2 ? (UNIT_L2_COSTS[type].stone ?? 0) : 0;
@@ -4256,7 +4401,11 @@ export const useGameStore = create<GameState>((set, get) => ({
       get().addNotification('Troop limit: need more population to recruit (1 troop per population).', 'warning'); return;
     }
 
-    const stats = getUnitStats({ type, armsLevel: effectiveLevel as 1 | 2 | 3 });
+    const stats = getUnitStats({
+      type,
+      armsLevel: effectiveLevel as 1 | 2 | 3,
+      rangedVariant: resolvedRangedVariant,
+    });
     const gunL2Upkeep = (stats as { gunL2Upkeep?: number }).gunL2Upkeep ?? 0;
     if (gunL2Upkeep > 0) {
       const totalGunsL2 = s.cities.filter(c => c.ownerId === HUMAN_ID).reduce((sum, c) => sum + (c.storage.gunsL2 ?? 0), 0);
@@ -4286,6 +4435,10 @@ export const useGameStore = create<GameState>((set, get) => ({
     if (stackOpts?.stackMode === 'new') {
       const sid = generateId('stack');
       const compArms: 1 | 2 | 3 = effArms;
+      const comp0 =
+        type === 'ranged' && compArms === 3 && resolvedRangedVariant
+          ? { unitType: type, armsLevel: compArms, count: 1, rangedVariant: resolvedRangedVariant }
+          : { unitType: type, armsLevel: compArms, count: 1 };
       unitStacksNext = [
         ...unitStacksNext,
         {
@@ -4293,7 +4446,7 @@ export const useGameStore = create<GameState>((set, get) => ({
           ownerId: HUMAN_ID,
           homeCityId: cityId,
           name: stackOpts.name?.trim() || `Stack ${unitStacksNext.filter(a => a.ownerId === HUMAN_ID).length + 1}`,
-          composition: [{ unitType: type, armsLevel: compArms, count: 1 }],
+          composition: [comp0],
           autoReplenish: false,
           rallyQ: city.q,
           rallyR: city.r,
@@ -4310,7 +4463,13 @@ export const useGameStore = create<GameState>((set, get) => ({
         a.id === ar.id
           ? {
               ...a,
-              composition: mergeCompositionEntry(a.composition, type, effArms, 1),
+              composition: mergeCompositionEntry(
+                a.composition,
+                type,
+                effArms,
+                1,
+                type === 'ranged' && effArms === 3 ? resolvedRangedVariant : undefined,
+              ),
               rallyQ: city.q,
               rallyR: city.r,
             }
@@ -4325,6 +4484,9 @@ export const useGameStore = create<GameState>((set, get) => ({
       cityId,
       type,
       effectiveArmsLevel: effArms,
+      ...(type === 'ranged' && effArms === 3 && resolvedRangedVariant
+        ? { rangedVariant: resolvedRangedVariant }
+        : {}),
       spawnQ,
       spawnR,
       completesAtCycle: s.cycle + 1,
@@ -4355,7 +4517,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       unitStacks: unitStacksNext,
       pendingRecruits: [...s.pendingRecruits, prItem],
     });
-    const tierLabel = wantL3 ? 'L3 ' : wantL2 ? 'L2 ' : '';
+    const tierLabel = wantL3 ? `${ARMS_TIER_LABELS[3]} ` : wantL2 ? `${ARMS_TIER_LABELS[2]} ` : `${ARMS_TIER_LABELS[1]} `;
     const rwPart = refinedWoodCost > 0 ? `, ${refinedWoodCost} ref.` : '';
     const costStr =
       ironCost > 0
@@ -4365,7 +4527,26 @@ export const useGameStore = create<GameState>((set, get) => ({
           : refinedWoodCost > 0
             ? `${goldCost}g${rwPart}`
             : `${goldCost}g`;
-    get().addNotification(`Training ${tierLabel}${UNIT_DISPLAY_NAMES[type]} — ready next cycle. (${costStr})`, 'info');
+    const displayName = getUnitDisplayName(type, effectiveLevel, resolvedRangedVariant);
+    get().addNotification(`Training ${tierLabel}${displayName} — ready next cycle. (${costStr})`, 'info');
+  },
+
+  setCityArcherDoctrineL3: (cityId, doctrine) => {
+    const s = get();
+    set({
+      cities: s.cities.map(c => (c.id === cityId ? { ...c, archerDoctrineL3: doctrine } : c)),
+      archerDoctrineModalCityId: s.archerDoctrineModalCityId === cityId ? null : s.archerDoctrineModalCityId,
+    });
+    get().addNotification(
+      `Archer doctrine: ${doctrine === 'marksman' ? 'Marksman' : 'Longbowman'} (locked for this city).`,
+      'success',
+    );
+  },
+
+  migrateLegacyArcherDoctrineIfNeeded: () => {
+    const s = get();
+    const next = migrateLegacyArcherDoctrine(s.cities);
+    if (next !== s.cities) set({ cities: next });
   },
 
   trainAllStackTemplate: (cityId, stackId) => {
@@ -4375,16 +4556,23 @@ export const useGameStore = create<GameState>((set, get) => ({
     let budget = 40;
     for (const row of stk.composition) {
       if (row.count <= 0 || budget <= 0) continue;
-      const have = get().units.filter(
-        u =>
-          u.stackId === stackId &&
-          u.hp > 0 &&
-          u.type === row.unitType &&
-          (u.armsLevel ?? 1) === row.armsLevel,
-      ).length;
+      const have = get().units.filter(u => {
+        if (u.stackId !== stackId || u.hp <= 0) return false;
+        if (u.type !== row.unitType || (u.armsLevel ?? 1) !== row.armsLevel) return false;
+        if (row.unitType === 'ranged' && row.armsLevel === 3) {
+          return (u.rangedVariant ?? 'marksman') === (row.rangedVariant ?? 'marksman');
+        }
+        return true;
+      }).length;
       const need = Math.min(row.count - have, budget);
       for (let i = 0; i < need; i++) {
-        get().recruitUnit(cityId, row.unitType, row.armsLevel, { stackMode: 'existing', stackId });
+        get().recruitUnit(cityId, row.unitType, row.armsLevel, {
+          stackMode: 'existing',
+          stackId,
+          ...(row.unitType === 'ranged' && row.armsLevel === 3 && row.rangedVariant
+            ? { rangedVariant: row.rangedVariant }
+            : {}),
+        });
         budget--;
         if (budget <= 0) return;
       }
@@ -5407,7 +5595,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       newUnits = s.units.map(u => {
         if (u.q !== fromQ || u.r !== fromR || u.ownerId !== HUMAN_ID || u.hp <= 0 || u.aboardShipId) return u;
         if (pids && !pids.includes(u.id)) return u;
-        const deployed = withDeployFlags(u, toQ, toR, s.cities);
+        const deployed = withoutPatrolFields(withDeployFlags(u, toQ, toR, s.cities));
         const next: Unit = {
           ...deployed,
           targetQ: toQ,
@@ -5478,7 +5666,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     const { q, r } = s.selectedHex;
     const newUnits = s.units.map(u => {
       if (u.q !== q || u.r !== r || u.ownerId !== HUMAN_ID || u.hp <= 0) return u;
-      const deployed = withDeployFlags(u, city.q, city.r, s.cities);
+      const deployed = withoutPatrolFields(withDeployFlags(u, city.q, city.r, s.cities));
       return {
         ...deployed,
         defendCityId: cityId,
@@ -5971,7 +6159,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     set({
       units: s.units.map(u => {
         if (u.ownerId !== HUMAN_ID || u.hp <= 0 || u.siegingCityId !== cityId) return u;
-        const deployed = withDeployFlags(u, city.q, city.r, s.cities);
+        const deployed = withoutPatrolFields(withDeployFlags(u, city.q, city.r, s.cities));
         const nextU: Unit = {
           ...deployed,
           targetQ: city.q,
@@ -6205,7 +6393,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         units = units.map(u => {
           if (u.q !== fromQ || u.r !== fromR || u.ownerId !== HUMAN_ID || u.hp <= 0) return u;
           if (!orderAppliesToUnit(order, u)) return u;
-          const deployed = withDeployFlags(u, city.q, city.r, s.cities);
+          const deployed = withoutPatrolFields(withDeployFlags(u, city.q, city.r, s.cities));
           return {
             ...deployed,
             defendCityId: city.id,
@@ -6227,7 +6415,7 @@ export const useGameStore = create<GameState>((set, get) => ({
           if (u.q !== fromQ || u.r !== fromR || u.ownerId !== HUMAN_ID || u.hp <= 0) return u;
           if (!isLandMilitaryUnit(u)) return u;
           if (!orderAppliesToUnit(order, u)) return u;
-          const deployed = withDeployFlags(u, city.q, city.r, s.cities);
+          const deployed = withoutPatrolFields(withDeployFlags(u, city.q, city.r, s.cities));
           const next: Unit = {
             ...deployed,
             defendCityId: city.id,
@@ -6294,7 +6482,7 @@ export const useGameStore = create<GameState>((set, get) => ({
           if (u.q !== fromQ || u.r !== fromR || u.ownerId !== HUMAN_ID || u.hp <= 0) return u;
           if (!isLandMilitaryUnit(u)) return u;
           if (!orderAppliesToUnit(order, u)) return u;
-          const deployed = withDeployFlags(u, toQ, toR, s.cities);
+          const deployed = withoutPatrolFields(withDeployFlags(u, toQ, toR, s.cities));
           return {
             ...deployed,
             targetQ: toQ,
@@ -6340,7 +6528,7 @@ export const useGameStore = create<GameState>((set, get) => ({
           if (wi < 0) return u;
           if (wi > 0) {
             const waitFor = groups[wi - 1] ?? [];
-            const deployed = withDeployFlags(u, march.targetQ, march.targetR, s.cities);
+            const deployed = withoutPatrolFields(withDeployFlags(u, march.targetQ, march.targetR, s.cities));
             const nextU: Unit = {
               ...deployed,
               status: 'idle' as const,
@@ -6364,7 +6552,7 @@ export const useGameStore = create<GameState>((set, get) => ({
             delete nextU.attackBuildingTarget;
             return nextU;
           }
-          const deployed = withDeployFlags(u, march.targetQ, march.targetR, s.cities);
+          const deployed = withoutPatrolFields(withDeployFlags(u, march.targetQ, march.targetR, s.cities));
           const next: Unit = {
             ...deployed,
             targetQ: march.targetQ,
@@ -6395,7 +6583,7 @@ export const useGameStore = create<GameState>((set, get) => ({
           if (u.q !== fromQ || u.r !== fromR || u.ownerId !== HUMAN_ID || u.hp <= 0) return u;
           if (!isLandMilitaryUnit(u)) return u;
           if (!orderAppliesToUnit(order, u)) return u;
-          const deployed = withDeployFlags(u, toQ, toR, s.cities);
+          const deployed = withoutPatrolFields(withDeployFlags(u, toQ, toR, s.cities));
           return {
             ...deployed,
             attackBuildingTarget: { cityId: city.id, q: toQ, r: toR },
@@ -6442,7 +6630,7 @@ export const useGameStore = create<GameState>((set, get) => ({
           units = units.map(u => {
             if (u.q !== fromQ || u.r !== fromR || u.ownerId !== HUMAN_ID || u.hp <= 0) return u;
             if (!orderAppliesToUnit(order, u)) return u;
-            const deployed = withDeployFlags(u, toQ, toR, s.cities);
+            const deployed = withoutPatrolFields(withDeployFlags(u, toQ, toR, s.cities));
             const next: Unit = {
               ...deployed,
               targetQ: toQ,
@@ -6759,7 +6947,10 @@ export const useGameStore = create<GameState>((set, get) => ({
       scrollInventory: { ...s.scrollInventory, [human.id]: inv },
       scrollAttachments: [...s.scrollAttachments, att],
     });
-    get().addNotification(`${scrollItemDisplayName(scroll)} assigned to ${UNIT_DISPLAY_NAMES[unit.type]}.`, 'success');
+    get().addNotification(
+      `${scrollItemDisplayName(scroll)} assigned to ${getUnitDisplayName(unit.type, unit.armsLevel ?? 1, unit.rangedVariant)}.`,
+      'success',
+    );
   },
 
   assignScrollToArmy: (scrollItemId, armyId) => {

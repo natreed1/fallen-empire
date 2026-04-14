@@ -14,10 +14,9 @@ import {
   hexDistance,
   hexTouchesBiome,
   type BuilderTask,
-  DEFAULT_BUILDER_TASK,
   getHexRing,
 } from '@/types/game';
-import { getUniversityBuilderSlots } from '@/lib/builders';
+import { getCityUniversityTask, getUniversityBuilderSlots, universityTaskMatchesSiteType } from '@/lib/builders';
 
 function occupiedByBuilding(q: number, r: number, cities: City[]): boolean {
   const k = tileKey(q, r);
@@ -188,7 +187,8 @@ export function planHumanBuilderAutomation(input: {
     if (!academy) continue;
     if (getUniversityBuilderSlots(academy) <= 0) continue;
 
-    const task: BuilderTask = city.universityBuilderTask ?? DEFAULT_BUILDER_TASK;
+    const task: BuilderTask = getCityUniversityTask(city);
+    if (task === 'idle') continue;
 
     const hexList = hexesOwnedByCity(city.id, territory);
     const withDist = hexList.map(h => ({
@@ -346,6 +346,12 @@ export function planHumanBuilderAutomation(input: {
     }
 
     if (!buildType || !targetHex) continue;
+
+    const alreadyBuildingThisTask = constructions.some(cs => {
+      if (cs.cityId !== city.id || cs.ownerId !== humanPlayerId) return false;
+      return universityTaskMatchesSiteType(task, cs.type);
+    });
+    if (alreadyBuildingThisTask) continue;
 
     const goldCost = BUILDING_COSTS[buildType];
     const ironCost = BUILDING_IRON_COSTS[buildType] ?? 0;
