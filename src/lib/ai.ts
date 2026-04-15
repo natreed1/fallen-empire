@@ -16,6 +16,7 @@ import {
 } from '@/types/game';
 import { computeCityProductionRate } from '@/lib/gameLoop';
 import {
+  appendStartingFarmToCity,
   appendStartingBarracksToCity,
   appendStartingAcademyToCity,
   isCapitalStartHex,
@@ -105,6 +106,24 @@ export interface AiActions {
   universityTasks: AiUniversityTaskAction[];
   stanceChanges: AiStanceAction[];
   retreats: AiRetreatAction[];
+}
+
+/** Empty plan for multiplayer / tests (no AI actions). */
+export function emptyAiActions(): AiActions {
+  return {
+    builds: [],
+    upgrades: [],
+    recruits: [],
+    moveTargets: [],
+    scouts: [],
+    incorporateVillages: [],
+    buildWallRings: [],
+    commanderAssignments: [],
+    scrollAttachments: [],
+    universityTasks: [],
+    stanceChanges: [],
+    retreats: [],
+  };
 }
 
 // ─── Evolvable AI Parameters (for self-improvement / training) ───────
@@ -1110,6 +1129,7 @@ export function placeAiStartingCityAt(
   };
   city.buildings = [{ type: 'city_center', q: atQ, r: atR, assignedWorkers: 0 }];
   city.storageCap = { ...CITY_CENTER_STORAGE };
+  appendStartingFarmToCity(city, tiles, atQ * 524287 + atR * 65521 + 0xf407);
   appendStartingBarracksToCity(city, tiles, atQ * 524287 + atR * 65521);
   appendStartingAcademyToCity(city, tiles, atQ * 524287 + atR * 65521 + 0xaced);
   return city;
@@ -1177,6 +1197,7 @@ export function placeAiStartingCity(
     city.buildings = [{ type: 'city_center', q, r, assignedWorkers: 0 }];
     city.storageCap = { ...CITY_CENTER_STORAGE };
     const seed = humanCityQ * 1315423911 + humanCityR * 9737333 + q * 524287 + r * 65521 + seedSalt;
+    appendStartingFarmToCity(city, tiles, seed ^ 0xf407);
     appendStartingBarracksToCity(city, tiles, seed);
     appendStartingAcademyToCity(city, tiles, seed ^ 0xaced);
     return city;

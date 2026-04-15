@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useLayoutEffect, useMemo, useCallback, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import { useSearchParams } from 'next/navigation';
 import { Canvas, ThreeEvent, useThree } from '@react-three/fiber';
 import { OrthographicCamera } from '@react-three/drei';
@@ -12,6 +13,7 @@ import { useGameStore } from '@/store/useGameStore';
 import { setAiParams } from '@/lib/aiParams';
 import { axialToWorld, worldToAxial, HEX_RADIUS, tileKey, parseTileKey } from '@/types/game';
 import { collectHumanStackKeysInScreenRect, hexFromClientOnMap } from '@/lib/mapBoxSelect';
+import { useMultiplayerSession } from '@/hooks/useMultiplayerSession';
 
 /** Match scripts/train-ai.ts default (TRAIN_MAP_SIZE / TRAIN_MAP) so watch mode uses same small map. */
 const TRAIN_MAP_SIZE = 38;
@@ -74,7 +76,7 @@ function canStartUnitBoxSelect(): boolean {
   const s = useGameStore.getState();
   if (Date.now() < s.mapClickSuppressionUntilMs) return false;
   if (s.phase !== 'playing') return false;
-  if (!['human_vs_ai', 'human_solo', 'battle_test'].includes(s.gameMode)) return false;
+  if (!['human_vs_ai', 'human_solo', 'battle_test', 'multiplayer'].includes(s.gameMode)) return false;
   if (s.assigningTacticalForSelectedStacks !== null || s.assigningTacticalForStack !== null) return false;
   if (s.splitStackPending !== null) return false;
   if (s.supplyViewTab === 'supply') return false;
@@ -104,7 +106,10 @@ function HexInteractionPlane() {
     lastY: number;
     altKey: boolean;
   } | null>(null);
+  const boxSelectRafRef = useRef<number | null>(null);
+  const boxSelectPendingRectRef = useRef<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
   const skipClickAfterBoxRef = useRef(false);
+  const skipContextMenuAfterBoxRef = useRef(false);
 
   const { center, size } = useMemo(() => {
     const w = config.width;
@@ -145,14 +150,18 @@ function HexInteractionPlane() {
 
   const handlePointerDown = useCallback(
     (e: ThreeEvent<PointerEvent>) => {
-      if (!e.shiftKey || e.button !== 0) return;
+      const isShiftLeftDrag = e.shiftKey && e.button === 0;
+      const isRightDrag = e.button === 2;
+      if (!isShiftLeftDrag && !isRightDrag) return;
       if (!canStartUnitBoxSelect()) return;
       e.stopPropagation();
       const el = gl.domElement;
       const startX = e.clientX;
       const startY = e.clientY;
       boxDragRef.current = { startX, startY, lastX: startX, lastY: startY, altKey: e.altKey };
-      setUnitBoxSelectRect({ x0: startX, y0: startY, x1: startX, y1: startY });
+      flushSync(() => {
+        setUnitBoxSelectRect({ x0: startX, y0: startY, x1: startX, y1: startY });
+      });
       try {
         el.setPointerCapture(e.pointerId);
       } catch {
@@ -164,13 +173,30 @@ function HexInteractionPlane() {
         if (!b) return;
         b.lastX = ev.clientX;
         b.lastY = ev.clientY;
-        setUnitBoxSelectRect({ x0: b.startX, y0: b.startY, x1: b.lastX, y1: b.lastY });
+        boxSelectPendingRectRef.current = {
+          x0: b.startX,
+          y0: b.startY,
+          x1: b.lastX,
+          y1: b.lastY,
+        };
+        if (boxSelectRafRef.current == null) {
+          boxSelectRafRef.current = requestAnimationFrame(() => {
+            boxSelectRafRef.current = null;
+            const r = boxSelectPendingRectRef.current;
+            if (r) setUnitBoxSelectRect(r);
+          });
+        }
       };
 
       const onUp = (ev: PointerEvent) => {
         el.removeEventListener('pointermove', onMove);
         el.removeEventListener('pointerup', onUp);
         el.removeEventListener('pointercancel', onUp);
+        if (boxSelectRafRef.current != null) {
+          cancelAnimationFrame(boxSelectRafRef.current);
+          boxSelectRafRef.current = null;
+        }
+        boxSelectPendingRectRef.current = null;
         try {
           el.releasePointerCapture(ev.pointerId);
         } catch {
@@ -196,10 +222,19 @@ function HexInteractionPlane() {
             config.width,
             config.height,
           );
-          if (hex) selectHex(hex.q, hex.r);
+          if (hex) {
+            if (ev.button === 2) {
+              useGameStore.getState().rightClickHex(hex.q, hex.r);
+              skipContextMenuAfterBoxRef.current = true;
+            } else {
+              selectHex(hex.q, hex.r);
+            }
+          }
           skipClickAfterBoxRef.current = true;
           return;
         }
+
+        skipContextMenuAfterBoxRef.current = true;
 
         const s = useGameStore.getState();
         const minX = Math.min(b.startX, b.lastX);
@@ -277,6 +312,10 @@ function HexInteractionPlane() {
     (e: ThreeEvent<MouseEvent>) => {
       e.stopPropagation();
       e.nativeEvent.preventDefault();
+      if (skipContextMenuAfterBoxRef.current) {
+        skipContextMenuAfterBoxRef.current = false;
+        return;
+      }
       const hex = getHexFromEvent(e);
       if (hex) rightClickHex(hex.q, hex.r);
     },
@@ -305,13 +344,15 @@ function UnitBoxSelectOverlay() {
   if (!rect) return null;
   const left = Math.min(rect.x0, rect.x1);
   const top = Math.min(rect.y0, rect.y1);
-  const width = Math.abs(rect.x1 - rect.x0);
-  const height = Math.abs(rect.y1 - rect.y0);
-  if (width < 1 && height < 1) return null;
+  const rawW = Math.abs(rect.x1 - rect.x0);
+  const rawH = Math.abs(rect.y1 - rect.y0);
+  /** Min size so the marquee is visible immediately on pointerdown (0×0 would be invisible). */
+  const width = Math.max(rawW, 2);
+  const height = Math.max(rawH, 2);
   return (
     <div
-      className="pointer-events-none fixed z-[5] border border-empire-gold/70 bg-amber-400/15 rounded-sm shadow-[0_0_12px_rgba(251,191,36,0.25)]"
-      style={{ left, top, width, height }}
+      className="pointer-events-none fixed z-[88] box-border border-2 border-amber-300/90 bg-amber-400/20 shadow-[0_0_0_1px_rgba(0,0,0,0.35),0_0_20px_rgba(251,191,36,0.35)] backdrop-blur-[0.5px]"
+      style={{ left, top, width, height, willChange: 'width, height, left, top' }}
       aria-hidden
     />
   );
@@ -337,8 +378,11 @@ function useCameraTarget(): [number, number, number] {
         return [x, 0, z];
       }
     }
-    // Bot-vs-bot (2 or 4): center camera on capitals so all are visible
-    if ((gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4' || gameMode === 'spectate') && cities.length >= 2) {
+    // Bot-vs-bot / online 1v1: center camera on capitals so both are visible
+    if (
+      (gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4' || gameMode === 'spectate' || gameMode === 'multiplayer') &&
+      cities.length >= 2
+    ) {
       let sumX = 0, sumZ = 0;
       for (const c of cities) {
         const [x, z] = axialToWorld(c.q, c.r, HEX_RADIUS);
@@ -388,7 +432,11 @@ function CameraZoomController() {
 
   useEffect(() => {
     const cam = camera as THREE.OrthographicCamera;
-    if (phase === 'playing' && (gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4' || gameMode === 'spectate') && !botZoomSet.current) {
+    if (
+      phase === 'playing' &&
+      (gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4' || gameMode === 'spectate' || gameMode === 'multiplayer') &&
+      !botZoomSet.current
+    ) {
       botZoomSet.current = true;
       cam.zoom = gameMode === 'bot_vs_bot_4' ? 10 : 14;
       cam.updateProjectionMatrix();
@@ -447,12 +495,15 @@ function useEscapeKey() {
 
 export default function GameScene() {
   const searchParams = useSearchParams();
+  const { multiplayerActive, connecting, waitingForPeer, inviteUrl, netError } = useMultiplayerSession();
+  const [inviteCopied, setInviteCopied] = useState(false);
   const generateWorld = useGameStore(s => s.generateWorld);
   const isGenerated = useGameStore(s => s.isGenerated);
   const phase = useGameStore(s => s.phase);
   const gameMode = useGameStore(s => s.gameMode);
   const liveTarget = useCameraTarget();
-  const isBotWatch = gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4' || gameMode === 'spectate';
+  const isBotWatch =
+    gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4' || gameMode === 'spectate' || gameMode === 'multiplayer';
   const [mapTarget, setMapTarget] = useState(liveTarget);
   const [aiParamsLoadAttempted, setAiParamsLoadAttempted] = useState(false);
   const prevPhaseForCameraRef = useRef(phase);
@@ -519,7 +570,45 @@ export default function GameScene() {
   ];
 
   return (
-    <div className="w-full h-screen bg-empire-dark">
+    <div className="w-full h-screen bg-empire-dark relative" onContextMenu={e => e.preventDefault()}>
+      {multiplayerActive && netError && (
+        <div className="absolute inset-0 z-[200] flex flex-col items-center justify-center gap-3 bg-empire-dark/95 px-6 text-center text-empire-parchment text-sm pointer-events-auto">
+          <p className="text-amber-200/90 max-w-md">{netError}</p>
+          <p className="text-empire-parchment/55 text-xs max-w-md">
+            From the repo root run <code className="text-empire-gold/80">npm run game-server</code> in a separate terminal, then refresh.
+          </p>
+        </div>
+      )}
+      {multiplayerActive && connecting && !netError && (
+        <div className="absolute inset-0 z-[200] flex items-center justify-center bg-empire-dark/90 text-empire-parchment text-sm pointer-events-none">
+          Connecting to multiplayer…
+        </div>
+      )}
+      {multiplayerActive && waitingForPeer && !connecting && !netError && (
+        <div className="absolute inset-0 z-[199] flex flex-col items-center justify-center gap-4 bg-black/55 px-4 text-center pointer-events-auto">
+          <p className="text-empire-parchment font-cinzel text-lg tracking-wide">Waiting for opponent</p>
+          <p className="text-empire-parchment/65 text-xs max-w-lg">
+            Share this invite link (guest opens it on another machine or browser profile):
+          </p>
+          <div className="flex flex-col sm:flex-row gap-2 max-w-2xl w-full items-stretch justify-center">
+            <code className="flex-1 text-left text-[11px] leading-relaxed break-all rounded border border-empire-gold/25 bg-black/40 px-3 py-2 text-empire-parchment/90">
+              {inviteUrl}
+            </code>
+            <button
+              type="button"
+              onClick={() => {
+                void navigator.clipboard.writeText(inviteUrl).then(() => {
+                  setInviteCopied(true);
+                  setTimeout(() => setInviteCopied(false), 2000);
+                });
+              }}
+              className="shrink-0 px-4 py-2 rounded border border-empire-gold/50 bg-empire-gold/15 text-empire-gold text-sm hover:bg-empire-gold/25"
+            >
+              {inviteCopied ? 'Copied' : 'Copy link'}
+            </button>
+          </div>
+        </div>
+      )}
       <Canvas
         shadows
         gl={{

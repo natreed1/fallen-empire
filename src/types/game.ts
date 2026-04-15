@@ -1050,10 +1050,10 @@ export const TECH_TREE: Record<TechId, TechDefinition> = {
   advanced_construction: {
     id: 'advanced_construction',
     label: 'Advanced Construction',
-    desc: 'Enables siege workshops and university buildings.',
+    desc: 'Enables siege workshops.',
     researchCost: 60,
     prerequisites: ['masonry_1', 'forestry_1'],
-    unlocksBuildings: ['siege_workshop', 'university'],
+    unlocksBuildings: ['siege_workshop'],
     unlocksUnits: [],
   },
   military_tactics_1: {
@@ -1210,6 +1210,19 @@ export interface DefenseInstallation {
   cityId: string;
   type: DefenseTowerType;
   level: DefenseTowerLevel;
+  /** Structural HP; at 0 the installation is destroyed. */
+  hp?: number;
+  maxHp?: number;
+}
+
+/** Max HP for a defense tower by upgrade level (siege and raids reduce hp). */
+export function defenseInstallationMaxHp(level: DefenseTowerLevel): number {
+  return 55 + level * 28;
+}
+
+export function defenseInstallationCurrentHp(d: DefenseInstallation): number {
+  const max = d.maxHp ?? defenseInstallationMaxHp(d.level);
+  return d.hp ?? max;
 }
 
 export const DEFENSE_TOWER_MAX_PER_CITY: Record<DefenseTowerType, number> = {
@@ -1421,7 +1434,7 @@ export const BUILDING_COLORS: Record<BuildingType, string> = {
   banana_farm: '#86efac', // lighter green (Fishers)
   factory:     '#f59e0b', // amber/orange
   barracks:    '#ef4444', // red
-  academy:     '#0ea5e9', // sky blue (civilian)
+  academy:     '#0ea5e9', // sky blue (builder's hut)
   siege_workshop: '#b45309', // amber/brown (siege engines)
   market:      '#facc15', // gold/yellow
   quarry:      '#78716c', // stone

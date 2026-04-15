@@ -23,12 +23,25 @@ import {
   FRONTIER_CYCLES, CITY_NAMES, PLAYER_COLORS,
   CITY_CAPTURE_HOLD_MS,
   WALL_SECTION_STONE_COST, WALL_SECTION_HP, WALL_SECTION_BP_COST, getHexRing,
+  defenseInstallationCurrentHp,
 } from '../types/game';
 import { generateMap, placeAncientCity, rebuildSpecialTerrainForCapitals, type ScrollRelicClusters } from '../lib/mapGenerator';
 import { calculateTerritory } from '../lib/territory';
 import { processEconomyTurn } from '../lib/gameLoop';
-import { planAiTurn, placeAiStartingCityAt, AiParams, DEFAULT_AI_PARAMS, estimateAiFoodSurplus } from '../lib/ai';
-import { appendStartingBarracksToCity, appendStartingAcademyToCity } from '../lib/kingdomSpawn';
+import {
+  planAiTurn,
+  placeAiStartingCityAt,
+  AiParams,
+  DEFAULT_AI_PARAMS,
+  estimateAiFoodSurplus,
+  emptyAiActions,
+  type AiActions,
+} from '../lib/ai';
+import {
+  appendStartingFarmToCity,
+  appendStartingBarracksToCity,
+  appendStartingAcademyToCity,
+} from '../lib/kingdomSpawn';
 import { getNextWallBuildHex } from '../lib/wallBuilding';
 import {
   movementTick,
@@ -36,8 +49,10 @@ import {
   coastalBombardmentTick,
   upkeepTick,
   siegeTick,
+  siegeDefenseInstallationsTick,
   siegeBuildingsTick,
   landUnitBuildingDamageTick,
+  defenseInstallationsLandRaidTick,
   autoEmbarkLandUnitsOntoScoutShipsAtHex,
   type SupplyCacheEntry,
   landMilitaryContestsCityCapture,
@@ -133,6 +148,23 @@ export function initBotVsBotGame(
     }
   }
   throw lastErr ?? new Error('initBotVsBotGame: could not place capitals after 128 seed bumps');
+}
+
+/** Two human players at opposite corners — same map as bot-vs-bot; used by multiplayer game server. */
+export function initMultiplayerGame(
+  seed: number,
+  mapConfigOverride?: Partial<MapConfig>,
+): SimState {
+  const state = initBotVsBotGame(seed, DEFAULT_AI_PARAMS, DEFAULT_AI_PARAMS, mapConfigOverride);
+  return {
+    ...state,
+    players: state.players.map((p, i) => ({
+      ...p,
+      name: i === 0 ? 'Player 1' : 'Player 2',
+      isHuman: true,
+      color: i === 0 ? PLAYER_COLORS.human : PLAYER_COLORS.ai2,
+    })),
+  };
 }
 
 function initBotVsBotGameOnce(
@@ -486,6 +518,11 @@ export type SimDiagnostics = {
   commanderFieldAssignmentsAi2?: number;
 };
 
+export type StepSimulationOptions = {
+  /** When set, use these plans instead of {@link planAiTurn} (multiplayer). Keys = player ids (`player_ai`, `player_ai_2`). */
+  humanPlansByPlayerId?: Record<string, AiActions>;
+};
+
 /** Single step: economy + AI actions + one movement/combat/siege/capture tick. */
 export function stepSimulation(
   state: SimState,
@@ -493,6 +530,7 @@ export function stepSimulation(
   paramsB: AiParams,
   diagnostics?: SimDiagnostics,
   traceCallback?: (data: CycleTrace) => void,
+  stepOpts?: StepSimulationOptions,
 ): SimState {
   if (state.phase !== 'playing') return state;
 
@@ -730,11 +768,13 @@ export function stepSimulation(
     { id: AI_ID_2, params: paramsB },
   ];
 
-  const plans = aiConfigs.map(({ id, params }) => planAiTurn(
-    id, cities, units, players, state.tiles, state.territory, params, state.wallSections,
-    state.contestedZoneHexKeys, state.commanders, scrollInventory, scrollAttachments,
-    state.scrollRelics, state.scrollRegionClaimed,
-  ));
+  const plans = stepOpts?.humanPlansByPlayerId
+    ? aiConfigs.map(({ id }) => stepOpts.humanPlansByPlayerId![id] ?? emptyAiActions())
+    : aiConfigs.map(({ id, params }) => planAiTurn(
+      id, cities, units, players, state.tiles, state.territory, params, state.wallSections,
+      state.contestedZoneHexKeys, state.commanders, scrollInventory, scrollAttachments,
+      state.scrollRelics, state.scrollRegionClaimed,
+    ));
 
   if (traceCallback) {
     const ai1Pop = ai1Cities.reduce((s, c) => s + c.population, 0);
@@ -852,6 +892,7 @@ export function stepSimulation(
       newCity.buildings = [{ type: 'city_center', q: inc.q, r: inc.r, assignedWorkers: 0 }];
       newCity.storageCap = { ...CITY_CENTER_STORAGE };
       const incSeed = state.config.seed ^ (inc.q * 524287) ^ (inc.r * 65521);
+      appendStartingFarmToCity(newCity, tilesMut, incSeed ^ 0xf407);
       appendStartingBarracksToCity(newCity, tilesMut, incSeed);
       appendStartingAcademyToCity(newCity, tilesMut, incSeed ^ 0xaced);
       cities = [...cities, newCity];
@@ -1048,6 +1089,7 @@ export function stepSimulation(
   const movingHeroes: Hero[] = [];
   const movingCommanders = commandersMut.map(c => ({ ...c }));
   const territoryForMovement = calculateTerritory(citiesToSet, tilesMut);
+  const defenseInstallationsMut = state.defenseInstallations.map(d => ({ ...d }));
   const closingFire = movementTick(
     movingUnits,
     movingHeroes,
@@ -1060,7 +1102,7 @@ export function stepSimulation(
     newCycle,
     movingCommanders,
     territoryForMovement,
-    state.defenseInstallations,
+    defenseInstallationsMut,
   );
   autoEmbarkLandUnitsOntoScoutShipsAtHex(movingUnits, tilesMut);
   releaseAttackWaveHolds(movingUnits, citiesToSet);
@@ -1075,7 +1117,7 @@ export function stepSimulation(
     citiesToSet,
     tilesMut,
     newSimTimeMs,
-    state.defenseInstallations,
+    defenseInstallationsMut,
     territoryForCombat,
     scrollAttachments,
     movingCommanders,
@@ -1096,9 +1138,11 @@ export function stepSimulation(
   );
 
   siegeTick(wallSectionsMut, movingUnits);
+  siegeDefenseInstallationsTick(defenseInstallationsMut, movingUnits);
   const citiesSiege = citiesToSet.map(c => ({ ...c, buildings: c.buildings.map(b => ({ ...b })) }));
   siegeBuildingsTick(citiesSiege, movingUnits);
   landUnitBuildingDamageTick(citiesSiege, movingUnits);
+  defenseInstallationsLandRaidTick(defenseInstallationsMut, movingUnits);
   citiesToSet = citiesSiege;
 
   const mergedKilledUnitIds = [
@@ -1221,6 +1265,15 @@ export function stepSimulation(
     state.cities.some(c => newCityOwnerById.get(c.id) !== c.ownerId);
   const supplyCacheNext = state.supplyCache != null && !citiesChanged ? state.supplyCache : undefined;
 
+  const defenseOwnerByCity = new Map(citiesToSet.map(c => [c.id, c.ownerId]));
+  const defenseInstallationsOut = defenseInstallationsMut
+    .filter(d => defenseInstallationCurrentHp(d) > 0)
+    .map(d => {
+      const ow = defenseOwnerByCity.get(d.cityId);
+      if (ow !== undefined && ow !== d.ownerId) return { ...d, ownerId: ow };
+      return d;
+    });
+
   return {
     ...state,
     tiles: tilesMut,
@@ -1248,7 +1301,7 @@ export function stepSimulation(
     scrollSearchVisited,
     scrollInventory,
     scrollAttachments,
-    defenseInstallations: state.defenseInstallations,
+    defenseInstallations: defenseInstallationsOut,
     unitStacks: unitStacksState,
     operationalArmies: state.operationalArmies ?? [],
     combatMoraleState: combatResult.moraleState,

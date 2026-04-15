@@ -1,12 +1,13 @@
 'use client';
 
 import { useState, useEffect, useMemo, useRef } from 'react';
+import { useSearchParams, useRouter } from 'next/navigation';
 import { createPortal } from 'react-dom';
 import { useGameStore } from '@/store/useGameStore';
 import { countVillagesInPlayerTerritory, isUnitInSupplyVicinityOfPlayerCities } from '@/lib/empireEconomy';
 import { computeCityProductionRate, computeSawmillBuildingPreview } from '@/lib/gameLoop';
 import { getWeatherHarvestMultiplier } from '@/lib/weather';
-import { BUILDING_COSTS, BUILDING_PRODUCTION, BUILDING_BP_COST, BUILDING_JOBS, CITY_BUILDING_POWER, BUILDER_POWER, BP_RATE_BASE, TERRAIN_FOOD_YIELD, UNIT_COSTS, UNIT_L2_COSTS, UNIT_L3_COSTS, UNIT_BASE_STATS, UNIT_DISPLAY_NAMES, getUnitDisplayName, ARMS_TIER_LABELS, type RangedVariant, COMMANDER_TRAIT_INFO, COMMANDER_RECRUIT_GOLD, VILLAGE_INCORPORATE_COST, MARKET_GOLD_PER_CYCLE, MARKET_GOLD_PER_VILLAGE, POPULATION_TAX_GOLD_MULT, SCOUT_MISSION_COST, WEATHER_DISPLAY, BARACKS_UPGRADE_COST, BARACKS_L3_UPGRADE_COST, FACTORY_UPGRADE_COST, FARM_UPGRADE_COST, RESOURCE_MINE_UPGRADE_COST, FARM_L2_FOOD_PER_CYCLE, WALL_SECTION_STONE_COST, WALL_BUILDER_STONE_PER_CYCLE_PER_SLOT, WORKERS_PER_LEVEL, MIN_STAFFING_RATIO, TREBUCHET_FIELD_BP_COST, TREBUCHET_FIELD_GOLD_COST, TREBUCHET_REFINED_WOOD_COST, SAWMILL_WOOD_PER_REFINED, getBuildingJobs, getUnitStats, BuildingType, UnitType, ArmyStance, Biome, hexDistance, getHexRing, tileKey, POP_BIRTH_RATE, POP_NATURAL_DEATHS, POP_CARRYING_CAPACITY_PER_FOOD, POP_EXPECTED_K_ALPHA, STARVATION_DEATHS, SHIP_RECRUIT_COSTS, isNavalUnitType, getShipMaxCargo, hexTouchesBiome, AttackCityStyle, DefenseTowerType, DefenseTowerLevel, DEFENSE_TOWER_LEVEL_COSTS, DEFENSE_TOWER_MAX_PER_CITY, DEFENSE_TOWER_DISPLAY_NAME, City, CONTESTED_ZONE_GOLD_REWARD, CONTESTED_ZONE_IRON_REWARD, KingdomId, KINGDOM_IDS, KINGDOM_DISPLAY_NAMES, KINGDOM_SETUP_ICONS, SCROLL_DISPLAY_NAME, scrollItemDisplayName, SCROLL_RELIC_LORE, SCROLL_REGION_ITEM_NAME, SPECIAL_REGION_DISPLAY_NAME, SPECIAL_REGION_OVERLAY_COLORS, SCROLL_COMBAT_BONUS, SCROLL_DEFENSE_BONUS, SCROLL_MOVEMENT_BONUS, SCROLL_ARMY_SLOT_ORDER, SCROLL_SLOT_LABEL, MAP_SIZE_PRESETS, type MapSizePreset, type MapTerrainPreset, type ScrollKind, type SpecialRegionKind, type ScrollAttachment, type ScrollItem, type Commander, UNIVERSITY_UPGRADE_COSTS, BUILDER_TASK_LABELS, type BuilderTask, type ArmyMarchSpreadMode, DEFAULT_BUILDER_TASK, ABILITY_DEFS,   getAbilityForUnit, TERRITORY_RADIUS, GARRISON_PATROL_RADIUS_MIN, GARRISON_PATROL_RADIUS_MAX, defaultCityBuildingMaxHp, RUINS_REPAIR_GOLD_RATIO, isCityBuildingOperational, EMPTY_MAP_QUADRANTS, TRADE_MAP_QUADRANT_GOLD, TRADE_MAP_FULL_ATLAS_GOLD, TRADE_RESOURCE_PACK_GOLD, TRADE_MORALE_FESTIVAL_GOLD, TRADE_MORALE_FESTIVAL_DELTA, TRADE_ROYAL_SURVEY_GOLD, MAP_QUADRANT_LABELS, type MapQuadrantId, SOCIAL_BAR_BUILD_GOLD, SOCIAL_BAR_BP, SOCIAL_BAR_UPGRADE_COSTS, SOCIAL_BAR_BIRTH_MULT_PER_LEVEL, isFarmBuildingType, isValidFarmPlacementBiome, type CouncilPostId, COUNCIL_POST_INFO, COUNCIL_POST_IDS, POLITICIAN_TRAIT_INFO, type PoliticianTraitId, type Politician, type TechId, TECH_TREE, TECH_IDS, STARTING_TECHS, EDUCATION_UPGRADE_COSTS, UNIVERSITY_BUILDING_UPGRADE_COSTS, UNIVERSITY_SPECIALIZATION_INFO, type UniversitySpecialization } from '@/types/game';
+import { BUILDING_COSTS, BUILDING_PRODUCTION, BUILDING_BP_COST, BUILDING_JOBS, CITY_BUILDING_POWER, BUILDER_POWER, BP_RATE_BASE, TERRAIN_FOOD_YIELD, UNIT_COSTS, UNIT_L2_COSTS, UNIT_L3_COSTS, UNIT_BASE_STATS, UNIT_DISPLAY_NAMES, getUnitDisplayName, ARMS_TIER_LABELS, type RangedVariant, COMMANDER_TRAIT_INFO, COMMANDER_RECRUIT_GOLD, VILLAGE_INCORPORATE_COST, MARKET_GOLD_PER_CYCLE, MARKET_GOLD_PER_VILLAGE, POPULATION_TAX_GOLD_MULT, SCOUT_MISSION_COST, WEATHER_DISPLAY, BARACKS_UPGRADE_COST, BARACKS_L3_UPGRADE_COST, FACTORY_UPGRADE_COST, FARM_UPGRADE_COST, RESOURCE_MINE_UPGRADE_COST, FARM_L2_FOOD_PER_CYCLE, WALL_SECTION_STONE_COST, WALL_BUILDER_STONE_PER_CYCLE_PER_SLOT, WORKERS_PER_LEVEL, MIN_STAFFING_RATIO, TREBUCHET_FIELD_BP_COST, TREBUCHET_FIELD_GOLD_COST, TREBUCHET_REFINED_WOOD_COST, SAWMILL_WOOD_PER_REFINED, getBuildingJobs, getUnitStats, BuildingType, UnitType, ArmyStance, Biome, hexDistance, getHexRing, tileKey, POP_BIRTH_RATE, POP_NATURAL_DEATHS, POP_CARRYING_CAPACITY_PER_FOOD, POP_EXPECTED_K_ALPHA, STARVATION_DEATHS, SHIP_RECRUIT_COSTS, isNavalUnitType, getShipMaxCargo, hexTouchesBiome, AttackCityStyle, DefenseTowerType, DefenseTowerLevel, DEFENSE_TOWER_LEVEL_COSTS, DEFENSE_TOWER_MAX_PER_CITY, DEFENSE_TOWER_DISPLAY_NAME, defenseInstallationCurrentHp, defenseInstallationMaxHp, City, CONTESTED_ZONE_GOLD_REWARD, CONTESTED_ZONE_IRON_REWARD, KingdomId, KINGDOM_IDS, KINGDOM_DISPLAY_NAMES, KINGDOM_SETUP_ICONS, SCROLL_DISPLAY_NAME, scrollItemDisplayName, SCROLL_RELIC_LORE, SCROLL_REGION_ITEM_NAME, SPECIAL_REGION_DISPLAY_NAME, SPECIAL_REGION_OVERLAY_COLORS, SCROLL_COMBAT_BONUS, SCROLL_DEFENSE_BONUS, SCROLL_MOVEMENT_BONUS, SCROLL_ARMY_SLOT_ORDER, SCROLL_SLOT_LABEL, MAP_SIZE_PRESETS, type MapSizePreset, type MapTerrainPreset, type ScrollKind, type SpecialRegionKind, type ScrollAttachment, type ScrollItem, type Commander, UNIVERSITY_UPGRADE_COSTS, BUILDER_TASK_LABELS, type BuilderTask, type ArmyMarchSpreadMode, DEFAULT_BUILDER_TASK, ABILITY_DEFS,   getAbilityForUnit, TERRITORY_RADIUS, GARRISON_PATROL_RADIUS_MIN, GARRISON_PATROL_RADIUS_MAX, defaultCityBuildingMaxHp, RUINS_REPAIR_GOLD_RATIO, isCityBuildingOperational, EMPTY_MAP_QUADRANTS, TRADE_MAP_QUADRANT_GOLD, TRADE_MAP_FULL_ATLAS_GOLD, TRADE_RESOURCE_PACK_GOLD, TRADE_MORALE_FESTIVAL_GOLD, TRADE_MORALE_FESTIVAL_DELTA, TRADE_ROYAL_SURVEY_GOLD, MAP_QUADRANT_LABELS, type MapQuadrantId, SOCIAL_BAR_BUILD_GOLD, SOCIAL_BAR_BP, SOCIAL_BAR_UPGRADE_COSTS, SOCIAL_BAR_BIRTH_MULT_PER_LEVEL, isFarmBuildingType, isValidFarmPlacementBiome, type CouncilPostId, COUNCIL_POST_INFO, COUNCIL_POST_IDS, POLITICIAN_TRAIT_INFO, type PoliticianTraitId, type Politician, type TechId, TECH_TREE, TECH_IDS, STARTING_TECHS, EDUCATION_UPGRADE_COSTS, UNIVERSITY_BUILDING_UPGRADE_COSTS, UNIVERSITY_SPECIALIZATION_INFO, type UniversitySpecialization } from '@/types/game';
 import { getAvailableTechs } from '@/lib/researchTick';
 import { computeCouncilBoosts, isAssignedToCouncil, getCouncilAppointment } from '@/lib/nationalCouncil';
 import {
@@ -108,12 +109,133 @@ function formatDefenseLevelCost(level: DefenseTowerLevel): string {
 
 export default function GameHUD() {
   const phase = useGameStore(s => s.phase);
+  const searchParams = useSearchParams();
+  const mpLobby = searchParams.get('mp') != null && searchParams.get('room') != null;
   return (
     <div className="absolute inset-0 pointer-events-none z-10">
-      {phase === 'setup' && <SetupScreen />}
+      {phase === 'setup' && !mpLobby && <SetupScreen />}
       {phase === 'place_city' && <PlaceCityOverlay />}
       {(phase === 'playing' || phase === 'starting_game') && <PlayingHUD />}
       {phase === 'victory' && <VictoryScreen />}
+    </div>
+  );
+}
+
+// ─── Multiplayer lobby (menu) ─────────────────────────────────────
+
+function MultiplayerOnlinePanel({ onBack }: { onBack: () => void }) {
+  const router = useRouter();
+  const [createdRoomId, setCreatedRoomId] = useState<string | null>(null);
+  const [joinRoomId, setJoinRoomId] = useState('');
+  const [copied, setCopied] = useState(false);
+
+  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+  const inviteLink =
+    createdRoomId != null ? `${origin}/?mp=join&room=${encodeURIComponent(createdRoomId)}` : '';
+  const hostLink =
+    createdRoomId != null ? `${origin}/?mp=host&room=${encodeURIComponent(createdRoomId)}` : '';
+
+  return (
+    <div className="absolute inset-0 flex items-center justify-center bg-black/50 backdrop-blur-md pointer-events-auto">
+      <div className="medieval-frame max-w-lg w-full">
+        <div className="absolute -top-3 -left-3 text-xl text-amber-400/80 z-10 medieval-shimmer">⚜</div>
+        <div className="absolute -top-3 -right-3 text-xl text-amber-400/80 z-10 medieval-shimmer">⚜</div>
+        <div className="absolute -bottom-3 -left-3 text-xl text-amber-400/80 z-10 medieval-shimmer">⚜</div>
+        <div className="absolute -bottom-3 -right-3 text-xl text-amber-400/80 z-10 medieval-shimmer">⚜</div>
+        <div className="medieval-frame-inner font-medieval p-8 text-center">
+          <h2 className="font-cinzel text-xl font-bold text-empire-gold tracking-wide mb-2">1v1 Online</h2>
+          <div className="medieval-divider my-3">
+            <span className="text-empire-gold/50 text-xs">⚜</span>
+          </div>
+          <p className="text-empire-parchment/65 text-sm mb-6">
+            Run the game server in another terminal:{' '}
+            <code className="text-empire-gold/80 text-xs">npm run game-server</code>
+            <span className="block mt-1 text-empire-parchment/45 text-xs">
+              Optional: set <code className="text-empire-parchment/55">NEXT_PUBLIC_MULTIPLAYER_WS_URL</code> if the
+              server is not on localhost:3333.
+            </span>
+          </p>
+
+          <div className="text-left space-y-6">
+            <div>
+              <p className="text-empire-parchment/60 text-xs uppercase tracking-wide mb-2">Host a match</p>
+              {!createdRoomId ? (
+                <button
+                  type="button"
+                  onClick={() => setCreatedRoomId(crypto.randomUUID())}
+                  className="w-full px-4 py-2.5 bg-empire-gold/15 border border-empire-gold/55 rounded text-empire-gold text-sm font-semibold hover:bg-empire-gold/25"
+                >
+                  Create match
+                </button>
+              ) : (
+                <div className="space-y-3">
+                  <p className="text-empire-parchment/55 text-xs">Send this link to your opponent:</p>
+                  <div className="flex flex-col gap-2">
+                    <input
+                      readOnly
+                      value={inviteLink}
+                      className="w-full text-[11px] leading-snug bg-black/35 border border-empire-stone/35 rounded px-2 py-2 text-empire-parchment/90"
+                    />
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void navigator.clipboard.writeText(inviteLink).then(() => {
+                            setCopied(true);
+                            setTimeout(() => setCopied(false), 2000);
+                          });
+                        }}
+                        className="flex-1 px-3 py-2 border border-empire-gold/45 rounded text-empire-gold text-xs hover:bg-empire-gold/15"
+                      >
+                        {copied ? 'Copied' : 'Copy invite link'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => router.push(hostLink)}
+                        className="flex-1 px-3 py-2 bg-empire-gold/20 border border-empire-gold/60 rounded text-empire-gold text-xs font-semibold hover:bg-empire-gold/30"
+                      >
+                        Enter as host
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div>
+              <p className="text-empire-parchment/60 text-xs uppercase tracking-wide mb-2">Join a match</p>
+              <div className="flex gap-2">
+                <input
+                  value={joinRoomId}
+                  onChange={e => setJoinRoomId(e.target.value)}
+                  placeholder="Paste room ID (UUID)"
+                  className="flex-1 min-w-0 text-sm bg-black/35 border border-empire-stone/35 rounded px-3 py-2 text-empire-parchment placeholder:text-empire-parchment/35"
+                />
+                <button
+                  type="button"
+                  disabled={!joinRoomId.trim()}
+                  onClick={() => {
+                    const id = joinRoomId.trim();
+                    if (!id) return;
+                    router.push(`/?mp=join&room=${encodeURIComponent(id)}`);
+                  }}
+                  className="shrink-0 px-4 py-2 border border-empire-stone/45 rounded text-empire-parchment/90 text-sm disabled:opacity-40 hover:bg-empire-gold/10"
+                >
+                  Join
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={onBack}
+            className="mt-8 text-empire-parchment/50 text-sm hover:text-empire-parchment/80"
+          >
+            ← Back
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -129,7 +251,7 @@ function SetupScreen() {
   const selectedKingdom = useGameStore(s => s.selectedKingdom);
   const setSelectedKingdom = useGameStore(s => s.setSelectedKingdom);
 
-  const [menuStep, setMenuStep] = useState<'root' | 'play_setup' | 'spectate_setup'>('root');
+  const [menuStep, setMenuStep] = useState<'root' | 'play_setup' | 'spectate_setup' | 'multiplayer_lobby'>('root');
   const [mapSize, setMapSize] = useState<MapSizePreset>('normal');
   const [mapTerrain, setMapTerrain] = useState<MapTerrainPreset>('continents');
   const [opponents, setOpponents] = useState(1);
@@ -158,6 +280,10 @@ function SetupScreen() {
     }
   };
 
+  if (menuStep === 'multiplayer_lobby') {
+    return <MultiplayerOnlinePanel onBack={() => setMenuStep('root')} />;
+  }
+
   if (menuStep === 'root') {
     return (
       <div className="absolute inset-0 flex items-center justify-center bg-black/50 backdrop-blur-md pointer-events-auto">
@@ -184,6 +310,16 @@ function SetupScreen() {
               >
                 Play
               </button>
+              <button
+                type="button"
+                onClick={() => setMenuStep('multiplayer_lobby')}
+                className="px-8 py-3 bg-transparent border-2 border-violet-400/50 rounded text-violet-100 text-lg font-semibold tracking-wide hover:bg-violet-950/40 hover:border-violet-300/70 transition-all duration-300"
+              >
+                1v1 Online
+              </button>
+              <p className="text-empire-parchment/45 text-xs -mt-1 mb-0">
+                Multiplayer vs a friend — requires the game server (see screen after click).
+              </p>
               <button
                 type="button"
                 onClick={() => setMenuStep('spectate_setup')}
@@ -861,6 +997,257 @@ function EducationTab() {
   );
 }
 
+interface TechTreeNode {
+  id: TechId;
+  children: TechTreeNode[];
+}
+
+interface TechBranch {
+  name: string;
+  icon: string;
+  root: TechTreeNode;
+}
+
+const TECH_BRANCHES: TechBranch[] = [
+  {
+    name: 'Agriculture',
+    icon: '🌾',
+    root: {
+      id: 'agriculture_1',
+      children: [{ id: 'agriculture_2', children: [] }],
+    },
+  },
+  {
+    name: 'Mining & Industry',
+    icon: '⛏️',
+    root: {
+      id: 'mining_1',
+      children: [
+        {
+          id: 'mining_2',
+          children: [
+            {
+              id: 'iron_working',
+              children: [
+                { id: 'advanced_metallurgy', children: [] },
+              ],
+            },
+          ],
+        },
+        {
+          id: 'masonry_1',
+          children: [
+            { id: 'advanced_construction', children: [] },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    name: 'Forestry & Naval',
+    icon: '🌲',
+    root: {
+      id: 'forestry_1',
+      children: [
+        {
+          id: 'naval_technology',
+          children: [{ id: 'advanced_naval', children: [] }],
+        },
+      ],
+    },
+  },
+  {
+    name: 'Military',
+    icon: '⚔️',
+    root: {
+      id: 'military_tactics_1',
+      children: [
+        {
+          id: 'military_tactics_2',
+          children: [
+            { id: 'gunpowder', children: [] },
+            { id: 'siege_engineering', children: [] },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    name: 'Economics',
+    icon: '💰',
+    root: {
+      id: 'economics_1',
+      children: [{ id: 'economics_2', children: [] }],
+    },
+  },
+];
+
+function TechNode({
+  node,
+  researched,
+  activeResearch,
+  available,
+  progress,
+  startResearch,
+  cancelResearch,
+  depth,
+}: {
+  node: TechTreeNode;
+  researched: Set<TechId>;
+  activeResearch: TechId | null;
+  available: TechId[];
+  progress: number;
+  startResearch: (id: TechId) => void;
+  cancelResearch: () => void;
+  depth: number;
+}) {
+  const def = TECH_TREE[node.id];
+  const isResearched = researched.has(node.id);
+  const isActive = activeResearch === node.id;
+  const isAvailable = available.includes(node.id);
+  const hasAnyPrereqResearched = def.prerequisites.length === 0 || def.prerequisites.some(p => researched.has(p));
+
+  const isVisible = isResearched || hasAnyPrereqResearched;
+  if (!isVisible) return null;
+
+  const isLocked = !isResearched && !isActive;
+  const canStart = isAvailable && !isResearched && !activeResearch;
+  const missingPrereqs = def.prerequisites.filter(p => !researched.has(p));
+
+  const visibleChildren = node.children.filter(child => {
+    const cDef = TECH_TREE[child.id];
+    const childHasPrereq = cDef.prerequisites.length === 0 || cDef.prerequisites.some(p => researched.has(p));
+    return researched.has(child.id) || childHasPrereq;
+  });
+
+  return (
+    <div className="flex flex-col items-center">
+      {/* Node card */}
+      <div
+        className={`relative w-full max-w-[11rem] rounded-lg border transition-all duration-300 ${
+          isResearched
+            ? 'bg-green-950/30 border-green-500/30 shadow-[0_0_8px_rgba(34,197,94,0.12)]'
+            : isActive
+              ? 'bg-indigo-950/40 border-indigo-400/50 shadow-[0_0_10px_rgba(99,102,241,0.15)]'
+              : canStart
+                ? 'bg-empire-dark/40 border-empire-stone/20 hover:border-indigo-500/40 cursor-pointer hover:shadow-[0_0_8px_rgba(99,102,241,0.1)]'
+                : 'bg-black/60 border-empire-stone/8'
+        }`}
+        onClick={() => { if (canStart) startResearch(node.id); }}
+      >
+        {isLocked && !canStart && (
+          <div className="absolute inset-0 rounded-lg bg-black/50 z-10 flex items-center justify-center">
+            <span className="text-empire-parchment/20 text-lg">🔒</span>
+          </div>
+        )}
+
+        <div className={`p-2 ${isLocked && !canStart ? 'opacity-30' : ''}`}>
+          <div className="flex items-center justify-between mb-0.5">
+            <span className={`text-[11px] font-bold leading-tight ${
+              isResearched ? 'text-green-300' : isActive ? 'text-indigo-300' : canStart ? 'text-empire-parchment/80' : 'text-empire-parchment/40'
+            }`}>
+              {def.label}
+            </span>
+            {isResearched && <span className="text-[8px] text-green-400/80 font-bold uppercase shrink-0 ml-1">✓</span>}
+            {isActive && <span className="text-[8px] text-indigo-400/80 font-bold uppercase shrink-0 ml-1">...</span>}
+          </div>
+
+          <p className={`text-[9px] leading-snug mb-1 ${
+            isResearched ? 'text-empire-parchment/50' : canStart ? 'text-empire-parchment/40' : 'text-empire-parchment/25'
+          }`}>{def.desc}</p>
+
+          {isActive && (
+            <div className="mb-1">
+              <div className="flex items-center justify-between text-[9px] mb-0.5">
+                <span className="text-empire-parchment/50">Progress</span>
+                <span className="text-cyan-300 font-semibold">{progress.toFixed(0)}/{def.researchCost}</span>
+              </div>
+              <div className="w-full h-1.5 bg-empire-stone/20 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-gradient-to-r from-indigo-600 to-cyan-400 rounded-full transition-all duration-500"
+                  style={{ width: `${Math.min(100, (progress / def.researchCost) * 100)}%` }}
+                />
+              </div>
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); cancelResearch(); }}
+                className="text-[8px] text-red-400/50 hover:text-red-400 mt-0.5"
+              >
+                Cancel
+              </button>
+            </div>
+          )}
+
+          {!isResearched && def.researchCost > 0 && !isActive && (
+            <div className="text-[8px] text-empire-parchment/30">Cost: {def.researchCost} RP</div>
+          )}
+
+          {missingPrereqs.length > 0 && !isResearched && (
+            <div className="flex flex-wrap gap-0.5 mt-0.5">
+              {missingPrereqs.map(p => (
+                <span key={p} className="text-[7px] px-1 py-0.5 rounded bg-red-900/20 text-red-400/50">
+                  {TECH_TREE[p]?.label ?? p}
+                </span>
+              ))}
+            </div>
+          )}
+
+          {isResearched && (def.unlocksBuildings.length > 0 || def.unlocksUnits.length > 0) && (
+            <div className="text-[8px] text-empire-parchment/30 mt-0.5">
+              {def.unlocksBuildings.length > 0 && <span>🏗 {def.unlocksBuildings.join(', ')}</span>}
+              {def.unlocksUnits.length > 0 && <span className="ml-1">⚔ {def.unlocksUnits.map(u => UNIT_DISPLAY_NAMES[u] ?? u).join(', ')}</span>}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Connector line + children */}
+      {visibleChildren.length > 0 && (
+        <div className="flex flex-col items-center w-full">
+          <div className="w-px h-3 bg-empire-stone/20" />
+          {visibleChildren.length === 1 ? (
+            <TechNode
+              node={visibleChildren[0]}
+              researched={researched}
+              activeResearch={activeResearch}
+              available={available}
+              progress={progress}
+              startResearch={startResearch}
+              cancelResearch={cancelResearch}
+              depth={depth + 1}
+            />
+          ) : (
+            <div className="relative flex gap-2 justify-center w-full">
+              <div
+                className="absolute top-0 h-px bg-empire-stone/20"
+                style={{
+                  left: `calc(50% - ${(visibleChildren.length - 1) * 50}%)`,
+                  right: `calc(50% - ${(visibleChildren.length - 1) * 50}%)`,
+                }}
+              />
+              {visibleChildren.map((child) => (
+                <div key={child.id} className="flex flex-col items-center">
+                  <div className="w-px h-3 bg-empire-stone/20" />
+                  <TechNode
+                    node={child}
+                    researched={researched}
+                    activeResearch={activeResearch}
+                    available={available}
+                    progress={progress}
+                    startResearch={startResearch}
+                    cancelResearch={cancelResearch}
+                    depth={depth + 1}
+                  />
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ResearchTab() {
   const players = useGameStore(s => s.players);
   const startResearch = useGameStore(s => s.startResearch);
@@ -870,110 +1257,61 @@ function ResearchTab() {
   if (!human) return null;
 
   const researched = new Set(human.researchedTechs ?? STARTING_TECHS);
-  const activeResearch = human.activeResearch ?? null;
+  const activeResearch = (human.activeResearch ?? null) as TechId | null;
   const progress = human.researchProgress ?? 0;
   const available = getAvailableTechs(human);
-  const activeDef = activeResearch ? TECH_TREE[activeResearch] : null;
 
   return (
     <div className="space-y-4">
-      {/* Active Research */}
-      {activeDef && activeResearch && (
-        <div className="bg-indigo-950/30 rounded-lg p-4 border border-indigo-500/15">
-          <div className="flex items-center justify-between mb-2">
-            <h3 className="text-indigo-200 font-bold text-sm">Researching: {activeDef.label}</h3>
-            <button
-              type="button"
-              onClick={cancelResearch}
-              className="text-[10px] text-red-400/60 hover:text-red-400"
-            >
-              Cancel
-            </button>
+      {/* Active research summary at top */}
+      {activeResearch && (
+        <div className="bg-indigo-950/30 rounded-lg p-3 border border-indigo-500/15">
+          <div className="flex items-center justify-between">
+            <h3 className="text-indigo-200 font-bold text-xs">
+              Researching: {TECH_TREE[activeResearch].label}
+            </h3>
+            <span className="text-cyan-300 text-[10px] font-semibold">
+              {progress.toFixed(0)} / {TECH_TREE[activeResearch].researchCost} RP
+            </span>
           </div>
-          <p className="text-[10px] text-empire-parchment/50 mb-2">{activeDef.desc}</p>
-          <div className="flex items-center justify-between text-[11px] mb-1">
-            <span className="text-empire-parchment/60">Progress</span>
-            <span className="text-cyan-300 font-semibold">{progress.toFixed(1)} / {activeDef.researchCost}</span>
-          </div>
-          <div className="w-full h-2.5 bg-empire-stone/20 rounded-full overflow-hidden">
+          <div className="w-full h-2 bg-empire-stone/20 rounded-full overflow-hidden mt-1.5">
             <div
               className="h-full bg-gradient-to-r from-indigo-600 to-cyan-400 rounded-full transition-all duration-500"
-              style={{ width: `${activeDef.researchCost > 0 ? Math.min(100, (progress / activeDef.researchCost) * 100) : 100}%` }}
+              style={{ width: `${Math.min(100, (progress / TECH_TREE[activeResearch].researchCost) * 100)}%` }}
             />
           </div>
         </div>
       )}
 
       {!activeResearch && (
-        <div className="bg-indigo-950/20 rounded-lg p-3 border border-indigo-500/10 text-center">
-          <p className="text-[11px] text-empire-parchment/50">No active research. Select a technology below to begin.</p>
+        <div className="bg-indigo-950/20 rounded-lg p-2.5 border border-indigo-500/10 text-center">
+          <p className="text-[10px] text-empire-parchment/50">No active research — select a technology below to begin.</p>
         </div>
       )}
 
-      {/* Tech Tree */}
-      <div>
-        <h3 className="text-indigo-200 font-bold text-xs uppercase tracking-wide mb-2">Technology Tree</h3>
-        <div className="grid grid-cols-2 gap-2">
-          {TECH_IDS.map(techId => {
-            const def = TECH_TREE[techId];
-            const isResearched = researched.has(techId);
-            const isAvailable = available.includes(techId);
-            const isActive = activeResearch === techId;
-            const prereqsMet = def.prerequisites.every(p => researched.has(p));
-            const isFree = def.researchCost === 0;
-
-            return (
-              <div
-                key={techId}
-                className={`rounded-lg p-2.5 border transition-colors ${
-                  isResearched
-                    ? 'bg-green-950/20 border-green-500/25'
-                    : isActive
-                      ? 'bg-indigo-950/40 border-indigo-400/50'
-                      : isAvailable
-                        ? 'bg-empire-dark/60 border-empire-stone/25 hover:border-indigo-500/35 cursor-pointer'
-                        : 'bg-empire-dark/30 border-empire-stone/10 opacity-50'
-                }`}
-                onClick={() => {
-                  if (isAvailable && !isResearched && !activeResearch) startResearch(techId);
-                }}
-              >
-                <div className="flex items-center justify-between mb-1">
-                  <span className={`text-xs font-bold ${isResearched ? 'text-green-300' : isActive ? 'text-indigo-300' : 'text-empire-parchment/70'}`}>
-                    {def.label}
-                  </span>
-                  {isResearched && <span className="text-[9px] text-green-400/80 font-bold uppercase">Done</span>}
-                  {isActive && <span className="text-[9px] text-indigo-400/80 font-bold uppercase">Active</span>}
-                  {isFree && !isResearched && <span className="text-[9px] text-empire-gold/60 font-bold uppercase">Free</span>}
-                </div>
-                <p className="text-[10px] text-empire-parchment/45 leading-snug">{def.desc}</p>
-                {!isFree && !isResearched && (
-                  <div className="text-[9px] text-empire-parchment/35 mt-1">Cost: {def.researchCost} RP</div>
-                )}
-                {def.prerequisites.length > 0 && !isResearched && (
-                  <div className="flex flex-wrap gap-1 mt-1">
-                    {def.prerequisites.map(p => (
-                      <span
-                        key={p}
-                        className={`text-[8px] px-1 py-0.5 rounded ${
-                          researched.has(p) ? 'bg-green-900/30 text-green-400/70' : 'bg-red-900/20 text-red-400/60'
-                        }`}
-                      >
-                        {TECH_TREE[p]?.label ?? p}
-                      </span>
-                    ))}
-                  </div>
-                )}
-                {(def.unlocksBuildings.length > 0 || def.unlocksUnits.length > 0) && (
-                  <div className="text-[9px] text-empire-parchment/30 mt-1">
-                    {def.unlocksBuildings.length > 0 && `Buildings: ${def.unlocksBuildings.join(', ')}`}
-                    {def.unlocksUnits.length > 0 && ` Units: ${def.unlocksUnits.map(u => UNIT_DISPLAY_NAMES[u] ?? u).join(', ')}`}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
+      {/* Tech Tree Branches */}
+      <div className="space-y-5">
+        {TECH_BRANCHES.map(branch => (
+          <div key={branch.name}>
+            <div className="flex items-center gap-1.5 mb-2">
+              <span className="text-sm">{branch.icon}</span>
+              <h3 className="text-indigo-200/80 font-bold text-[11px] uppercase tracking-wider">{branch.name}</h3>
+              <div className="flex-1 h-px bg-indigo-500/10 ml-1" />
+            </div>
+            <div className="flex justify-center">
+              <TechNode
+                node={branch.root}
+                researched={researched}
+                activeResearch={activeResearch}
+                available={available}
+                progress={progress}
+                startResearch={startResearch}
+                cancelResearch={cancelResearch}
+                depth={0}
+              />
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -5060,6 +5398,7 @@ function SidePanel() {
   const getSiegeWorkshopCityAt = useGameStore(s => s.getSiegeWorkshopCityAt);
   const getFactoryAt = useGameStore(s => s.getFactoryAt);
   const getAcademyAt = useGameStore(s => s.getAcademyAt);
+  const getUniversityBuildingAt = useGameStore(s => s.getUniversityBuildingAt);
   const getQuarryMineAt = useGameStore(s => s.getQuarryMineAt);
   const getJobBuildingAt = useGameStore(s => s.getJobBuildingAt);
   const getTile = useGameStore(s => s.getTile);
@@ -5114,6 +5453,7 @@ function SidePanel() {
   const siegeWorkshopCity = getSiegeWorkshopCityAt(selectedHex.q, selectedHex.r);
   const factoryInfo = getFactoryAt(selectedHex.q, selectedHex.r);
   const academyInfo = getAcademyAt(selectedHex.q, selectedHex.r);
+  const universityBuildingInfo = getUniversityBuildingAt(selectedHex.q, selectedHex.r);
   const quarryMineInfo = getQuarryMineAt(selectedHex.q, selectedHex.r);
   const jobBuildingInfo = getJobBuildingAt(selectedHex.q, selectedHex.r);
   const inTerritory = isInPlayerTerritory(selectedHex.q, selectedHex.r);
@@ -5138,16 +5478,15 @@ function SidePanel() {
   const terrEntry = territory.get(tileKey(selectedHex.q, selectedHex.r));
   const territoryCityForHex = terrEntry ? cities.find(c => c.id === terrEntry.cityId) : undefined;
   const academyForHex = territoryCityForHex?.buildings.find(b => b.type === 'academy');
-  const universitySlotsAtHex = getUniversityBuilderSlots(academyForHex);
-  /** @deprecated name — now University workforce slots for this territory city */
-  const buildersHere = universitySlotsAtHex;
+  const builderHutSlotsAtHex = getUniversityBuilderSlots(academyForHex);
+  const buildersHere = builderHutSlotsAtHex;
   const defenseUsesMoveDestination = false;
   const canBuildHere = inTerritory && !hasBuilding && !cityAtHex;
 
   let availBP = 0;
   if (inTerritory) {
     availBP += CITY_BUILDING_POWER;
-    availBP += universitySlotsAtHex * BUILDER_POWER;
+    availBP += builderHutSlotsAtHex * BUILDER_POWER;
   }
 
   // Detect active battle at this hex
@@ -5469,13 +5808,30 @@ function SidePanel() {
             od.level < 5 &&
             !construction &&
             canAffordDefenseHud(human?.gold ?? 0, payCity, nextL);
+          const dHp = defenseInstallationCurrentHp(od);
+          const dMax = od.maxHp ?? defenseInstallationMaxHp(od.level);
+          const hpPct = dMax > 0 ? Math.round((100 * dHp) / dMax) : 0;
           return (
             <div className="bg-cottage-wood/35 border border-cottage-brass/25 rounded px-3 py-2 space-y-1.5 text-xs">
               <div className="text-cottage-glow font-bold">
                 {DEFENSE_TOWER_DISPLAY_NAME[od.type]} — L{od.level}
               </div>
+              <div className="space-y-0.5">
+                <div className="flex justify-between text-[10px] text-empire-parchment/70">
+                  <span>Structure</span>
+                  <span>
+                    {dHp}/{dMax} ({hpPct}%)
+                  </span>
+                </div>
+                <div className="h-1.5 rounded-full bg-black/40 overflow-hidden border border-empire-stone/20">
+                  <div
+                    className="h-full bg-amber-600/90 rounded-full transition-[width]"
+                    style={{ width: `${hpPct}%` }}
+                  />
+                </div>
+              </div>
               <p className="text-[10px] text-empire-parchment/55">
-                Mortar splashes adjacent hexes (same range as trebuchet). Archer tower and ballista shoot each combat tick (r3); ballista fires twice.
+                Siege engines and enemy armies in this hex reduce structure HP; at 0 the tower is destroyed. Mortar splashes adjacent hexes (same range as trebuchet). Archer tower and ballista shoot each combat tick (r3); ballista fires twice.
               </p>
               {construction ? (
                 <p className="text-[10px] text-amber-200/80">Construction in progress on this hex.</p>
@@ -5500,9 +5856,32 @@ function SidePanel() {
           );
         })()}
 
+        {(() => {
+          const ed = defenseInstallations.find(
+            d => d.q === selectedHex.q && d.r === selectedHex.r && d.ownerId !== 'player_human',
+          );
+          if (!ed || !canSeeEnemyInfo) return null;
+          const dHp = defenseInstallationCurrentHp(ed);
+          const dMax = ed.maxHp ?? defenseInstallationMaxHp(ed.level);
+          const hpPct = dMax > 0 ? Math.round((100 * dHp) / dMax) : 0;
+          return (
+            <div className="bg-red-950/40 border border-red-500/35 rounded px-3 py-2 space-y-1 text-xs">
+              <div className="text-red-200 font-bold">
+                Enemy {DEFENSE_TOWER_DISPLAY_NAME[ed.type]} — L{ed.level}
+              </div>
+              <div className="h-1.5 rounded-full bg-black/40 overflow-hidden border border-red-900/40">
+                <div className="h-full bg-red-600/85 rounded-full" style={{ width: `${hpPct}%` }} />
+              </div>
+              <p className="text-[10px] text-empire-parchment/60">
+                Structure {dHp}/{dMax}. Destroy with siege units in range or land armies on this hex.
+              </p>
+            </div>
+          );
+        })()}
+
         {/* City details shown in CityModal when city hex clicked */}
 
-        {/* Field engineering: mine / quarry / gold mine on deposits — when you have a University */}
+        {/* Field engineering: mine / quarry / gold mine on deposits — when you have a Builder's Hut */}
         {hasUniversity && !city && !cityAtHex && !barracksCity && !siegeWorkshopCity && !academyInfo && !factoryInfo && !quarryMineInfo && !construction && (
           <BuilderBuildMenu
             uiMode={uiMode}
@@ -5529,8 +5908,13 @@ function SidePanel() {
           <SiegeWorkshopPanel city={siegeWorkshopCity} workshopQ={selectedHex.q} workshopR={selectedHex.r} />
         )}
 
-        {/* Academy recruit panel — shown when clicking an academy hex (civilian units) */}
+        {/* Builder's Hut panel — shown when clicking an academy hex (workforce tasks) */}
         {academyInfo && !city && selectedHex && <AcademyPanel city={academyInfo.city} academyQ={selectedHex.q} academyR={selectedHex.r} />}
+
+        {/* University panel — shown when clicking a university building hex */}
+        {universityBuildingInfo && !city && !academyInfo && selectedHex && (
+          <UniversityBuildingPanel city={universityBuildingInfo.city} buildingQ={selectedHex.q} buildingR={selectedHex.r} />
+        )}
 
         {/* Factory info panel — shown when clicking a factory hex */}
         {factoryInfo && !city && !barracksCity && !siegeWorkshopCity && !academyInfo && selectedHex && <FactoryPanel city={factoryInfo.city} factoryQ={selectedHex.q} factoryR={selectedHex.r} />}
@@ -5592,7 +5976,7 @@ function SidePanel() {
         )}
 
         {!city && !inTerritory && !hasUniversity && units.length === 0 && !enemyCity && !barracksCity && !siegeWorkshopCity && !academyInfo && !factoryInfo && !construction && (
-          <p className="text-empire-parchment/40 text-xs">Outside your territory — expand borders or build a University for workforce projects</p>
+          <p className="text-empire-parchment/40 text-xs">Outside your territory — expand borders or build a Builder&apos;s Hut for workforce projects</p>
         )}
       </div>
     </div>
@@ -5812,7 +6196,7 @@ function CityPanel({ city }: { city: import('@/types/game').City }) {
           className="w-full h-1 bg-empire-stone/30 rounded-lg appearance-none cursor-pointer accent-empire-gold" />
       </div>
 
-      <p className="text-empire-parchment/40 text-[10px]">Barracks: military. University: workforce tasks & upgrades.</p>
+      <p className="text-empire-parchment/40 text-[10px]">Barracks: military. Builder&apos;s Hut: workforce tasks & upgrades.</p>
     </div>
   );
 }
@@ -6240,7 +6624,7 @@ function SiegeWorkshopPanel({ city, workshopQ, workshopR }: { city: import('@/ty
   );
 }
 
-// ─── Academy Panel (University — workforce & tasks) ───────────────
+// ─── Academy Panel (Builder's Hut — workforce & tasks) ────────────
 
 function AcademyPanel({ city, academyQ, academyR }: { city: import('@/types/game').City; academyQ: number; academyR: number }) {
   const setUniversityBuilderTask = useGameStore(s => s.setUniversityBuilderTask);
@@ -6282,7 +6666,7 @@ function AcademyPanel({ city, academyQ, academyR }: { city: import('@/types/game
   ];
 
   return (
-    <MapRoomPanel title={`University — ${city.name}`} innerClassName="space-y-3">
+    <MapRoomPanel title={`Builder's Hut — ${city.name}`} innerClassName="space-y-3">
 
       {/* Builder count — prominent visual */}
       {(() => {
@@ -6525,7 +6909,7 @@ function AcademyPanel({ city, academyQ, academyR }: { city: import('@/types/game
             <p className="font-cinzel text-rose-200/95 text-[11px] font-semibold tracking-wide">Walls</p>
             {!wallsUnlocked && (
               <p className="text-[10px] text-amber-200/85 leading-snug border border-amber-500/30 rounded px-2 py-1.5 bg-amber-950/20">
-                Drag a Workforce builder onto <span className="text-amber-100/90">Walls</span> (or &quot;All slots: Walls&quot;) to unlock wall projects for {liveCity.name}. Defense towers are bought with gold from the <span className="text-amber-100/90">build menu</span> on a territory hex.
+                Drag a Workforce slot onto <span className="text-amber-100/90">Walls</span> (or &quot;All slots: Walls&quot;) to unlock wall projects for {liveCity.name}. Defense towers are bought with gold from the <span className="text-amber-100/90">build menu</span> on a territory hex.
               </p>
             )}
             <p className="text-[9px] text-empire-parchment/45">
@@ -6624,6 +7008,97 @@ function AcademyPanel({ city, academyQ, academyR }: { city: import('@/types/game
 
       <p className="text-[10px] text-empire-parchment/45 leading-snug border-t border-empire-stone/30 pt-2 mt-1">
         All territory buildings get {CITY_BUILDING_POWER} base BP. Each workforce slot adds {BUILDER_POWER} BP to sites that match that slot&apos;s task (parallel builds). Roads and field trebuchets still use total workforce from this city.
+      </p>
+    </MapRoomPanel>
+  );
+}
+
+// ─── University Building Panel (new — research, specialization, graduates) ─
+
+function UniversityBuildingPanel({ city, buildingQ, buildingR }: { city: City; buildingQ: number; buildingR: number }) {
+  const setSpec = useGameStore(s => s.setUniversitySpecialization);
+  const upgradeUni = useGameStore(s => s.upgradeUniversityBuilding);
+  const human = useGameStore(s => s.players).find(p => p.isHuman);
+  const politicians = useGameStore(s => s.politicians);
+  const commanders = useGameStore(s => s.commanders);
+  const liveCity = useGameStore(s => s.cities.find(c => c.id === city.id)) ?? city;
+  const building = liveCity.buildings.find(b => b.type === 'university' && b.q === buildingQ && b.r === buildingR);
+  if (!building || !human) return null;
+
+  const lvl = building.level ?? 1;
+  const spec = building.universitySpecialization ?? 'general';
+  const gold = human.gold;
+  const upgradeCost = lvl < 5 ? UNIVERSITY_BUILDING_UPGRADE_COSTS[lvl - 1] : undefined;
+  const canUpgrade = upgradeCost !== undefined && gold >= upgradeCost;
+
+  const cityPoliticians = politicians.filter(p => p.ownerId === human.id);
+  const cityCmdrs = commanders.filter(c => c.ownerId === human.id && c.q === liveCity.q && c.r === liveCity.r);
+
+  return (
+    <MapRoomPanel title={`University — ${liveCity.name}`} innerClassName="space-y-3">
+      <div className="flex items-center justify-between">
+        <span className="font-cinzel text-indigo-200 text-xs font-bold tracking-wide">Level {lvl}</span>
+        <span className="text-[10px] text-empire-parchment/50">3 jobs</span>
+      </div>
+
+      {/* Specialization selector */}
+      <div>
+        <p className="text-[10px] text-indigo-300/80 font-semibold uppercase tracking-wide mb-1.5">Specialization</p>
+        <div className="grid grid-cols-2 gap-1.5">
+          {(['military', 'economics', 'research', 'general'] as const).map(s => {
+            const info = UNIVERSITY_SPECIALIZATION_INFO[s];
+            const active = spec === s;
+            return (
+              <button
+                key={s}
+                type="button"
+                onClick={() => setSpec(liveCity.id, buildingQ, buildingR, s)}
+                className={`text-left px-2 py-1.5 rounded border text-[10px] transition-colors ${
+                  active
+                    ? 'border-indigo-400/50 bg-indigo-950/40 text-indigo-200'
+                    : 'border-empire-stone/25 text-empire-parchment/55 hover:border-indigo-500/30 hover:bg-indigo-950/20'
+                }`}
+              >
+                <div className="font-semibold">{info.label}</div>
+                <div className="text-[9px] text-empire-parchment/40 leading-snug">{info.desc}</div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Upgrade */}
+      {lvl < 5 && upgradeCost !== undefined && (
+        <button
+          type="button"
+          onClick={() => upgradeUni(liveCity.id, buildingQ, buildingR)}
+          disabled={!canUpgrade}
+          className="w-full px-2 py-1.5 text-xs bg-empire-stone/25 border border-indigo-400/40 rounded text-indigo-200 hover:bg-empire-stone/40 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+        >
+          Upgrade to L{lvl + 1} — {upgradeCost}g
+        </button>
+      )}
+      {lvl >= 5 && (
+        <div className="text-[11px] text-green-400/80 text-center">University at max level.</div>
+      )}
+
+      {/* Graduates summary */}
+      <div className="border-t border-empire-stone/20 pt-2">
+        <p className="text-[10px] text-empire-parchment/50 leading-snug">
+          Each cycle this university has a <span className="text-indigo-300/80 font-semibold">{Math.round((0.08 * lvl) * 100)}%</span> chance to produce a graduate.
+          {spec === 'military' && ' Favors commanders (75%).'}
+          {spec === 'economics' && ' Favors politicians (75%).'}
+          {spec === 'research' && ' Balanced; faster tech progress.'}
+          {spec === 'general' && ' Equal chance; extra education bonus.'}
+        </p>
+        <div className="flex gap-3 mt-1.5 text-[10px]">
+          <span className="text-indigo-300/70">Politicians: <span className="text-indigo-200 font-semibold">{cityPoliticians.length}</span></span>
+          <span className="text-red-300/70">Commanders at city: <span className="text-red-200 font-semibold">{cityCmdrs.length}</span></span>
+        </div>
+      </div>
+
+      <p className="text-[9px] text-empire-parchment/35 leading-snug">
+        Universities boost national literacy and research speed. Assign graduates to the National Council via the Civilian panel.
       </p>
     </MapRoomPanel>
   );
@@ -7589,7 +8064,7 @@ function BuildMenu({ q, r, inTerritory, buildersHere, tile, hasConstructionAt, h
   const allCitiesState = useGameStore(s => s.cities);
   const territoryState = useGameStore(s => s.territory);
   const humanCities = allCitiesState.filter(c => c.ownerId === human?.id);
-  const hasUniversity = humanCities.some(c => c.buildings.some(b => b.type === 'academy'));
+  const hasBuilderHut = humanCities.some(c => c.buildings.some(b => b.type === 'academy'));
 
   let availBP = 0;
   if (inTerritory) availBP += CITY_BUILDING_POWER;
@@ -7598,7 +8073,7 @@ function BuildMenu({ q, r, inTerritory, buildersHere, tile, hasConstructionAt, h
   const isCityTile = hasCityAt(q, r);
   const hasDefenseAtHex = defenseInstallations.some(d => d.q === q && d.r === r);
   const canBuildTrebuchetHere =
-    hasUniversity &&
+    hasBuilderHut &&
     !hasCityAt(q, r) &&
     !hasConstructionAt(q, r) &&
     !hasDefenseAtHex &&
@@ -7662,6 +8137,7 @@ function BuildMenu({ q, r, inTerritory, buildersHere, tile, hasConstructionAt, h
     { category: 'Resource sites' as BuildMenuCategory, type: 'mine' as BuildingType, label: 'Mine', desc: `+${BUILDING_PRODUCTION.mine.iron} iron/cycle (2 jobs) (${BUILDING_BP_COST.mine} BP)`, show: tile?.hasMineDeposit && !isCityTile },
     { category: 'Coast & ships' as BuildMenuCategory, type: 'port' as BuildingType, label: 'Port', desc: `Coastal — ships & naval play (1 job) (${BUILDING_BP_COST.port} BP)`, show: coastal },
     { category: 'Coast & ships' as BuildMenuCategory, type: 'shipyard' as BuildingType, label: 'Shipyard', desc: `Build ships (2 jobs) (${BUILDING_BP_COST.shipyard} BP)`, show: coastal },
+    { category: 'Recruitment' as BuildMenuCategory, type: 'university' as BuildingType, label: 'University', desc: `Generates commanders & politicians; boosts education & research (3 jobs) (${BUILDING_BP_COST.university} BP)` },
   ].filter(b => b.show !== false);
 
   const buildingGroups = BUILD_MENU_CATEGORY_ORDER.map(title => ({
@@ -7753,7 +8229,7 @@ function BuildMenu({ q, r, inTerritory, buildersHere, tile, hasConstructionAt, h
       <p className="text-empire-parchment/50 text-[10px] leading-snug border border-cottage-brass/25 rounded px-2 py-1.5 bg-cottage-wood/35">
         {inTerritory ? `City territory (${CITY_BUILDING_POWER} BP)` : `Outside territory`}
         {buildersHere > 0 &&
-          ` + University workforce ${buildersHere} slot${buildersHere > 1 ? 's' : ''} (+${buildersHere * BUILDER_POWER} BP when task matches)`}
+          ` + Builder's Hut workforce ${buildersHere} slot${buildersHere > 1 ? 's' : ''} (+${buildersHere * BUILDER_POWER} BP when task matches)`}
         {' '}
         <span className="text-cottage-glow/90">= {availBP} BP total</span>
       </p>
@@ -7796,7 +8272,7 @@ function BuildMenu({ q, r, inTerritory, buildersHere, tile, hasConstructionAt, h
                 {TREBUCHET_FIELD_GOLD_COST}g · {TREBUCHET_REFINED_WOOD_COST} ref.
               </span>
             </div>
-            <div className="text-empire-parchment/40 text-[10px]">Siege. Nearest University supplies BP ({TREBUCHET_FIELD_BP_COST} BP)</div>
+            <div className="text-empire-parchment/40 text-[10px]">Siege. Nearest Builder&apos;s Hut supplies BP ({TREBUCHET_FIELD_BP_COST} BP)</div>
           </button>
         </div>
       )}

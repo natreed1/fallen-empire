@@ -1,9 +1,11 @@
 import {
   Unit, Hero, Tile, City, GameNotification, TerritoryInfo, WallSection, Player,
+  type DefenseInstallation,
+  defenseInstallationMaxHp,
+  defenseInstallationCurrentHp,
   TERRITORY_RADIUS, GARRISON_PATROL_RADIUS_MIN, GARRISON_PATROL_RADIUS_MAX,
   defaultCityBuildingMaxHp,
   PATROL_DEFAULT_RADIUS,
-  DefenseInstallation,
   getUnitStats, ROAD_SPEED_BONUS,
   hexDistance, hexNeighbors, tileKey, parseTileKey, generateId,
   RETREAT_DELAY_MS, ASSAULT_ATTACK_DEBUFF, HERO_BASE_HP, HERO_ATTACK,
@@ -301,6 +303,10 @@ function applyDefenseDamageToUnit(
   defenseInstallations?: DefenseInstallation[],
   fromDefenseId?: string,
 ): void {
+  if (fromDefenseId && defenseInstallations) {
+    const src = defenseInstallations.find(d => d.id === fromDefenseId);
+    if (src && target.ownerId === src.ownerId) return;
+  }
   let damage = applyTowerDefense(raw, target.q, target.r, cities);
   damage = applyDamageResist(damage, target, cities, units, scrollAttachments, tiles);
   if (commanders?.length) {
@@ -331,7 +337,13 @@ function defenseTowerVolley(
   scrollAttachments?: ScrollAttachment[],
   commanders?: Commander[],
 ): void {
+  const ownerByCityId = new Map(cities.map(c => [c.id, c.ownerId]));
   for (const tower of installations) {
+    const cityOwner = ownerByCityId.get(tower.cityId);
+    if (cityOwner !== undefined && tower.ownerId !== cityOwner) {
+      tower.ownerId = cityOwner;
+    }
+    if (defenseInstallationCurrentHp(tower) <= 0) continue;
     if (!defenseTowerTerritoryActive(tower, territory)) continue;
     if (tiles.get(tileKey(tower.q, tower.r))?.biome === 'water') continue;
 
@@ -2189,6 +2201,63 @@ export function siegeTick(
       const damage = siegeAttack;
       w.hp = Math.max(0, (w.hp ?? 0) - damage);
     }
+  }
+}
+
+/** Siege engines damage enemy defense towers in range (same rules as wall sections). */
+export function siegeDefenseInstallationsTick(
+  installations: DefenseInstallation[],
+  units: Unit[],
+): void {
+  const siegeTypes = ['trebuchet', 'battering_ram'] as const;
+  for (const inst of installations) {
+    const maxHp = inst.maxHp ?? defenseInstallationMaxHp(inst.level);
+    let hp = defenseInstallationCurrentHp(inst);
+    if (hp <= 0) continue;
+    for (const u of units) {
+      if (u.hp <= 0 || u.ownerId === inst.ownerId) continue;
+      if (!siegeTypes.includes(u.type as (typeof siegeTypes)[number])) continue;
+      const stats = getUnitStats(u);
+      const range = stats.range;
+      const siegeAttack = (stats as { siegeAttack?: number }).siegeAttack ?? 0;
+      if (siegeAttack <= 0) continue;
+      const dist = hexDistance(u.q, u.r, inst.q, inst.r);
+      if (dist > range) continue;
+      hp = Math.max(0, hp - siegeAttack);
+    }
+    inst.hp = hp;
+    inst.maxHp = maxHp;
+  }
+}
+
+/** Land armies on a defense hex chip away at the installation (builders raid at low damage). */
+export function defenseInstallationsLandRaidTick(
+  installations: DefenseInstallation[],
+  units: Unit[],
+): void {
+  const siegeTypes = new Set<Unit['type']>(['trebuchet', 'battering_ram']);
+  for (const inst of installations) {
+    const maxHp = inst.maxHp ?? defenseInstallationMaxHp(inst.level);
+    let hp = defenseInstallationCurrentHp(inst);
+    if (hp <= 0) continue;
+    let total = 0;
+    for (const u of units) {
+      if (u.hp <= 0 || u.ownerId === inst.ownerId || u.aboardShipId) continue;
+      if (isNavalUnitType(u.type)) continue;
+      if (u.q !== inst.q || u.r !== inst.r) continue;
+      if (u.type === 'builder') {
+        total += 2;
+        continue;
+      }
+      if (!isLandMilitaryUnit(u)) continue;
+      if (siegeTypes.has(u.type)) continue;
+      const stats = getUnitStats(u);
+      total += Math.max(2, Math.floor(stats.attack * 0.12));
+    }
+    if (total <= 0) continue;
+    hp = Math.max(0, hp - total);
+    inst.hp = hp;
+    inst.maxHp = maxHp;
   }
 }
 

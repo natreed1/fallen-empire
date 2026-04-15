@@ -11,6 +11,7 @@ import {
   CityBuilding,
   getBuildingJobs,
   getHexRing,
+  isValidFarmPlacementBiome,
 } from '@/types/game';
 import { getCityTerritory } from '@/lib/territory';
 
@@ -31,6 +32,42 @@ function shuffleInPlace<T>(arr: T[], rng: () => number): void {
     arr[i] = arr[j]!;
     arr[j] = t;
   }
+}
+
+/** L1 farm on a free hex near the capital (prefers plains, then desert, then other valid farm biomes). Skips if a farm or banana farm exists. */
+export function appendStartingFarmToCity(city: City, tiles: Map<string, Tile>, seed: number): void {
+  if (city.buildings.some(b => b.type === 'farm' || b.type === 'banana_farm')) return;
+  const rng = mulberry32(seed ^ 0xf4a11);
+  const occupied = new Set(city.buildings.map(b => tileKey(b.q, b.r)));
+  const candidates: { q: number; r: number }[] = [];
+  for (const ring of [1, 2] as const) {
+    for (const { q, r } of getHexRing(city.q, city.r, ring)) {
+      candidates.push({ q, r });
+    }
+  }
+  const valid = candidates.filter(({ q, r }) => {
+    const k = tileKey(q, r);
+    if (occupied.has(k)) return false;
+    const t = tiles.get(k);
+    return !!t && isBuildableLand(t) && isValidFarmPlacementBiome(t.biome);
+  });
+  const plains = valid.filter(({ q, r }) => tiles.get(tileKey(q, r))?.biome === 'plains');
+  const desert = valid.filter(({ q, r }) => tiles.get(tileKey(q, r))?.biome === 'desert');
+  const rest = valid.filter(({ q, r }) => {
+    const b = tiles.get(tileKey(q, r))?.biome;
+    return b !== 'plains' && b !== 'desert';
+  });
+  const order = [...plains, ...desert, ...rest];
+  shuffleInPlace(order, rng);
+  const pick = order[0];
+  if (!pick) return;
+  city.buildings.push({
+    type: 'farm',
+    q: pick.q,
+    r: pick.r,
+    level: 1,
+    assignedWorkers: 2,
+  });
 }
 
 /** L1 barracks on a free land hex near the capital (ring 1, else ring 2). Idempotent if barracks already present. */

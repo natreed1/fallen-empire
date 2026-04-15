@@ -3,6 +3,7 @@
 import { useRef, useEffect } from 'react';
 import { MapControls } from '@react-three/drei';
 import { useThree, useFrame } from '@react-three/fiber';
+import { MOUSE } from 'three';
 import * as THREE from 'three';
 import { useGameStore } from '@/store/useGameStore';
 
@@ -26,7 +27,6 @@ interface MapControllerProps {
 export default function MapController({ target }: MapControllerProps) {
   const controlsRef = useRef<any>(null);
   const { camera } = useThree();
-  const unitBoxSelectRect = useGameStore(s => s.unitBoxSelectRect);
 
   useEffect(() => {
     if (target && controlsRef.current) {
@@ -35,14 +35,15 @@ export default function MapController({ target }: MapControllerProps) {
     }
   }, [target]);
 
-  useEffect(() => {
-    const c = controlsRef.current;
-    if (!c) return;
-    c.enabled = unitBoxSelectRect === null;
-  }, [unitBoxSelectRect]);
+  // Early: turn off MapControls while box-selecting (before controls.update applies pan).
+  useFrame(() => {
+    const controls = controlsRef.current;
+    if (!controls) return;
+    const boxActive = useGameStore.getState().unitBoxSelectRect !== null;
+    controls.enabled = !boxActive;
+  }, -1);
 
-  // Lock camera to fixed perspective: position = target + offset, lookAt(target).
-  // Runs after controls.update() so zoom (orthographic) and pan (target) still work.
+  // After MapControls: lock camera to fixed perspective (target + offset, lookAt target).
   useFrame(() => {
     const controls = controlsRef.current;
     if (!controls?.target) return;
@@ -62,6 +63,7 @@ export default function MapController({ target }: MapControllerProps) {
       zoomSpeed={1.5}
       panSpeed={1.8}
       screenSpacePanning
+      mouseButtons={{ LEFT: MOUSE.PAN, MIDDLE: MOUSE.DOLLY, RIGHT: null as any }}
     />
   );
 }
