@@ -1,0 +1,10 @@
+# Speed up Railway Docker builds (context = repo root)
+node_modules
+.next
+.git
+**/.next
+**/node_modules
+game-server/node_modules
+*.log
+.env.local
+.env*.local

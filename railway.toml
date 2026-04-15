@@ -1,0 +1,9 @@
+# Railway: use Docker so the image includes both `src/` and `game-server/`.
+# In the service settings, set Root Directory to empty (repo root), not `game-server`.
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "game-server/Dockerfile"
+
+[deploy]
+restartPolicyType = "ON_FAILURE"

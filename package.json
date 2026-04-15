@@ -6,6 +6,8 @@
     "dev": "WATCHPACK_POLLING=true next dev -p 3010",
     "build": "next build",
     "start": "next start",
+    "game-server": "npx tsx game-server/src/index.ts",
+    "game-server:dev": "npx tsx watch game-server/src/index.ts",
     "lint": "next lint",
     "generate-biomes": "python3 scripts/generate_biome_overlays.py",
     "align-biome-hex": "python3 scripts/composite_biome_hex_mask.py --biomes plains desert",
