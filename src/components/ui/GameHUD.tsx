@@ -3372,6 +3372,10 @@ function TacticalPanel() {
           {' · '}
           Highlighted hexes: {tacticalSelectedStackKeys.length === 0 ? 'none' : `${tacticalSelectedStackKeys.length}`}
         </p>
+        <p className="text-empire-parchment/45 text-[10px] leading-snug -mt-1">
+          Map: <strong className="text-empire-parchment/75">Shift+drag</strong> to box-select stacks;{' '}
+          <strong className="text-empire-parchment/75">Alt+Shift+drag</strong> adds to the selection.
+        </p>
 
         <div className="border-t border-empire-stone/30 pt-2 flex flex-col gap-1.5">
           <div className="flex items-stretch gap-1.5 min-h-[2rem]">

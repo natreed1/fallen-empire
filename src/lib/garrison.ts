@@ -16,6 +16,12 @@ export function isGarrisonedAtCity(u: Unit, city: City): boolean {
   return u.q === city.q && u.r === city.r;
 }
 
+/** True when the unit is shown as a garrison badge only (not as a field map sprite). Matches HexGrid rendering. */
+export function unitShownAsGarrisonSprite(u: Unit, cities: City[]): boolean {
+  if (u.cityDefenseMode === 'auto_engage') return false;
+  return cities.some(c => isGarrisonedAtCity(u, c));
+}
+
 export function shouldClearGarrisonForMove(u: Unit, targetQ: number, targetR: number, cities: City[]): boolean {
   if (!u.garrisonCityId || !isLandMilitaryUnit(u)) return false;
   const c = cities.find(x => x.id === u.garrisonCityId);

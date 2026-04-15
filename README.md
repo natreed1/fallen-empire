@@ -10,7 +10,11 @@ npm install
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) to view the map.
+Open [http://localhost:3010](http://localhost:3010) (see `package.json` `dev` script for the port) to view the map.
+
+## Private hosting (password gate)
+
+To share the game on a **private** URL (e.g. Vercel), set `SITE_PASSWORD` and `COOKIE_SECRET` in the environment. See [`.env.example`](.env.example) and the full steps in [`docs/DEPLOY.md`](docs/DEPLOY.md). With both unset, the app stays open (normal local development).
 
 ## Controls
 

@@ -344,6 +344,9 @@ interface GameState {
   assigningTacticalOrderType: 'move' | 'intercept' | null;
   /** Split stack: from hex + count to move; next adjacent hex click completes split. If unitIds set, those exact units move (count should match). */
   splitStackPending: { fromQ: number; fromR: number; count: number; unitIds?: string[] } | null;
+  /** Shift+drag box-select preview (viewport/client pixels); non-null disables map pan. */
+  unitBoxSelectRect: { x0: number; y0: number; x1: number; y1: number } | null;
+  setUnitBoxSelectRect: (r: { x0: number; y0: number; x1: number; y1: number } | null) => void;
 
   // Map
   generateWorld: (config?: Partial<MapConfig>) => void;
@@ -381,6 +384,8 @@ interface GameState {
   // Interaction
   /** Optional `focusUnitId` when clicking a ship sprite — move orders apply only to that ship on this hex. */
   selectHex: (q: number, r: number, opts?: { focusUnitId?: string }) => void;
+  /** Right-click a destination hex: issue move immediately (no pending confirm). */
+  rightClickHex: (q: number, r: number) => void;
   deselectAll: () => void;
   /** Layered Escape: cancel tactical assign → pending move → builder → split → tactical → deselect. */
   escapeFromUi: () => void;
@@ -1201,6 +1206,8 @@ export const useGameStore = create<GameState>((set, get) => ({
   tacticalAttackCityDraft: null,
   splitStackPending: null,
   tacticalPatrolPaintHexKeys: [],
+  unitBoxSelectRect: null,
+  setUnitBoxSelectRect: (r) => set({ unitBoxSelectRect: r }),
 
   // ─── Map ────────────────────────────────────────────────────
   generateWorld: (ov) => {
@@ -3662,8 +3669,87 @@ export const useGameStore = create<GameState>((set, get) => ({
     set({ selectedHex: { q, r }, stackMoveUnitId: nextNavalFocus, uiMode: 'normal', pendingMove: null });
   },
 
+  rightClickHex: (q, r) => {
+    const s = get();
+    if (Date.now() < s.mapClickSuppressionUntilMs) return;
+    if (s.phase !== 'playing') return;
+    if (!['human_vs_ai', 'human_solo', 'battle_test'].includes(s.gameMode)) return;
+    if (s.assigningTacticalForSelectedStacks !== null || s.assigningTacticalForStack !== null) return;
+    if (s.splitStackPending !== null) return;
+    if (s.supplyViewTab === 'supply') return;
+    if (
+      s.uiMode === 'build_mine' ||
+      s.uiMode === 'build_quarry' ||
+      s.uiMode === 'build_gold_mine' ||
+      s.uiMode === 'build_logging_hut' ||
+      s.uiMode === 'build_road' ||
+      s.uiMode === 'build_defense'
+    ) {
+      return;
+    }
+    if (s.uiMode === 'defend') return;
+
+    if (s.uiMode === 'move' || s.uiMode === 'intercept') {
+      if (s.selectedHex && s.selectedHex.q === q && s.selectedHex.r === r) {
+        set({
+          selectedHex: null,
+          stackMoveUnitId: null,
+          uiMode: 'normal',
+          pendingMove: null,
+          cityLogisticsOpen: false,
+        });
+        return;
+      }
+      get().setPendingMove(q, r);
+      const after = get();
+      if (after.pendingMove) {
+        get().moveSelectedUnits(after.pendingMove.toQ, after.pendingMove.toR);
+        set({ pendingMove: null });
+      }
+      return;
+    }
+
+    if (s.uiMode !== 'normal' || !s.selectedHex) return;
+
+    const stack = s.units.filter(
+      u =>
+        u.q === s.selectedHex!.q &&
+        u.r === s.selectedHex!.r &&
+        u.ownerId === HUMAN_ID &&
+        u.hp > 0 &&
+        !u.aboardShipId,
+    );
+    const destHasFriendly = s.units.some(
+      u => u.q === q && u.r === r && u.ownerId === HUMAN_ID && u.hp > 0,
+    );
+    if (stack.length === 0 || destHasFriendly) return;
+
+    const dist = hexDistance(s.selectedHex.q, s.selectedHex.r, q, r);
+    const tile = s.tiles.get(tileKey(q, r));
+    const navalStack = stack.every(u => isNavalUnitType(u.type));
+    const okDest = navalStack
+      ? tile?.biome === 'water'
+      : (tile && tile.biome !== 'water') ||
+        (!!tile &&
+          tile.biome === 'water' &&
+          canLandStackEmbarkFriendlyScoutAt(s.tiles, s.units, q, r, stack, HUMAN_ID));
+    const maxLeg = maxMoveOrderDistanceForDestination(q, r, s.territory, HUMAN_ID);
+    if (dist < 1 || dist > maxLeg || !okDest) return;
+
+    get().setPendingMove(q, r);
+    const after = get();
+    if (after.pendingMove) {
+      get().moveSelectedUnits(after.pendingMove.toQ, after.pendingMove.toR);
+      set({ pendingMove: null });
+    }
+  },
+
   escapeFromUi: () => {
     const s = get();
+    if (s.unitBoxSelectRect !== null) {
+      set({ unitBoxSelectRect: null });
+      return;
+    }
     if (s.archerDoctrineModalCityId !== null) {
       set({ archerDoctrineModalCityId: null });
       return;
@@ -6087,6 +6173,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       assigningTacticalForStack: null,
       assigningTacticalOrderType: null,
       tacticalAttackCityDraft: null,
+      unitBoxSelectRect: null,
     });
   },
 
@@ -6102,6 +6189,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       assigningTacticalForStack: null,
       assigningTacticalOrderType: null,
       tacticalAttackCityDraft: null,
+      unitBoxSelectRect: null,
     });
   },
 
@@ -6996,6 +7084,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       assigningTacticalForStack: null,
       assigningTacticalOrderType: null,
       tacticalAttackCityDraft: null,
+      unitBoxSelectRect: null,
     });
     if (notifs.length > 0) {
       get().addNotification(`Orders: ${notifs.join('; ')}`, 'info');

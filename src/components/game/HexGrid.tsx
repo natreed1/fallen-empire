@@ -22,7 +22,7 @@ import {
   type ScrollRelicSite,
   type Player,
 } from '@/types/game';
-import { isGarrisonedAtCity } from '@/lib/garrison';
+import { isGarrisonedAtCity, unitShownAsGarrisonSprite } from '@/lib/garrison';
 import { clusterHumanBattleEngagements } from '@/lib/battlePreview';
 import { universityTaskMatchesSiteType, getUniversitySlotTasks } from '@/lib/builders';
 import { createTerrainHexTopGeometry, defaultBiomePaintRadius } from '@/lib/hexTopGeometry';
@@ -1696,11 +1696,6 @@ function BuildingMarkers({ cities, tiles }: { cities: City[]; tiles: Map<string,
 
 // ─── Unit HP Bars (floating above each army stack) ────────────────
 
-function unitShownAsGarrisonSprite(u: Unit, cities: City[]): boolean {
-  if (u.cityDefenseMode === 'auto_engage') return false;
-  return cities.some(c => isGarrisonedAtCity(u, c));
-}
-
 function UnitHpBars({ units, tiles, cities, players }: { units: Unit[]; tiles: Map<string, Tile>; cities: City[]; players: Player[] }) {
   const stacks = useMemo(() => {
     const byHex: Record<string, Unit[]> = {};
@@ -2499,6 +2494,15 @@ function ShipUnitSprite({
         renderOrder={MAP_ENTITY_RENDER_ORDER}
         onClick={e => {
           e.stopPropagation();
+          if (ownerId === PLAYER_HUMAN_ID) {
+            selectHex(q, r, { focusUnitId: id });
+          } else {
+            selectHex(q, r);
+          }
+        }}
+        onContextMenu={e => {
+          e.stopPropagation();
+          e.nativeEvent.preventDefault();
           if (ownerId === PLAYER_HUMAN_ID) {
             selectHex(q, r, { focusUnitId: id });
           } else {

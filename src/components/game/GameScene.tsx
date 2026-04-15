@@ -10,7 +10,8 @@ import MapController, { MAP_CAMERA_OFFSET } from './MapController';
 import GameHUD from '../ui/GameHUD';
 import { useGameStore } from '@/store/useGameStore';
 import { setAiParams } from '@/lib/aiParams';
-import { axialToWorld, worldToAxial, HEX_RADIUS, tileKey } from '@/types/game';
+import { axialToWorld, worldToAxial, HEX_RADIUS, tileKey, parseTileKey } from '@/types/game';
+import { collectHumanStackKeysInScreenRect, hexFromClientOnMap } from '@/lib/mapBoxSelect';
 
 /** Match scripts/train-ai.ts default (TRAIN_MAP_SIZE / TRAIN_MAP) so watch mode uses same small map. */
 const TRAIN_MAP_SIZE = 38;
@@ -67,11 +68,43 @@ function MapAtmosphere() {
 
 // ─── Hex Click Interaction Plane ───────────────────────────────────
 
+const UNIT_BOX_SELECT_MIN_DRAG_PX = 8;
+
+function canStartUnitBoxSelect(): boolean {
+  const s = useGameStore.getState();
+  if (Date.now() < s.mapClickSuppressionUntilMs) return false;
+  if (s.phase !== 'playing') return false;
+  if (!['human_vs_ai', 'human_solo', 'battle_test'].includes(s.gameMode)) return false;
+  if (s.assigningTacticalForSelectedStacks !== null || s.assigningTacticalForStack !== null) return false;
+  if (s.splitStackPending !== null) return false;
+  if (s.supplyViewTab === 'supply') return false;
+  const bm =
+    s.uiMode === 'build_mine' ||
+    s.uiMode === 'build_quarry' ||
+    s.uiMode === 'build_gold_mine' ||
+    s.uiMode === 'build_logging_hut' ||
+    s.uiMode === 'build_road' ||
+    s.uiMode === 'build_defense';
+  if (bm) return false;
+  return true;
+}
+
 function HexInteractionPlane() {
   const selectHex = useGameStore(s => s.selectHex);
+  const rightClickHex = useGameStore(s => s.rightClickHex);
+  const setUnitBoxSelectRect = useGameStore(s => s.setUnitBoxSelectRect);
   const config = useGameStore(s => s.config);
+  const { camera, gl } = useThree();
   const dragPaintRef = useRef(false);
   const lastPaintHexKeyRef = useRef<string | null>(null);
+  const boxDragRef = useRef<{
+    startX: number;
+    startY: number;
+    lastX: number;
+    lastY: number;
+    altKey: boolean;
+  } | null>(null);
+  const skipClickAfterBoxRef = useRef(false);
 
   const { center, size } = useMemo(() => {
     const w = config.width;
@@ -110,28 +143,177 @@ function HexInteractionPlane() {
     lastPaintHexKeyRef.current = null;
   }, []);
 
-  const handleClick = useCallback((e: ThreeEvent<MouseEvent>) => {
-    e.stopPropagation();
-    if (dragPaintRef.current) {
-      dragPaintRef.current = false;
-      return;
-    }
-    const hex = getHexFromEvent(e);
-    if (hex) selectHex(hex.q, hex.r);
-  }, [selectHex, getHexFromEvent]);
+  const handlePointerDown = useCallback(
+    (e: ThreeEvent<PointerEvent>) => {
+      if (!e.shiftKey || e.button !== 0) return;
+      if (!canStartUnitBoxSelect()) return;
+      e.stopPropagation();
+      const el = gl.domElement;
+      const startX = e.clientX;
+      const startY = e.clientY;
+      boxDragRef.current = { startX, startY, lastX: startX, lastY: startY, altKey: e.altKey };
+      setUnitBoxSelectRect({ x0: startX, y0: startY, x1: startX, y1: startY });
+      try {
+        el.setPointerCapture(e.pointerId);
+      } catch {
+        /* ignore */
+      }
+
+      const onMove = (ev: PointerEvent) => {
+        const b = boxDragRef.current;
+        if (!b) return;
+        b.lastX = ev.clientX;
+        b.lastY = ev.clientY;
+        setUnitBoxSelectRect({ x0: b.startX, y0: b.startY, x1: b.lastX, y1: b.lastY });
+      };
+
+      const onUp = (ev: PointerEvent) => {
+        el.removeEventListener('pointermove', onMove);
+        el.removeEventListener('pointerup', onUp);
+        el.removeEventListener('pointercancel', onUp);
+        try {
+          el.releasePointerCapture(ev.pointerId);
+        } catch {
+          /* ignore */
+        }
+
+        const b = boxDragRef.current;
+        boxDragRef.current = null;
+        setUnitBoxSelectRect(null);
+
+        if (!b) return;
+
+        const dx = b.lastX - b.startX;
+        const dy = b.lastY - b.startY;
+        const dist = Math.hypot(dx, dy);
+
+        if (dist < UNIT_BOX_SELECT_MIN_DRAG_PX) {
+          const hex = hexFromClientOnMap(
+            ev.clientX,
+            ev.clientY,
+            camera,
+            el,
+            config.width,
+            config.height,
+          );
+          if (hex) selectHex(hex.q, hex.r);
+          skipClickAfterBoxRef.current = true;
+          return;
+        }
+
+        const s = useGameStore.getState();
+        const minX = Math.min(b.startX, b.lastX);
+        const maxX = Math.max(b.startX, b.lastX);
+        const minY = Math.min(b.startY, b.lastY);
+        const maxY = Math.max(b.startY, b.lastY);
+
+        const keys = collectHumanStackKeysInScreenRect(
+          s.units,
+          s.cities,
+          camera,
+          el.getBoundingClientRect(),
+          minX,
+          minY,
+          maxX,
+          maxY,
+        );
+
+        if (keys.length === 0) {
+          skipClickAfterBoxRef.current = true;
+          return;
+        }
+
+        let finalKeys = keys;
+        if (b.altKey) {
+          const merged = new Set([...s.tacticalSelectedStackKeys, ...keys]);
+          finalKeys = Array.from(merged).sort((a, c) => {
+            const [aq, ar] = parseTileKey(a);
+            const [cq, cr] = parseTileKey(c);
+            return aq !== cq ? aq - cq : ar - cr;
+          });
+        }
+
+        const [fq, fr] = parseTileKey(finalKeys[0]!);
+
+        useGameStore.setState({
+          pendingTacticalOrders: s.pendingTacticalOrders ?? {},
+          tacticalSelectedStackKeys: finalKeys,
+          tacticalOrderScope: 'selected',
+          tacticalOrderScopeArmyId: null,
+          selectedHex: { q: fq, r: fr },
+          stackMoveUnitId: null,
+          uiMode: 'normal',
+          pendingMove: null,
+          cityLogisticsOpen: false,
+        });
+        skipClickAfterBoxRef.current = true;
+      };
+
+      el.addEventListener('pointermove', onMove);
+      el.addEventListener('pointerup', onUp);
+      el.addEventListener('pointercancel', onUp);
+    },
+    [camera, config.width, config.height, gl, selectHex, setUnitBoxSelectRect],
+  );
+
+  const handleClick = useCallback(
+    (e: ThreeEvent<MouseEvent>) => {
+      e.stopPropagation();
+      if (skipClickAfterBoxRef.current) {
+        skipClickAfterBoxRef.current = false;
+        return;
+      }
+      if (dragPaintRef.current) {
+        dragPaintRef.current = false;
+        return;
+      }
+      const hex = getHexFromEvent(e);
+      if (hex) selectHex(hex.q, hex.r);
+    },
+    [selectHex, getHexFromEvent],
+  );
+
+  const handleContextMenu = useCallback(
+    (e: ThreeEvent<MouseEvent>) => {
+      e.stopPropagation();
+      e.nativeEvent.preventDefault();
+      const hex = getHexFromEvent(e);
+      if (hex) rightClickHex(hex.q, hex.r);
+    },
+    [getHexFromEvent, rightClickHex],
+  );
 
   return (
     <mesh
       rotation={[-Math.PI / 2, 0, 0]}
       position={[center[0], 0.01, center[1]]}
+      onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
       onPointerLeave={handlePointerUp}
       onClick={handleClick}
+      onContextMenu={handleContextMenu}
     >
       <planeGeometry args={[size[0], size[1]]} />
       <meshBasicMaterial transparent opacity={0} depthWrite={false} />
     </mesh>
+  );
+}
+
+function UnitBoxSelectOverlay() {
+  const rect = useGameStore(s => s.unitBoxSelectRect);
+  if (!rect) return null;
+  const left = Math.min(rect.x0, rect.x1);
+  const top = Math.min(rect.y0, rect.y1);
+  const width = Math.abs(rect.x1 - rect.x0);
+  const height = Math.abs(rect.y1 - rect.y0);
+  if (width < 1 && height < 1) return null;
+  return (
+    <div
+      className="pointer-events-none fixed z-[5] border border-empire-gold/70 bg-amber-400/15 rounded-sm shadow-[0_0_12px_rgba(251,191,36,0.25)]"
+      style={{ left, top, width, height }}
+      aria-hidden
+    />
   );
 }
 
@@ -363,6 +545,8 @@ export default function GameScene() {
 
         {isGenerated && <HexGrid />}
       </Canvas>
+
+      <UnitBoxSelectOverlay />
 
       {/* Full HUD overlay */}
       <GameHUD />

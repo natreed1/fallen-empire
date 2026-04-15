@@ -4,6 +4,7 @@ import { useRef, useEffect } from 'react';
 import { MapControls } from '@react-three/drei';
 import { useThree, useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
+import { useGameStore } from '@/store/useGameStore';
 
 /**
  * Fixed offset from target so the view angle never tilts when zooming/panning.
@@ -25,6 +26,7 @@ interface MapControllerProps {
 export default function MapController({ target }: MapControllerProps) {
   const controlsRef = useRef<any>(null);
   const { camera } = useThree();
+  const unitBoxSelectRect = useGameStore(s => s.unitBoxSelectRect);
 
   useEffect(() => {
     if (target && controlsRef.current) {
@@ -32,6 +34,12 @@ export default function MapController({ target }: MapControllerProps) {
       controlsRef.current.update();
     }
   }, [target]);
+
+  useEffect(() => {
+    const c = controlsRef.current;
+    if (!c) return;
+    c.enabled = unitBoxSelectRect === null;
+  }, [unitBoxSelectRect]);
 
   // Lock camera to fixed perspective: position = target + offset, lookAt(target).
   // Runs after controls.update() so zoom (orthographic) and pan (target) still work.
