@@ -49,10 +49,10 @@ So: **one** optimization method (evolutionary), with **multiple games per candid
 
 ### Throughput (CPU)
 
-- **Max out workers**: Set `NUM_WORKERS` to `os.cpus().length - 1` (or 4–8) so all cores evaluate candidates. The current bottleneck is simulation count, not the evolutionary logic.
+- **`train-ai` is single-threaded**: One Node process runs all simulations; the bottleneck is simulation count. Tune `TRAIN_MAP_SIZE`, `TRAIN_MAX_CYCLES`, `TRAIN_MATCHES_PER_PAIR`, and population size for wall-clock time.
 - **Fewer cycles when possible**: Use a lower `TRAIN_MAX_CYCLES` for early generations and increase for later ones, or stop a game early when one side is clearly ahead (e.g. 2x cities) to save time.
-- **Smaller map for more games**: Keep `TRAIN_MAP_SIZE` at 56 (or smaller) so each game is cheap; increase population or matches per candidate instead.
-- **Worker stability**: Ensure `train-ai-worker.ts` runs in your env (e.g. compile to JS or use a worker bundle); fix any `ts-node`/path issues so `NUM_WORKERS > 1` doesn't fall back to main thread.
+- **Smaller map for more games**: Keep `TRAIN_MAP_SIZE` moderate (e.g. 38–52) so each game is cheap; increase population or matches per candidate instead.
+- **More cores**: Run separate `train-ai` processes (different seeds or champion files) and merge the best `ai-params.json` manually, or use `npm run train-ai-overnight` with env vars for a long single run.
 
 ### Where GPU fits (and doesn't)
 
@@ -63,7 +63,7 @@ So: **one** optimization method (evolutionary), with **multiple games per candid
   - **Inference** in the sim could stay on CPU (small nets are fast) or run on GPU if you batch many sims and run one inference per batch.
 - **Batched simulation on GPU**: Running *many* games in parallel on the GPU would require **reimplementing the game loop** as GPU-friendly code (e.g. WebGPU compute or CUDA): state in buffers, minimal branching, one step per dispatch). That's a large rewrite and the game's structure (dynamic entities, hex topology, economy) doesn't map naturally to shaders. Not recommended unless you have a dedicated GPU-sim project.
 - **Practical order of operations**:
-  1. **Improve CPU utilization**: Turn on and tune `NUM_WORKERS`, then improve fitness and selection (draw handling, variance, CMA-ES, diversity) as above.
+  1. **Tune sim cost**: Map size, max cycles, matches per candidate; then improve fitness and selection (draw handling, variance, CMA-ES, diversity) as above.
   2. **If you need more throughput**: Scale out to multiple machines (each runs `train-ai` with a different seed or population slice; merge best params periodically)—same ES, more evaluations.
   3. **If you want a neural AI**: Introduce a small policy net, run ES or RL to train it (e.g. with TF.js or WebGPU), and use the GPU for that net; keep the existing sim on CPU or run one sim per worker and do inference in the worker.
 

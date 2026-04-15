@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Long-running AI evolution: seed from public/ai-params.json, heavy search, parallel workers.
+# Long-running AI evolution: seed from public/ai-params.json, heavy search (main-thread eval).
 # Usage: npm run train-ai-overnight
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -21,13 +21,12 @@ export TRAIN_DRAW_PENALTY="${TRAIN_DRAW_PENALTY:-22}"
 export TRAIN_VARIANCE_PENALTY="${TRAIN_VARIANCE_PENALTY:-0.42}"
 export TRAIN_FROM_CHAMPION="${TRAIN_FROM_CHAMPION:-1}"
 export TRAIN_SHOW_BATTLES="${TRAIN_SHOW_BATTLES:-2}"
-export NUM_WORKERS="${NUM_WORKERS:-6}"
 
 {
   echo "overnight-train started $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "TRAIN_GENERATIONS=$TRAIN_GENERATIONS TRAIN_POPULATION_SIZE=$TRAIN_POPULATION_SIZE"
   echo "TRAIN_MATCHES_PER_PAIR=$TRAIN_MATCHES_PER_PAIR TRAIN_MAX_CYCLES=$TRAIN_MAX_CYCLES"
-  echo "TRAIN_MAP_SIZE=$TRAIN_MAP_SIZE NUM_WORKERS=$NUM_WORKERS"
+  echo "TRAIN_MAP_SIZE=$TRAIN_MAP_SIZE"
   echo "TRAIN_ELITE_COUNT=$TRAIN_ELITE_COUNT TRAIN_DRAW_PENALTY=$TRAIN_DRAW_PENALTY"
   echo "log=$LOG"
 } | tee "$STARTED"

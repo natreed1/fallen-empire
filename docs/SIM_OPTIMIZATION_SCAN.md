@@ -83,16 +83,16 @@ Scan of the AI simulation pipeline for performance optimizations **without remov
 
 ---
 
-## 6. train-ai.ts / workers
+## 6. train-ai.ts
 
 ### 6.1 Seed
 - **Current:** `(Date.now() + i * 1000) % 1_000_000` — non-deterministic. Use deterministic seed from (generation, candidateIndex, matchIndex) for reproducibility; no perf cost.
 
-### 6.2 Worker payload
-- **Current:** Sends full `population[job.candidateId]` and `baseline` (full AiParams) per message. Params are small; acceptable unless worker count is very high.
+### 6.2 train-ai evaluation
+- **Current:** Main-thread only: sequential `runMatch` calls per candidate. No worker_threads (avoids ts-node child-process issues with `npx`).
 
-### 6.3 evaluateCandidateMain
-- **Current:** Sequential runMatch calls; when NUM_WORKERS > 1, parallel path is used. Good.
+### 6.3 Seeds
+- **Current:** Per-candidate seeds use `Date.now()` plus candidate index; still non-deterministic across runs unless extended.
 
 ---
 

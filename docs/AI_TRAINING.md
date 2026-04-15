@@ -6,7 +6,7 @@ The game can **self-improve** the AI by running many headless bot-vs-bot simulat
 
 - **Smaller map**: Training uses a **38×38** map by default (vs 67×67 in-game), so each step is much faster (fewer tiles for territory, economy, combat).
 - **Shorter games**: **MAX_CYCLES = 250** so games end sooner when there's a clear winner.
-- **Parallel workers** (optional): Set `NUM_WORKERS` env var (or `process.env.NUM_WORKERS`) in `scripts/train-ai.ts` to evaluate candidates in parallel. Workers require the worker script to run in your environment (e.g. compiled to JS). If workers fail, the script falls back to single-threaded.
+- **Single-process evaluation**: Matches run sequentially in the main Node process so `npm run train-ai` works the same with `npx` and local installs (no separate worker `ts-node` resolution).
 
 ## 1. Headless core (`src/core/gameCore.ts`)
 
@@ -70,7 +70,6 @@ Env overrides (all optional):
 | `TRAIN_MATCHES_PER_PAIR` | 12 | Matches per candidate (higher = more accurate, slower) |
 | `TRAIN_MAX_CYCLES` | 250 | Max cycles per game |
 | `TRAIN_MAP_SIZE` | 38 | Map width/height |
-| `NUM_WORKERS` | auto | Parallel workers (0 = single-threaded) |
 | `TRAIN_ELITE_COUNT` | 4 | Top candidates kept each generation |
 | `TRAIN_MUTATION_STRENGTH` | 0.15 | Mutation range scale (0.05–0.5) |
 | `TRAIN_VARIANCE_PENALTY` | 0.5 | Penalize inconsistent performance |

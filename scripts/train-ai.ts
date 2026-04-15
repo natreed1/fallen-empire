@@ -4,16 +4,17 @@
  *
  * Method: evolutionary (population + elite selection + mutation). Research shows
  * this is the best fit for noisy game outcomes and many cheap evaluations — see docs/OPTIMIZATION.md.
+ * Evaluation runs on the main thread only (no worker_threads) so it works with npx/ts-node
+ * without requiring ts-node in node_modules for child processes.
+ *
  * Env overrides: TRAIN_POPULATION_SIZE, TRAIN_GENERATIONS, TRAIN_MATCHES_PER_PAIR,
- * TRAIN_MAX_CYCLES, TRAIN_MAP_SIZE, NUM_WORKERS, TRAIN_ELITE_COUNT, TRAIN_MUTATION_STRENGTH,
+ * TRAIN_MAX_CYCLES, TRAIN_MAP_SIZE, TRAIN_ELITE_COUNT, TRAIN_MUTATION_STRENGTH,
  * TRAIN_DRAW_PENALTY, TRAIN_VARIANCE_PENALTY, TRAIN_FROM_CHAMPION (set 0 to skip), TRAIN_SEED_JSON,
  * TRAIN_SHOW_BATTLES, TRAIN_WON_QUICKLY_BONUS, TRAIN_LOST_SLOWLY_BONUS.
  */
 
 import * as path from 'path';
 import * as fs from 'fs';
-import * as os from 'os';
-import { Worker } from 'worker_threads';
 import {
   runSimulation,
   DEFAULT_AI_PARAMS,
@@ -35,11 +36,6 @@ const GENERATIONS = parseInt(process.env.TRAIN_GENERATIONS || '20', 10) || 20;
 const MATCHES_PER_PAIR = parseInt(process.env.TRAIN_MATCHES_PER_PAIR || '12', 10) || 12;
 const MAX_CYCLES = parseInt(process.env.TRAIN_MAX_CYCLES || '250', 10) || 250;
 const MAP_SIZE = parseInt(process.env.TRAIN_MAP_SIZE || '38', 10) || 38;
-const NUM_WORKERS_ENV = process.env.NUM_WORKERS;
-const NUM_WORKERS =
-  NUM_WORKERS_ENV !== undefined
-    ? Math.max(0, parseInt(NUM_WORKERS_ENV, 10) || 0)
-    : Math.min(8, Math.max(1, (os.cpus?.()?.length ?? 1) - 1));
 let ELITE_COUNT = Math.max(2, parseInt(process.env.TRAIN_ELITE_COUNT || '4', 10) || 4);
 ELITE_COUNT = Math.min(ELITE_COUNT, Math.max(2, POPULATION_SIZE - 1));
 const MUTATION_STRENGTH = Math.min(0.5, Math.max(0.05, parseFloat(process.env.TRAIN_MUTATION_STRENGTH || '0.15') || 0.15));
@@ -53,7 +49,7 @@ const LOST_SLOWLY_BONUS_PER_CYCLE = parseFloat(process.env.TRAIN_LOST_SLOWLY_BON
 const TRAIN_MAP = { width: MAP_SIZE, height: MAP_SIZE };
 const SIM_OPTS: RunSimulationOptions = { maxCycles: MAX_CYCLES, mapConfigOverride: TRAIN_MAP };
 
-/** Ensure params have all keys (merge with defaults). Use before sending to worker or evaluating. */
+/** Ensure params have all keys (merge with defaults). */
 function ensureFullParams(p: Partial<AiParams>): AiParams {
   return { ...DEFAULT_AI_PARAMS, ...p };
 }
@@ -173,10 +169,12 @@ function effectiveScore(matchScores: number[]): number {
   return mean(matchScores) - VARIANCE_PENALTY * std(matchScores);
 }
 
-function evaluateCandidateMain(candidate: AiParams, baseline: AiParams): number[] {
+/** One candidate vs baseline: MATCHES_PER_PAIR match pairs (two sims each). Seeds vary by candidate index. */
+function evaluateCandidate(candidate: AiParams, baseline: AiParams, candidateIndex: number): number[] {
   const matchScores: number[] = [];
+  const t0 = Date.now();
   for (let i = 0; i < MATCHES_PER_PAIR; i++) {
-    const seed = (Date.now() + i * 1000) % 1_000_000;
+    const seed = (t0 + candidateIndex * 1000 + i * 997) % 1_000_000;
     const asAi1 = runMatch(candidate, baseline, seed);
     const asAi2 = runMatch(baseline, candidate, seed + 1);
     matchScores.push(
@@ -186,104 +184,14 @@ function evaluateCandidateMain(candidate: AiParams, baseline: AiParams): number[
   return matchScores;
 }
 
-/** Jobs for match-level parallelism: one job = one match pair (2 sims). */
-interface MatchJob {
-  jobId: number;
-  candidateId: number;
-  matchIndex: number;
-  seed: number;
-}
-
-async function evaluatePopulationParallel(
-  population: AiParams[],
-  baseline: AiParams,
-  workerPath: string,
-  onProgress?: (completed: number, total: number, elapsedMs: number) => void,
-): Promise<number[][]> {
-  const nw = Math.max(1, NUM_WORKERS);
-  const jobs: MatchJob[] = [];
-  let jobId = 0;
-  for (let c = 0; c < population.length; c++) {
-    for (let m = 0; m < MATCHES_PER_PAIR; m++) {
-      const seed = (Date.now() + c * 1000 + m * 997) % 1_000_000;
-      jobs.push({ jobId: jobId++, candidateId: c, matchIndex: m, seed });
-    }
-  }
-
-  const scores: number[][] = population.map(() => []);
-  let completed = 0;
-  let nextJobIdx = 0;
-  const startMs = Date.now();
-  let lastLoggedPct = -1;
-
-  return new Promise((resolve, reject) => {
-    const workers: Worker[] = [];
-    const workerBusy: boolean[] = [];
-
-    function dispatchNext(workerIdx: number) {
-      if (nextJobIdx >= jobs.length) {
-        workerBusy[workerIdx] = false;
-        if (completed === jobs.length) {
-          workers.forEach(w => w.terminate());
-          resolve(scores);
-        }
-        return;
-      }
-      const job = jobs[nextJobIdx++];
-      workerBusy[workerIdx] = true;
-      workers[workerIdx].postMessage({
-        type: 'match',
-        workerId: workerIdx,
-        jobId: job.jobId,
-        candidateId: job.candidateId,
-        matchIndex: job.matchIndex,
-        candidate: population[job.candidateId],
-        baseline,
-        seed: job.seed,
-        maxCycles: MAX_CYCLES,
-        mapConfigOverride: TRAIN_MAP,
-      } as const);
-    }
-
-    function onResult(msg: { type: string; workerId: number; candidateId: number; matchIndex: number; score: number }) {
-      if (msg.type !== 'match') return;
-      scores[msg.candidateId][msg.matchIndex] = msg.score;
-      completed++;
-      const elapsed = Date.now() - startMs;
-      const pct = Math.floor((100 * completed) / jobs.length);
-      if (onProgress && (pct >= lastLoggedPct + 5 || completed === jobs.length)) {
-        lastLoggedPct = pct;
-        onProgress(completed, jobs.length, elapsed);
-      }
-      dispatchNext(msg.workerId);
-    }
-
-    for (let w = 0; w < nw; w++) {
-      const worker = new Worker(workerPath, {
-        workerData: null,
-        execArgv: ['-r', 'ts-node/register', '-r', 'tsconfig-paths/register'],
-      });
-      workerBusy.push(false);
-      worker.on('message', (msg: { type?: string; workerId?: number; candidateId?: number; matchIndex?: number; score?: number }) => {
-        onResult(msg as { type: string; workerId: number; candidateId: number; matchIndex: number; score: number });
-      });
-      worker.on('error', reject);
-      worker.on('exit', (code) => { if (code !== 0) reject(new Error(`Worker exit ${code}`)); });
-      workers.push(worker);
-    }
-
-    for (let w = 0; w < Math.min(nw, jobs.length); w++) dispatchNext(w);
-  });
-}
-
-async function main() {
+function main() {
   assertAiParamsConsistency();
   const summary = getMutationSpaceSummary();
   const trendOverrides = loadTrendReportOverrides();
   console.log('Training AI parameters (evolutionary + multi-game evaluation)...');
   console.log(`Param count: ${summary.totalParamCount}  In mutation space: ${summary.paramsInMutationSpace.length}  Excluded: ${summary.excludedFromMutation.length} (${summary.excludedReason})`);
   console.log(`Evolvable params: ${EVOLVABLE_PARAM_KEYS.join(', ')}`);
-  console.log(`Map: ${TRAIN_MAP.width}x${TRAIN_MAP.height}  maxCycles: ${MAX_CYCLES}  workers: ${NUM_WORKERS}`);
+  console.log(`Map: ${TRAIN_MAP.width}x${TRAIN_MAP.height}  maxCycles: ${MAX_CYCLES}`);
   console.log(`Gens: ${GENERATIONS}  population: ${POPULATION_SIZE}  matches/candidate: ${MATCHES_PER_PAIR}  elite: ${ELITE_COUNT}`);
   if (trendOverrides) {
     const n = Object.keys(trendOverrides).length;
@@ -299,53 +207,20 @@ async function main() {
     population.push(mutateParams(population[population.length - 1], trendOverrides));
   }
 
-  const workerDir = path.join(process.cwd(), 'scripts');
-  const workerPathJs = path.join(workerDir, 'train-ai-worker.js');
-  const workerPathTs = path.join(workerDir, 'train-ai-worker.ts');
-  const workerPath = fs.existsSync(workerPathJs) ? workerPathJs : workerPathTs;
-
   for (let gen = 0; gen < GENERATIONS; gen++) {
     console.log('');
     console.log(`═══════════════════════════════════════════  Gen ${gen + 1}/${GENERATIONS}  ═══════════════════════════════════════════`);
     console.log('Baseline: ' + formatParamsShort(baseline));
 
-    let matchScoresPerCandidate: number[][];
-    if (NUM_WORKERS > 1) {
-      const totalJobs = population.length * MATCHES_PER_PAIR;
-      const start = Date.now();
-      console.log(`  Evaluating ${population.length} candidates, ${totalJobs} matches (${NUM_WORKERS} workers)...`);
-      try {
-        matchScoresPerCandidate = await evaluatePopulationParallel(
-          population,
-          baseline,
-          workerPath,
-          (completed, total, elapsedMs) => {
-            const pct = Math.floor((100 * completed) / total);
-            const rate = elapsedMs > 0 ? (completed / (elapsedMs / 1000)).toFixed(1) : '0';
-            process.stdout.write(`\r  Matches ${completed}/${total} (${pct}%) · ${rate}/s · ${(elapsedMs / 1000).toFixed(1)}s   `);
-          },
-        );
-        console.log(`\r  Done: ${totalJobs} matches in ${((Date.now() - start) / 1000).toFixed(1)}s`);
-      } catch (workerErr) {
-        console.log('');
-        console.warn('  Workers failed, falling back to main thread:', (workerErr as Error).message);
-        matchScoresPerCandidate = [];
-        for (let idx = 0; idx < population.length; idx++) {
-          process.stdout.write(`  Candidate ${idx + 1}/${population.length}...`);
-          const ms = evaluateCandidateMain(population[idx], baseline);
-          matchScoresPerCandidate.push(ms);
-          console.log(` ${effectiveScore(ms).toFixed(1)} (μ=${mean(ms).toFixed(1)} σ=${std(ms).toFixed(1)})`);
-        }
-      }
-    } else {
-      matchScoresPerCandidate = [];
-      for (let idx = 0; idx < population.length; idx++) {
-        process.stdout.write(`  Candidate ${idx + 1}/${population.length}...`);
-        const ms = evaluateCandidateMain(population[idx], baseline);
-        matchScoresPerCandidate.push(ms);
-        console.log(` ${effectiveScore(ms).toFixed(1)} (μ=${mean(ms).toFixed(1)} σ=${std(ms).toFixed(1)})`);
-      }
+    const start = Date.now();
+    const matchScoresPerCandidate: number[][] = [];
+    for (let idx = 0; idx < population.length; idx++) {
+      process.stdout.write(`  Candidate ${idx + 1}/${population.length}...`);
+      const ms = evaluateCandidate(population[idx], baseline, idx);
+      matchScoresPerCandidate.push(ms);
+      console.log(` ${effectiveScore(ms).toFixed(1)} (μ=${mean(ms).toFixed(1)} σ=${std(ms).toFixed(1)})`);
     }
+    console.log(`  Generation eval: ${((Date.now() - start) / 1000).toFixed(1)}s`);
 
     const scored = population.map((p, i) => ({
       params: p,
@@ -397,7 +272,9 @@ async function main() {
   }
 }
 
-main().catch((e) => {
+try {
+  main();
+} catch (e) {
   console.error(e);
   process.exit(1);
-});
+}

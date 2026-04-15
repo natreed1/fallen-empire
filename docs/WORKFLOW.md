@@ -59,7 +59,7 @@ A single place to capture ideas, things to build, and notes so we can see them a
 - [Plan: Level 3 units, stone/iron](./PLAN_LEVEL3_UNITS_STONE_IRON.md) — L3 tier, L2 stone, L3 iron, defender L3-only
 - [Balance: L3 & defender](./BALANCE_L3_DEFENDER.md) — cost/stat table, economy, tuning notes
 - [Siege & Combat Design](./SIEGE_AND_COMBAT_DESIGN.md) — city capture, siege, supply, combat rules (and **Implementation checklist** for changes check)
-- [AI Training](./AI_TRAINING.md) — sim, fitness, workers
+- [AI Training](./AI_TRAINING.md) — sim, fitness, main-thread training
 - [Cursor simulation fix outline](./CURSOR_SIMULATION_FIX_OUTLINE.MD) — changes check prompt and sim/training points
 - [Simulation economy analysis](./SIMULATION_ECONOMY_ANALYSIS.md) — starvation lock, food-aware recruit gating
 - [Optimization](./OPTIMIZATION.md) — evolutionary model, GPU notes

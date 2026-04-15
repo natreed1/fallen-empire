@@ -9,6 +9,7 @@ import { getWeatherHarvestMultiplier } from '@/lib/weather';
 import { BUILDING_COSTS, BUILDING_PRODUCTION, BUILDING_BP_COST, BUILDING_JOBS, CITY_BUILDING_POWER, BUILDER_POWER, BP_RATE_BASE, TERRAIN_FOOD_YIELD, UNIT_COSTS, UNIT_L2_COSTS, UNIT_L3_COSTS, UNIT_BASE_STATS, UNIT_DISPLAY_NAMES, getUnitDisplayName, ARMS_TIER_LABELS, type RangedVariant, COMMANDER_TRAIT_INFO, COMMANDER_RECRUIT_GOLD, VILLAGE_INCORPORATE_COST, MARKET_GOLD_PER_CYCLE, MARKET_GOLD_PER_VILLAGE, POPULATION_TAX_GOLD_MULT, SCOUT_MISSION_COST, WEATHER_DISPLAY, BARACKS_UPGRADE_COST, BARACKS_L3_UPGRADE_COST, FACTORY_UPGRADE_COST, FARM_UPGRADE_COST, RESOURCE_MINE_UPGRADE_COST, FARM_L2_FOOD_PER_CYCLE, WALL_SECTION_STONE_COST, WALL_BUILDER_STONE_PER_CYCLE_PER_SLOT, WORKERS_PER_LEVEL, MIN_STAFFING_RATIO, TREBUCHET_FIELD_BP_COST, TREBUCHET_FIELD_GOLD_COST, TREBUCHET_REFINED_WOOD_COST, SAWMILL_WOOD_PER_REFINED, getBuildingJobs, getUnitStats, BuildingType, UnitType, ArmyStance, Biome, hexDistance, getHexRing, tileKey, POP_BIRTH_RATE, POP_NATURAL_DEATHS, POP_CARRYING_CAPACITY_PER_FOOD, POP_EXPECTED_K_ALPHA, STARVATION_DEATHS, SHIP_RECRUIT_COSTS, isNavalUnitType, getShipMaxCargo, hexTouchesBiome, AttackCityStyle, DefenseTowerType, DefenseTowerLevel, DEFENSE_TOWER_LEVEL_COSTS, DEFENSE_TOWER_MAX_PER_CITY, DEFENSE_TOWER_DISPLAY_NAME, City, CONTESTED_ZONE_GOLD_REWARD, CONTESTED_ZONE_IRON_REWARD, KingdomId, KINGDOM_IDS, KINGDOM_DISPLAY_NAMES, KINGDOM_SETUP_ICONS, SCROLL_DISPLAY_NAME, scrollItemDisplayName, SCROLL_RELIC_LORE, SCROLL_REGION_ITEM_NAME, SPECIAL_REGION_DISPLAY_NAME, SPECIAL_REGION_OVERLAY_COLORS, SCROLL_COMBAT_BONUS, SCROLL_DEFENSE_BONUS, SCROLL_MOVEMENT_BONUS, SCROLL_ARMY_SLOT_ORDER, SCROLL_SLOT_LABEL, MAP_SIZE_PRESETS, type MapSizePreset, type MapTerrainPreset, type ScrollKind, type SpecialRegionKind, type ScrollAttachment, type ScrollItem, type Commander, UNIVERSITY_UPGRADE_COSTS, BUILDER_TASK_LABELS, type BuilderTask, type ArmyMarchSpreadMode, DEFAULT_BUILDER_TASK, ABILITY_DEFS,   getAbilityForUnit, TERRITORY_RADIUS, GARRISON_PATROL_RADIUS_MIN, GARRISON_PATROL_RADIUS_MAX, defaultCityBuildingMaxHp, RUINS_REPAIR_GOLD_RATIO, isCityBuildingOperational, EMPTY_MAP_QUADRANTS, TRADE_MAP_QUADRANT_GOLD, TRADE_MAP_FULL_ATLAS_GOLD, TRADE_RESOURCE_PACK_GOLD, TRADE_MORALE_FESTIVAL_GOLD, TRADE_MORALE_FESTIVAL_DELTA, TRADE_ROYAL_SURVEY_GOLD, MAP_QUADRANT_LABELS, type MapQuadrantId, SOCIAL_BAR_BUILD_GOLD, SOCIAL_BAR_BP, SOCIAL_BAR_UPGRADE_COSTS, SOCIAL_BAR_BIRTH_MULT_PER_LEVEL, isFarmBuildingType, isValidFarmPlacementBiome } from '@/types/game';
 import {
   battleClusterContainingHex,
+  clusterHumanBattleEngagements,
   humanBattleHexKeysFlat,
   likelyWinnerForHumanBattle,
 } from '@/lib/battlePreview';
@@ -1340,10 +1341,64 @@ function BattleReportModal() {
     return likelyWinnerForHumanBattle(units, battleClusterHexKeys, moraleState);
   }, [battleModalHexKey, battleClusterHexKeys, units, moraleState]);
 
+  /** Unit ids tied to this report; follows stacks as they move so we do not close when the anchor hex empties. */
+  const battleReportEngagementUnitIdsRef = useRef<Set<string> | null>(null);
+  const battleReportFocusedHexPrevRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!battleModalHexKey) {
+      battleReportEngagementUnitIdsRef.current = null;
+      battleReportFocusedHexPrevRef.current = null;
+      return;
+    }
+    if (battleReportFocusedHexPrevRef.current !== battleModalHexKey) {
+      battleReportFocusedHexPrevRef.current = battleModalHexKey;
+      const clusterHexes = new Set(battleClusterContainingHex(units, battleModalHexKey));
+      const ids = new Set<string>();
+      for (const u of units) {
+        if (u.hp <= 0 || u.aboardShipId) continue;
+        if (clusterHexes.has(tileKey(u.q, u.r))) ids.add(u.id);
+      }
+      battleReportEngagementUnitIdsRef.current = ids;
+    }
+  }, [battleModalHexKey, units]);
+
   useEffect(() => {
     if (!battleModalHexKey) return;
-    if (!battleKeys.includes(battleModalHexKey)) closeBattleModal();
-  }, [battleModalHexKey, battleKeys, closeBattleModal]);
+    let ref = battleReportEngagementUnitIdsRef.current;
+    if (!ref) return;
+
+    const unitById = new Map(units.map(u => [u.id, u]));
+    const pruned = new Set<string>();
+    for (const id of ref) {
+      const u = unitById.get(id);
+      if (u && u.hp > 0 && !u.aboardShipId) pruned.add(id);
+    }
+    battleReportEngagementUnitIdsRef.current = pruned;
+    ref = pruned;
+
+    if (ref.size === 0) {
+      closeBattleModal();
+      return;
+    }
+
+    const clusters = clusterHumanBattleEngagements(units);
+    let touched = false;
+    for (const hexKeys of clusters) {
+      const hexSet = new Set(hexKeys);
+      const clusterUnitIds = new Set<string>();
+      for (const u of units) {
+        if (u.hp <= 0 || u.aboardShipId) continue;
+        if (hexSet.has(tileKey(u.q, u.r))) clusterUnitIds.add(u.id);
+      }
+      const intersects = [...clusterUnitIds].some(id => ref.has(id));
+      if (intersects) {
+        touched = true;
+        for (const id of clusterUnitIds) ref.add(id);
+      }
+    }
+    if (!touched) closeBattleModal();
+  }, [units, battleModalHexKey, closeBattleModal]);
 
   const clusterHexSet = useMemo(() => new Set(battleClusterHexKeys), [battleClusterHexKeys]);
 

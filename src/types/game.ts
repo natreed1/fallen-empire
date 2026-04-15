@@ -1131,10 +1131,10 @@ export const BUILDING_PRODUCTION: Record<BuildingType, BuildingProduction> = {
 export const FACTORY_L2_IRON_PER_CYCLE = 1;
 export const FACTORY_L2_ARMS_PER_CYCLE = 6;
 
-export const MARKET_GOLD_PER_CYCLE = 1;
+export const MARKET_GOLD_PER_CYCLE = 2;
 
 /** Market gold: per incorporated village hex in the owning player's territory (empire-wide pool). */
-export const MARKET_GOLD_PER_VILLAGE = 5;
+export const MARKET_GOLD_PER_VILLAGE = 2;
 
 /** Multiplier on census tax gold: floor(pop × taxRate × this). */
 export const POPULATION_TAX_GOLD_MULT = 1.5;
