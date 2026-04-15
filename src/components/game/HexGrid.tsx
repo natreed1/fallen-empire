@@ -144,6 +144,7 @@ const SPRITE_PATHS: Record<string, string> = {
   city_center: '/sprites/buildings/silo.png',
   barracks:    '/sprites/buildings/barracks.png',
   academy:     '/sprites/buildings/academy.png',
+  university:  '/sprites/buildings/academy.png',
   market:      '/sprites/buildings/market.png',
   quarry:   '/sprites/buildings/quarry.png',
   mine:     '/sprites/buildings/mine.png',
@@ -1624,6 +1625,7 @@ const BUILDING_SPRITE_SCALE: Record<BuildingType, [number, number]> = {
   factory:     [1.1, 1.1],
   barracks:    [1.1, 1.1],
   academy:     [0.9, 1.2],
+  university:  [0.9, 1.2],
   market:      [1.2, 1.2],
   quarry:      [1.0, 1.0],
   mine:        [1.0, 1.0],
@@ -1644,6 +1646,7 @@ const BUILDING_Y_OFFSET: Record<BuildingType, number> = {
   factory:     0.40,
   barracks:    0.40,
   academy:     0.55,
+  university:  0.55,
   market:      0.45,
   quarry:      0.40,
   mine:        0.40,
@@ -1658,7 +1661,7 @@ const BUILDING_Y_OFFSET: Record<BuildingType, number> = {
 };
 
 function BuildingMarkers({ cities, tiles }: { cities: City[]; tiles: Map<string, Tile> }) {
-  const textures = useGameTextures(['farm', 'banana_farm', 'factory', 'city_center', 'barracks', 'academy', 'siege_workshop', 'market', 'quarry', 'mine', 'gold_mine', 'sawmill', 'port', 'shipyard', 'fishery', 'logging_hut', 'social_bar']);
+  const textures = useGameTextures(['farm', 'banana_farm', 'factory', 'city_center', 'barracks', 'academy', 'university', 'siege_workshop', 'market', 'quarry', 'mine', 'gold_mine', 'sawmill', 'port', 'shipyard', 'fishery', 'logging_hut', 'social_bar']);
 
   const allBuildings = useMemo(() => {
     const result: { key: string; type: BuildingType; q: number; r: number; x: number; y: number; z: number }[] = [];

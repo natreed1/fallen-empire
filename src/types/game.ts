@@ -345,7 +345,7 @@ export const DEFAULT_KINGDOM_ID: KingdomId = 'traders';
 
 export type BuildingType =
   | 'city_center' | 'farm' | 'banana_farm' | 'factory' | 'barracks' | 'academy' | 'siege_workshop' | 'market' | 'quarry' | 'mine' | 'gold_mine'
-  | 'sawmill' | 'port' | 'shipyard' | 'fishery' | 'logging_hut' | 'social_bar';
+  | 'sawmill' | 'port' | 'shipyard' | 'fishery' | 'logging_hut' | 'social_bar' | 'university';
 /** Construction site type: buildings (in city) or field-built siege/scout/defense (builder on hex). */
 export type ConstructionSiteType = BuildingType | 'trebuchet' | 'scout_tower' | 'city_defense' | 'wall_section';
 export type UnitType =
@@ -443,6 +443,16 @@ export interface Player {
   kingdomId?: KingdomId;
   /** Trade menu: which map quarters show enemy land units through the fog. */
   mapQuadrantsRevealed?: MapQuadrantsRevealed;
+  /** National education state; absent = level 1 with 0 literacy (backward-compatible). */
+  education?: EducationState;
+  /** Techs this player has completed research on; absent = {@link STARTING_TECHS}. */
+  researchedTechs?: TechId[];
+  /** Tech currently being researched; null = idle. */
+  activeResearch?: TechId | null;
+  /** Accumulated research points toward {@link activeResearch}. */
+  researchProgress?: number;
+  /** National council (four posts for commanders/politicians). */
+  nationalCouncil?: NationalCouncil;
 }
 
 // ─── City ──────────────────────────────────────────────────────────
@@ -462,6 +472,8 @@ export interface CityBuilding {
   hp?: number;
   maxHp?: number;
   buildingState?: BuildingState;
+  /** University only: specialization focus (default 'general'). */
+  universitySpecialization?: UniversitySpecialization;
 }
 
 /** University workforce directive — drives automated builds and which sites get extra BP. */
@@ -797,6 +809,378 @@ export const COMMANDER_STARTING_PICK = 5;
 /** Additional commanders after the starting five (not limited by barracks). */
 export const COMMANDER_RECRUIT_GOLD = 50;
 
+// ─── Politicians & National Council ────────────────────────────────
+
+export type PoliticianTraitId =
+  | 'economist'
+  | 'merchant'
+  | 'diplomat'
+  | 'administrator'
+  | 'scholar'
+  | 'industrialist';
+
+export const POLITICIAN_TRAIT_INFO: Record<
+  PoliticianTraitId,
+  { label: string; desc: string; goldBonus: number; productionBonus: number; researchBonus: number }
+> = {
+  economist: {
+    label: 'Economist',
+    desc: '+8% tax income',
+    goldBonus: 0.08,
+    productionBonus: 0,
+    researchBonus: 0,
+  },
+  merchant: {
+    label: 'Merchant',
+    desc: '+6% trade and market income',
+    goldBonus: 0.06,
+    productionBonus: 0,
+    researchBonus: 0,
+  },
+  diplomat: {
+    label: 'Diplomat',
+    desc: '+4% gold and +4% production',
+    goldBonus: 0.04,
+    productionBonus: 0.04,
+    researchBonus: 0,
+  },
+  administrator: {
+    label: 'Administrator',
+    desc: '+10% city production output',
+    goldBonus: 0,
+    productionBonus: 0.1,
+    researchBonus: 0,
+  },
+  scholar: {
+    label: 'Scholar',
+    desc: '+10% research speed',
+    goldBonus: 0,
+    productionBonus: 0,
+    researchBonus: 0.1,
+  },
+  industrialist: {
+    label: 'Industrialist',
+    desc: '+6% production and +4% gold',
+    goldBonus: 0.04,
+    productionBonus: 0.06,
+    researchBonus: 0,
+  },
+};
+
+export interface Politician {
+  id: string;
+  name: string;
+  ownerId: string;
+  traitIds: PoliticianTraitId[];
+  portraitSeed: number;
+  portraitDataUrl?: string;
+}
+
+/** Council post slots — each provides a distinct category of bonuses. */
+export type CouncilPostId = 'chancellor' | 'treasurer' | 'marshal' | 'spymaster';
+
+export const COUNCIL_POST_INFO: Record<CouncilPostId, { label: string; desc: string }> = {
+  chancellor: { label: 'Chancellor', desc: 'Oversees diplomacy and trade — economic bonuses amplified' },
+  treasurer: { label: 'Treasurer', desc: 'Manages gold and taxation — gold bonuses amplified' },
+  marshal: { label: 'Marshal', desc: 'Commands the military — combat bonuses amplified' },
+  spymaster: { label: 'Spymaster', desc: 'Intelligence and research — research bonuses amplified' },
+};
+
+export const COUNCIL_POST_IDS: CouncilPostId[] = ['chancellor', 'treasurer', 'marshal', 'spymaster'];
+
+/** A council appointment: either a commander (combat focus) or politician (economy focus). */
+export interface CouncilAppointment {
+  postId: CouncilPostId;
+  /** The assigned person — either a Commander or Politician id. */
+  assigneeId: string;
+  assigneeKind: 'commander' | 'politician';
+}
+
+/** Player's national council state. */
+export interface NationalCouncil {
+  appointments: CouncilAppointment[];
+}
+
+export function emptyNationalCouncil(): NationalCouncil {
+  return { appointments: [] };
+}
+
+// ─── University Specialization ─────────────────────────────────────
+
+export type UniversitySpecialization = 'military' | 'economics' | 'research' | 'general';
+
+export const UNIVERSITY_SPECIALIZATION_INFO: Record<
+  UniversitySpecialization,
+  { label: string; desc: string }
+> = {
+  military: { label: 'Military Academy', desc: 'Generates commanders more often; +combat research' },
+  economics: { label: 'School of Economics', desc: 'Generates politicians more often; +economy research' },
+  research: { label: 'Research Institute', desc: 'Faster tech progress; balanced graduates' },
+  general: { label: 'General Studies', desc: 'Equal chance of commanders and politicians; education bonus' },
+};
+
+/** Gold to upgrade university one level (L1→L2 … L4→L5). */
+export const UNIVERSITY_BUILDING_UPGRADE_COSTS: [number, number, number, number] = [30, 50, 75, 100];
+/** Per-cycle education bonus per university level (added to empire literacy). */
+export const UNIVERSITY_EDUCATION_PER_LEVEL = 0.5;
+/** Base chance per cycle to generate a graduate from a L1 university; scales with level. */
+export const UNIVERSITY_GRADUATE_CHANCE_BASE = 0.08;
+/** Recruit cost for politicians (same economy as commander recruitment). */
+export const POLITICIAN_RECRUIT_GOLD = 40;
+
+// ─── Education & Literacy ──────────────────────────────────────────
+
+export interface EducationState {
+  level: number;
+  /** Accumulated literacy points (0–100 scale, drives tech progress). */
+  literacy: number;
+}
+
+/** Gold per education level upgrade. Index 0 = L1→L2, etc. Max level 5. */
+export const EDUCATION_UPGRADE_COSTS: [number, number, number, number] = [40, 70, 110, 160];
+/** Base literacy gain per cycle (before university/council bonuses). */
+export const EDUCATION_BASE_LITERACY_PER_CYCLE = 0.2;
+/** Education level multiplier on literacy gain. */
+export const EDUCATION_LEVEL_LITERACY_MULT = 0.15;
+
+// ─── Technology Tree ───────────────────────────────────────────────
+
+export type TechId =
+  | 'agriculture_1'
+  | 'agriculture_2'
+  | 'mining_1'
+  | 'mining_2'
+  | 'masonry_1'
+  | 'iron_working'
+  | 'forestry_1'
+  | 'advanced_construction'
+  | 'military_tactics_1'
+  | 'military_tactics_2'
+  | 'siege_engineering'
+  | 'naval_technology'
+  | 'advanced_naval'
+  | 'economics_1'
+  | 'economics_2'
+  | 'gunpowder'
+  | 'advanced_metallurgy';
+
+export interface TechDefinition {
+  id: TechId;
+  label: string;
+  desc: string;
+  /** Literacy points required to complete research (accumulates over cycles). */
+  researchCost: number;
+  /** Must have these techs before researching this one. */
+  prerequisites: TechId[];
+  /** Buildings unlocked (empty = no building gates). */
+  unlocksBuildings: BuildingType[];
+  /** Unit types unlocked. */
+  unlocksUnits: UnitType[];
+  /** Max building level raised (e.g. farm L2 requires agriculture_2). */
+  raisesMaxLevel?: { building: BuildingType; maxLevel: number }[];
+}
+
+export const TECH_TREE: Record<TechId, TechDefinition> = {
+  agriculture_1: {
+    id: 'agriculture_1',
+    label: 'Basic Agriculture',
+    desc: 'Enables farms and basic food production.',
+    researchCost: 0,
+    prerequisites: [],
+    unlocksBuildings: ['farm', 'banana_farm'],
+    unlocksUnits: [],
+  },
+  agriculture_2: {
+    id: 'agriculture_2',
+    label: 'Advanced Agriculture',
+    desc: 'Unlocks L2 farms with higher yields.',
+    researchCost: 30,
+    prerequisites: ['agriculture_1'],
+    unlocksBuildings: [],
+    unlocksUnits: [],
+    raisesMaxLevel: [{ building: 'farm', maxLevel: 2 }, { building: 'banana_farm', maxLevel: 2 }],
+  },
+  mining_1: {
+    id: 'mining_1',
+    label: 'Basic Mining',
+    desc: 'Enables quarries and iron mines.',
+    researchCost: 0,
+    prerequisites: [],
+    unlocksBuildings: ['quarry', 'mine'],
+    unlocksUnits: [],
+  },
+  mining_2: {
+    id: 'mining_2',
+    label: 'Deep Mining',
+    desc: 'Unlocks gold mines and L2 quarries/mines.',
+    researchCost: 45,
+    prerequisites: ['mining_1'],
+    unlocksBuildings: ['gold_mine'],
+    unlocksUnits: [],
+    raisesMaxLevel: [{ building: 'quarry', maxLevel: 2 }, { building: 'mine', maxLevel: 2 }],
+  },
+  masonry_1: {
+    id: 'masonry_1',
+    label: 'Masonry',
+    desc: 'Enables stone construction and factories.',
+    researchCost: 20,
+    prerequisites: ['mining_1'],
+    unlocksBuildings: ['factory'],
+    unlocksUnits: [],
+  },
+  iron_working: {
+    id: 'iron_working',
+    label: 'Iron Working',
+    desc: 'Enables advanced arms production. L2 factory unlocked.',
+    researchCost: 50,
+    prerequisites: ['mining_2', 'masonry_1'],
+    unlocksBuildings: [],
+    unlocksUnits: [],
+    raisesMaxLevel: [{ building: 'factory', maxLevel: 2 }],
+  },
+  forestry_1: {
+    id: 'forestry_1',
+    label: 'Forestry',
+    desc: 'Enables logging huts and sawmills.',
+    researchCost: 0,
+    prerequisites: [],
+    unlocksBuildings: ['logging_hut', 'sawmill'],
+    unlocksUnits: [],
+  },
+  advanced_construction: {
+    id: 'advanced_construction',
+    label: 'Advanced Construction',
+    desc: 'Enables siege workshops and university buildings.',
+    researchCost: 60,
+    prerequisites: ['masonry_1', 'forestry_1'],
+    unlocksBuildings: ['siege_workshop', 'university'],
+    unlocksUnits: [],
+  },
+  military_tactics_1: {
+    id: 'military_tactics_1',
+    label: 'Military Tactics',
+    desc: 'Enables barracks and basic troop recruitment.',
+    researchCost: 0,
+    prerequisites: [],
+    unlocksBuildings: ['barracks'],
+    unlocksUnits: ['infantry', 'ranged', 'builder'],
+  },
+  military_tactics_2: {
+    id: 'military_tactics_2',
+    label: 'Advanced Tactics',
+    desc: 'L2 barracks and cavalry. Enables the academy.',
+    researchCost: 40,
+    prerequisites: ['military_tactics_1'],
+    unlocksBuildings: ['academy'],
+    unlocksUnits: ['cavalry', 'horse_archer'],
+    raisesMaxLevel: [{ building: 'barracks', maxLevel: 2 }],
+  },
+  siege_engineering: {
+    id: 'siege_engineering',
+    label: 'Siege Engineering',
+    desc: 'Enables trebuchets and battering rams.',
+    researchCost: 55,
+    prerequisites: ['military_tactics_2', 'advanced_construction'],
+    unlocksBuildings: [],
+    unlocksUnits: ['trebuchet', 'battering_ram'],
+  },
+  naval_technology: {
+    id: 'naval_technology',
+    label: 'Naval Technology',
+    desc: 'Enables ports, shipyards, and basic ships.',
+    researchCost: 35,
+    prerequisites: ['forestry_1'],
+    unlocksBuildings: ['port', 'shipyard', 'fishery'],
+    unlocksUnits: ['scout_ship', 'transport_ship', 'fisher_transport'],
+  },
+  advanced_naval: {
+    id: 'advanced_naval',
+    label: 'Advanced Naval',
+    desc: 'Warships and capital ships.',
+    researchCost: 70,
+    prerequisites: ['naval_technology', 'iron_working'],
+    unlocksBuildings: [],
+    unlocksUnits: ['warship', 'capital_ship'],
+  },
+  economics_1: {
+    id: 'economics_1',
+    label: 'Economics',
+    desc: 'Enables markets and social halls.',
+    researchCost: 0,
+    prerequisites: [],
+    unlocksBuildings: ['market', 'social_bar'],
+    unlocksUnits: [],
+  },
+  economics_2: {
+    id: 'economics_2',
+    label: 'Advanced Economics',
+    desc: 'Improved trade and market efficiency.',
+    researchCost: 50,
+    prerequisites: ['economics_1'],
+    unlocksBuildings: [],
+    unlocksUnits: [],
+  },
+  gunpowder: {
+    id: 'gunpowder',
+    label: 'Gunpowder',
+    desc: 'L3 barracks — defenders and crusader knights.',
+    researchCost: 80,
+    prerequisites: ['iron_working', 'military_tactics_2'],
+    unlocksBuildings: [],
+    unlocksUnits: ['defender', 'crusader_knight'],
+    raisesMaxLevel: [{ building: 'barracks', maxLevel: 3 }],
+  },
+  advanced_metallurgy: {
+    id: 'advanced_metallurgy',
+    label: 'Advanced Metallurgy',
+    desc: 'L3 factory — high-grade arms.',
+    researchCost: 90,
+    prerequisites: ['iron_working', 'gunpowder'],
+    unlocksBuildings: [],
+    unlocksUnits: [],
+    raisesMaxLevel: [{ building: 'factory', maxLevel: 3 }],
+  },
+};
+
+export const TECH_IDS = Object.keys(TECH_TREE) as TechId[];
+
+/** Techs that are free at game start (researchCost === 0). */
+export const STARTING_TECHS: TechId[] = TECH_IDS.filter(id => TECH_TREE[id].researchCost === 0);
+
+/** Check if a building is unlocked given researched techs. */
+export function isBuildingUnlockedByTech(building: BuildingType, researchedTechs: TechId[]): boolean {
+  const set = new Set(researchedTechs);
+  for (const tech of TECH_IDS) {
+    if (TECH_TREE[tech].unlocksBuildings.includes(building) && !set.has(tech)) return false;
+  }
+  const anyUnlocks = TECH_IDS.some(t => TECH_TREE[t].unlocksBuildings.includes(building));
+  if (!anyUnlocks) return true;
+  return TECH_IDS.some(t => TECH_TREE[t].unlocksBuildings.includes(building) && set.has(t));
+}
+
+/** Max building level allowed by researched techs. */
+export function maxBuildingLevelByTech(building: BuildingType, researchedTechs: TechId[]): number {
+  const set = new Set(researchedTechs);
+  let maxLevel = 1;
+  for (const tech of TECH_IDS) {
+    if (!set.has(tech)) continue;
+    const raises = TECH_TREE[tech].raisesMaxLevel;
+    if (!raises) continue;
+    for (const r of raises) {
+      if (r.building === building && r.maxLevel > maxLevel) maxLevel = r.maxLevel;
+    }
+  }
+  return maxLevel;
+}
+
+/** Check if a unit type is unlocked given researched techs. */
+export function isUnitUnlockedByTech(unit: UnitType, researchedTechs: TechId[]): boolean {
+  const set = new Set(researchedTechs);
+  const anyUnlocks = TECH_IDS.some(t => TECH_TREE[t].unlocksUnits.includes(unit));
+  if (!anyUnlocks) return true;
+  return TECH_IDS.some(t => TECH_TREE[t].unlocksUnits.includes(unit) && set.has(t));
+}
+
 // ─── Road construction (builder-built; free, takes builder time) ───
 
 export interface RoadConstructionSite {
@@ -962,7 +1346,7 @@ export const SCOUT_MISSION_DURATION_SEC = 30;
 
 export const BUILDING_BP_COST: Record<BuildingType, number> = {
   city_center: 0, farm: 75, banana_farm: 75, factory: 75, barracks: 150, academy: 110, siege_workshop: 130, market: 45, quarry: 75, mine: 75, gold_mine: 90,
-  sawmill: 70, port: 120, shipyard: 135, fishery: 75, logging_hut: 75, social_bar: SOCIAL_BAR_BP,
+  sawmill: 70, port: 120, shipyard: 135, fishery: 75, logging_hut: 75, social_bar: SOCIAL_BAR_BP, university: 160,
 };
 
 /** BP required for builder to build a trebuchet in the field (on the hex). */
@@ -1005,8 +1389,8 @@ export const MOVE_ORDER_TERRITORY_BAND_HEXES = 20;
 export const MOVE_ORDER_MAX_IN_TERRITORY_BAND = 20;
 export const MOVE_ORDER_MAX_OUTSIDE_BAND = 10;
 
-/** Rough max hexes a unit can move in one economy cycle (30s) at speed 1 after UNIT_MOVEMENT_DELAY_MULT (~1.7). Informational only. Supply radius should stay >= this. */
-export const MOVEMENT_HEXES_PER_CYCLE_ESTIMATE = 20;
+/** Rough max hexes a unit can move in one economy cycle (30s) at speed 1 after UNIT_MOVEMENT_DELAY_MULT (~3.5). Informational only. Supply radius should stay >= this. */
+export const MOVEMENT_HEXES_PER_CYCLE_ESTIMATE = 9;
 /** Units/builders get supply when within this hex distance of any friendly city. No roads required.
  *  >= MOVEMENT_HEXES_PER_CYCLE_ESTIMATE so one cycle of movement doesn't leave supply. */
 export const SUPPLY_VICINITY_RADIUS = 24;
@@ -1049,12 +1433,13 @@ export const BUILDING_COLORS: Record<BuildingType, string> = {
   fishery:     '#0d9488', // teal
   logging_hut: '#365314', // forest green
   social_bar: '#c084fc', // violet (gathering place)
+  university: '#6366f1', // indigo (knowledge)
 };
 
 export const BUILDING_COSTS: Record<BuildingType, number> = {
   city_center: 0, farm: 15, banana_farm: 15, factory: 25, barracks: 50, academy: 35, siege_workshop: 38, market: 2, quarry: 10, mine: 10, gold_mine: 20,
   sawmill: 20, port: 40, shipyard: 45, fishery: 18,   logging_hut: 12,
-  social_bar: SOCIAL_BAR_BUILD_GOLD,
+  social_bar: SOCIAL_BAR_BUILD_GOLD, university: 60,
 };
 
 /** Iron cost for buildings that require it (e.g. gold_mine). Others are 0. */
@@ -1066,7 +1451,7 @@ export const BUILDING_IRON_COSTS: Partial<Record<BuildingType, number>> = {
 export const BUILDING_JOBS: Record<BuildingType, number> = {
   city_center: 1, farm: 2, banana_farm: 2, factory: 2, barracks: 2, academy: 2, siege_workshop: 2, market: 2, quarry: 2, mine: 2, gold_mine: 2,
   sawmill: 2, port: 1, shipyard: 2, fishery: 2,   logging_hut: 2,
-  social_bar: 2,
+  social_bar: 2, university: 3,
 };
 
 /** Farms and Fishers banana farms share production rules. */
@@ -1125,6 +1510,7 @@ export const BUILDING_PRODUCTION: Record<BuildingType, BuildingProduction> = {
   fishery:     { food: 23, goods: 0, guns: 0 },
   logging_hut: { food: 0, goods: 0, guns: 0, wood: 2 },
   social_bar: { food: 0, goods: 0, guns: 0 },
+  university: { food: 0, goods: 0, guns: 0 },
 };
 
 // L2 factory: 1 iron -> 10 gunsL2 per cycle
@@ -1494,10 +1880,11 @@ export const GAME_DURATION_SEC = 35 * 60;   // 35 minutes
 export const CYCLE_INTERVAL_SEC = 30;        // economy cycle every 30s
 export const COMBAT_TICK_MS = 1000;           // combat resolution every 1s
 /**
- * Multiplier on time between hex steps (1 = legacy pace). Above 1 slows armies (better for multiplayer readability).
+ * Multiplier on time between hex steps (1 = legacy pace). Above 1 slows armies (better for readability).
  * Applied in movement tick: moveDelay = (1000 / effectiveSpeed) * this factor.
+ * Raised from 1.7 → 3.5 for slower, less overwhelming pacing.
  */
-export const UNIT_MOVEMENT_DELAY_MULT = 1.7;
+export const UNIT_MOVEMENT_DELAY_MULT = 3.5;
 /**
  * Multiplier on unit-vs-unit combat damage (melee same-hex, ranged/counter, hero vs unit).
  * Tuned with {@link COMBAT_KILL_XP} and hit/glance rolls so a typical same-hex fight (e.g. 5v5 L1 infantry)

@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import {
   SITE_AUTH_COOKIE,
+  getResolvedCookieSecret,
+  getResolvedSitePassword,
   isSiteAuthConfigured,
   signSiteAuthToken,
 } from '@/lib/siteAuth';
@@ -10,7 +12,7 @@ const COOKIE_MAX_AGE_SEC = 60 * 60 * 24 * 30; // 30 days
 export async function POST(request: NextRequest) {
   if (!isSiteAuthConfigured()) {
     return NextResponse.json(
-      { error: 'Site auth is not configured (set SITE_PASSWORD and COOKIE_SECRET).' },
+      { error: 'Site auth is not configured (set SITE_PASSWORD and COOKIE_SECRET in .env.local for local dev).' },
       { status: 503 },
     );
   }
@@ -27,12 +29,12 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Missing password' }, { status: 400 });
   }
 
-  const expected = process.env.SITE_PASSWORD!;
+  const expected = getResolvedSitePassword();
   if (password !== expected) {
     return NextResponse.json({ error: 'Invalid password' }, { status: 401 });
   }
 
-  const token = await signSiteAuthToken(process.env.COOKIE_SECRET!);
+  const token = await signSiteAuthToken(getResolvedCookieSecret());
   const secure = process.env.NODE_ENV === 'production';
 
   const res = NextResponse.json({ ok: true });

@@ -2,16 +2,18 @@
 
 The game is a standard **Next.js 14** app. All gameplay runs in the browser; hosting is “build + serve.”
 
-## 1. Environment variables (Vercel)
+## 1. Environment variables (Vercel) — optional
 
-In the Vercel project **Settings → Environment Variables**, add:
+**Production** uses built-in defaults for the password gate (see [`src/lib/siteAuth.ts`](../src/lib/siteAuth.ts)), so you do **not** need to set anything in Vercel for protection to work.
+
+To **change** the password or rotate the session signing key, add in **Settings → Environment Variables**:
 
 | Name | Value |
 |------|--------|
-| `SITE_PASSWORD` | Shared password you give to friends |
-| `COOKIE_SECRET` | Long random secret (e.g. `openssl rand -hex 32`) |
+| `SITE_PASSWORD` | Shared password shown on `/login` |
+| `COOKIE_SECRET` | Long random secret (e.g. `openssl rand -hex 32`); changing it logs everyone out |
 
-Both must be set for the password gate to activate. If either is missing, the site stays **open** (useful for preview branches without auth).
+**Local dev:** Unset = no gate. Set both in `.env.local` (see [`.env.example`](../.env.example)) to test `/login` locally.
 
 Copy [`.env.example`](../.env.example) to `.env.local` locally when testing the gate:
 

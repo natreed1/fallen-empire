@@ -14,7 +14,7 @@ Open [http://localhost:3010](http://localhost:3010) (see `package.json` `dev` sc
 
 ## Private hosting (password gate)
 
-To share the game on a **private** URL (e.g. Vercel), set `SITE_PASSWORD` and `COOKIE_SECRET` in the environment. See [`.env.example`](.env.example) and the full steps in [`docs/DEPLOY.md`](docs/DEPLOY.md). With both unset, the app stays open (normal local development).
+Production deploys use a **built-in site password** by default (see [`src/lib/siteAuth.ts`](src/lib/siteAuth.ts)). Override with `SITE_PASSWORD` / `COOKIE_SECRET` in Vercel or [`.env.local`](.env.example) if needed. Locally, leave those unset for an open dev server, or set both to test `/login`.
 
 ## Controls
 

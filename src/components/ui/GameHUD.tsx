@@ -6,7 +6,9 @@ import { useGameStore } from '@/store/useGameStore';
 import { countVillagesInPlayerTerritory, isUnitInSupplyVicinityOfPlayerCities } from '@/lib/empireEconomy';
 import { computeCityProductionRate, computeSawmillBuildingPreview } from '@/lib/gameLoop';
 import { getWeatherHarvestMultiplier } from '@/lib/weather';
-import { BUILDING_COSTS, BUILDING_PRODUCTION, BUILDING_BP_COST, BUILDING_JOBS, CITY_BUILDING_POWER, BUILDER_POWER, BP_RATE_BASE, TERRAIN_FOOD_YIELD, UNIT_COSTS, UNIT_L2_COSTS, UNIT_L3_COSTS, UNIT_BASE_STATS, UNIT_DISPLAY_NAMES, getUnitDisplayName, ARMS_TIER_LABELS, type RangedVariant, COMMANDER_TRAIT_INFO, COMMANDER_RECRUIT_GOLD, VILLAGE_INCORPORATE_COST, MARKET_GOLD_PER_CYCLE, MARKET_GOLD_PER_VILLAGE, POPULATION_TAX_GOLD_MULT, SCOUT_MISSION_COST, WEATHER_DISPLAY, BARACKS_UPGRADE_COST, BARACKS_L3_UPGRADE_COST, FACTORY_UPGRADE_COST, FARM_UPGRADE_COST, RESOURCE_MINE_UPGRADE_COST, FARM_L2_FOOD_PER_CYCLE, WALL_SECTION_STONE_COST, WALL_BUILDER_STONE_PER_CYCLE_PER_SLOT, WORKERS_PER_LEVEL, MIN_STAFFING_RATIO, TREBUCHET_FIELD_BP_COST, TREBUCHET_FIELD_GOLD_COST, TREBUCHET_REFINED_WOOD_COST, SAWMILL_WOOD_PER_REFINED, getBuildingJobs, getUnitStats, BuildingType, UnitType, ArmyStance, Biome, hexDistance, getHexRing, tileKey, POP_BIRTH_RATE, POP_NATURAL_DEATHS, POP_CARRYING_CAPACITY_PER_FOOD, POP_EXPECTED_K_ALPHA, STARVATION_DEATHS, SHIP_RECRUIT_COSTS, isNavalUnitType, getShipMaxCargo, hexTouchesBiome, AttackCityStyle, DefenseTowerType, DefenseTowerLevel, DEFENSE_TOWER_LEVEL_COSTS, DEFENSE_TOWER_MAX_PER_CITY, DEFENSE_TOWER_DISPLAY_NAME, City, CONTESTED_ZONE_GOLD_REWARD, CONTESTED_ZONE_IRON_REWARD, KingdomId, KINGDOM_IDS, KINGDOM_DISPLAY_NAMES, KINGDOM_SETUP_ICONS, SCROLL_DISPLAY_NAME, scrollItemDisplayName, SCROLL_RELIC_LORE, SCROLL_REGION_ITEM_NAME, SPECIAL_REGION_DISPLAY_NAME, SPECIAL_REGION_OVERLAY_COLORS, SCROLL_COMBAT_BONUS, SCROLL_DEFENSE_BONUS, SCROLL_MOVEMENT_BONUS, SCROLL_ARMY_SLOT_ORDER, SCROLL_SLOT_LABEL, MAP_SIZE_PRESETS, type MapSizePreset, type MapTerrainPreset, type ScrollKind, type SpecialRegionKind, type ScrollAttachment, type ScrollItem, type Commander, UNIVERSITY_UPGRADE_COSTS, BUILDER_TASK_LABELS, type BuilderTask, type ArmyMarchSpreadMode, DEFAULT_BUILDER_TASK, ABILITY_DEFS,   getAbilityForUnit, TERRITORY_RADIUS, GARRISON_PATROL_RADIUS_MIN, GARRISON_PATROL_RADIUS_MAX, defaultCityBuildingMaxHp, RUINS_REPAIR_GOLD_RATIO, isCityBuildingOperational, EMPTY_MAP_QUADRANTS, TRADE_MAP_QUADRANT_GOLD, TRADE_MAP_FULL_ATLAS_GOLD, TRADE_RESOURCE_PACK_GOLD, TRADE_MORALE_FESTIVAL_GOLD, TRADE_MORALE_FESTIVAL_DELTA, TRADE_ROYAL_SURVEY_GOLD, MAP_QUADRANT_LABELS, type MapQuadrantId, SOCIAL_BAR_BUILD_GOLD, SOCIAL_BAR_BP, SOCIAL_BAR_UPGRADE_COSTS, SOCIAL_BAR_BIRTH_MULT_PER_LEVEL, isFarmBuildingType, isValidFarmPlacementBiome } from '@/types/game';
+import { BUILDING_COSTS, BUILDING_PRODUCTION, BUILDING_BP_COST, BUILDING_JOBS, CITY_BUILDING_POWER, BUILDER_POWER, BP_RATE_BASE, TERRAIN_FOOD_YIELD, UNIT_COSTS, UNIT_L2_COSTS, UNIT_L3_COSTS, UNIT_BASE_STATS, UNIT_DISPLAY_NAMES, getUnitDisplayName, ARMS_TIER_LABELS, type RangedVariant, COMMANDER_TRAIT_INFO, COMMANDER_RECRUIT_GOLD, VILLAGE_INCORPORATE_COST, MARKET_GOLD_PER_CYCLE, MARKET_GOLD_PER_VILLAGE, POPULATION_TAX_GOLD_MULT, SCOUT_MISSION_COST, WEATHER_DISPLAY, BARACKS_UPGRADE_COST, BARACKS_L3_UPGRADE_COST, FACTORY_UPGRADE_COST, FARM_UPGRADE_COST, RESOURCE_MINE_UPGRADE_COST, FARM_L2_FOOD_PER_CYCLE, WALL_SECTION_STONE_COST, WALL_BUILDER_STONE_PER_CYCLE_PER_SLOT, WORKERS_PER_LEVEL, MIN_STAFFING_RATIO, TREBUCHET_FIELD_BP_COST, TREBUCHET_FIELD_GOLD_COST, TREBUCHET_REFINED_WOOD_COST, SAWMILL_WOOD_PER_REFINED, getBuildingJobs, getUnitStats, BuildingType, UnitType, ArmyStance, Biome, hexDistance, getHexRing, tileKey, POP_BIRTH_RATE, POP_NATURAL_DEATHS, POP_CARRYING_CAPACITY_PER_FOOD, POP_EXPECTED_K_ALPHA, STARVATION_DEATHS, SHIP_RECRUIT_COSTS, isNavalUnitType, getShipMaxCargo, hexTouchesBiome, AttackCityStyle, DefenseTowerType, DefenseTowerLevel, DEFENSE_TOWER_LEVEL_COSTS, DEFENSE_TOWER_MAX_PER_CITY, DEFENSE_TOWER_DISPLAY_NAME, City, CONTESTED_ZONE_GOLD_REWARD, CONTESTED_ZONE_IRON_REWARD, KingdomId, KINGDOM_IDS, KINGDOM_DISPLAY_NAMES, KINGDOM_SETUP_ICONS, SCROLL_DISPLAY_NAME, scrollItemDisplayName, SCROLL_RELIC_LORE, SCROLL_REGION_ITEM_NAME, SPECIAL_REGION_DISPLAY_NAME, SPECIAL_REGION_OVERLAY_COLORS, SCROLL_COMBAT_BONUS, SCROLL_DEFENSE_BONUS, SCROLL_MOVEMENT_BONUS, SCROLL_ARMY_SLOT_ORDER, SCROLL_SLOT_LABEL, MAP_SIZE_PRESETS, type MapSizePreset, type MapTerrainPreset, type ScrollKind, type SpecialRegionKind, type ScrollAttachment, type ScrollItem, type Commander, UNIVERSITY_UPGRADE_COSTS, BUILDER_TASK_LABELS, type BuilderTask, type ArmyMarchSpreadMode, DEFAULT_BUILDER_TASK, ABILITY_DEFS,   getAbilityForUnit, TERRITORY_RADIUS, GARRISON_PATROL_RADIUS_MIN, GARRISON_PATROL_RADIUS_MAX, defaultCityBuildingMaxHp, RUINS_REPAIR_GOLD_RATIO, isCityBuildingOperational, EMPTY_MAP_QUADRANTS, TRADE_MAP_QUADRANT_GOLD, TRADE_MAP_FULL_ATLAS_GOLD, TRADE_RESOURCE_PACK_GOLD, TRADE_MORALE_FESTIVAL_GOLD, TRADE_MORALE_FESTIVAL_DELTA, TRADE_ROYAL_SURVEY_GOLD, MAP_QUADRANT_LABELS, type MapQuadrantId, SOCIAL_BAR_BUILD_GOLD, SOCIAL_BAR_BP, SOCIAL_BAR_UPGRADE_COSTS, SOCIAL_BAR_BIRTH_MULT_PER_LEVEL, isFarmBuildingType, isValidFarmPlacementBiome, type CouncilPostId, COUNCIL_POST_INFO, COUNCIL_POST_IDS, POLITICIAN_TRAIT_INFO, type PoliticianTraitId, type Politician, type TechId, TECH_TREE, TECH_IDS, STARTING_TECHS, EDUCATION_UPGRADE_COSTS, UNIVERSITY_BUILDING_UPGRADE_COSTS, UNIVERSITY_SPECIALIZATION_INFO, type UniversitySpecialization } from '@/types/game';
+import { getAvailableTechs } from '@/lib/researchTick';
+import { computeCouncilBoosts, isAssignedToCouncil, getCouncilAppointment } from '@/lib/nationalCouncil';
 import {
   battleClusterContainingHex,
   clusterHumanBattleEngagements,
@@ -535,7 +537,445 @@ function PlayingHUD() {
       <ScrollSearchPromptModal />
       <SpecialRegionSearchGuideModal />
       <ScrollRelicPickupModal />
+      <CivilianPanel />
     </>
+  );
+}
+
+// ─── Civilian Panel (National Council + Education + Research) ──────
+
+function CivilianPanel() {
+  const open = useGameStore(s => s.civilianPanelOpen);
+  const tab = useGameStore(s => s.civilianPanelTab);
+  const close = useGameStore(s => s.closeCivilianPanel);
+  const setTab = useGameStore(s => s.setCivilianPanelTab);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { close(); e.preventDefault(); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open, close]);
+
+  if (!open) return null;
+
+  return (
+    <div
+      className="fixed inset-0 z-[90] flex items-center justify-center bg-black/60 pointer-events-auto"
+      onClick={close}
+    >
+      <div
+        className="bg-empire-dark/95 border border-indigo-500/40 rounded-xl shadow-2xl w-[min(44rem,calc(100vw-2rem))] max-h-[85vh] overflow-hidden flex flex-col"
+        onClick={e => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-3 border-b border-indigo-500/20">
+          <h2 className="text-indigo-200 font-bold text-base tracking-wide">National Civilian Affairs</h2>
+          <button type="button" onClick={close} className="text-empire-parchment/40 hover:text-empire-parchment/70 text-lg">&times;</button>
+        </div>
+
+        {/* Tabs */}
+        <div className="flex border-b border-indigo-500/15 px-5 pt-2 gap-1">
+          {(['council', 'education', 'research'] as const).map(t => (
+            <button
+              key={t}
+              type="button"
+              onClick={() => setTab(t)}
+              className={`px-3 py-1.5 text-xs font-semibold uppercase tracking-wide rounded-t transition-colors ${
+                tab === t
+                  ? 'bg-indigo-500/20 text-indigo-200 border-b-2 border-indigo-400'
+                  : 'text-empire-parchment/50 hover:text-empire-parchment/75'
+              }`}
+            >
+              {t === 'council' ? 'Council' : t === 'education' ? 'Education' : 'Research'}
+            </button>
+          ))}
+        </div>
+
+        {/* Tab Content */}
+        <div className="flex-1 overflow-y-auto px-5 py-4 min-h-[20rem]">
+          {tab === 'council' && <CouncilTab />}
+          {tab === 'education' && <EducationTab />}
+          {tab === 'research' && <ResearchTab />}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CouncilTab() {
+  const players = useGameStore(s => s.players);
+  const commanders = useGameStore(s => s.commanders);
+  const politicians = useGameStore(s => s.politicians);
+  const assignToPost = useGameStore(s => s.assignToCouncilPost);
+  const removePost = useGameStore(s => s.removeFromCouncilPost);
+
+  const human = players.find(p => p.isHuman);
+  if (!human) return null;
+
+  const council = human.nationalCouncil;
+  const myCommanders = commanders.filter(c => c.ownerId === human.id);
+  const myPoliticians = politicians.filter(p => p.ownerId === human.id);
+  const boosts = computeCouncilBoosts(council, commanders, politicians);
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-indigo-950/30 rounded-lg p-3 border border-indigo-500/15">
+        <h3 className="text-indigo-200 font-bold text-xs uppercase tracking-wide mb-2">Council Bonuses</h3>
+        <div className="grid grid-cols-5 gap-2 text-[11px]">
+          {[
+            { label: 'Gold', val: boosts.goldMult, color: 'text-yellow-300' },
+            { label: 'Production', val: boosts.productionMult, color: 'text-green-300' },
+            { label: 'Research', val: boosts.researchMult, color: 'text-cyan-300' },
+            { label: 'Attack', val: boosts.attackMult, color: 'text-red-300' },
+            { label: 'Defense', val: boosts.defenseMult, color: 'text-blue-300' },
+          ].map(b => (
+            <div key={b.label} className="text-center">
+              <span className={`${b.color} font-bold`}>{b.val === 1 ? '—' : `×${b.val.toFixed(2)}`}</span>
+              <div className="text-empire-parchment/40">{b.label}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        {COUNCIL_POST_IDS.map(postId => {
+          const info = COUNCIL_POST_INFO[postId];
+          const appt = getCouncilAppointment(council, postId);
+          const assigned = appt
+            ? appt.assigneeKind === 'commander'
+              ? myCommanders.find(c => c.id === appt.assigneeId)
+              : myPoliticians.find(p => p.id === appt.assigneeId)
+            : null;
+
+          return (
+            <div key={postId} className="bg-empire-dark/60 rounded-lg p-3 border border-empire-stone/20">
+              <div className="flex items-center justify-between mb-2">
+                <h4 className="text-empire-gold font-bold text-xs uppercase">{info.label}</h4>
+                {assigned && (
+                  <button
+                    type="button"
+                    onClick={() => removePost(postId)}
+                    className="text-[10px] text-red-400/60 hover:text-red-400"
+                  >
+                    Remove
+                  </button>
+                )}
+              </div>
+              <p className="text-[10px] text-empire-parchment/45 mb-2 leading-snug">{info.desc}</p>
+
+              {assigned ? (
+                <div className="bg-indigo-950/30 rounded p-2 border border-indigo-500/15">
+                  <span className="text-indigo-200 text-xs font-semibold">{assigned.name}</span>
+                  <span className="text-[10px] text-empire-parchment/40 ml-1.5">
+                    ({appt!.assigneeKind === 'commander' ? 'Commander' : 'Politician'})
+                  </span>
+                  <div className="flex flex-wrap gap-1 mt-1">
+                    {appt!.assigneeKind === 'commander'
+                      ? (assigned as Commander).traitIds.map(tid => (
+                          <span key={tid} className="text-[9px] bg-red-900/30 text-red-300/80 px-1.5 py-0.5 rounded">
+                            {COMMANDER_TRAIT_INFO[tid]?.label}
+                          </span>
+                        ))
+                      : (assigned as Politician).traitIds.map(tid => (
+                          <span key={tid} className="text-[9px] bg-indigo-900/30 text-indigo-300/80 px-1.5 py-0.5 rounded">
+                            {POLITICIAN_TRAIT_INFO[tid]?.label}
+                          </span>
+                        ))}
+                  </div>
+                </div>
+              ) : (
+                <CouncilPostPicker
+                  postId={postId}
+                  commanders={myCommanders}
+                  politicians={myPoliticians}
+                  council={council}
+                  onAssign={assignToPost}
+                />
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {myPoliticians.length === 0 && myCommanders.length === 0 && (
+        <p className="text-[11px] text-empire-parchment/40 text-center py-2">
+          No commanders or politicians available. Build a University in a city to generate graduates.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function CouncilPostPicker({
+  postId,
+  commanders,
+  politicians,
+  council,
+  onAssign,
+}: {
+  postId: CouncilPostId;
+  commanders: Commander[];
+  politicians: Politician[];
+  council: import('@/types/game').NationalCouncil | undefined;
+  onAssign: (postId: CouncilPostId, assigneeId: string, kind: 'commander' | 'politician') => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const available = [
+    ...commanders
+      .filter(c => !isAssignedToCouncil(council, c.id))
+      .map(c => ({ id: c.id, name: c.name, kind: 'commander' as const, traits: c.traitIds })),
+    ...politicians
+      .filter(p => !isAssignedToCouncil(council, p.id))
+      .map(p => ({ id: p.id, name: p.name, kind: 'politician' as const, traits: p.traitIds })),
+  ];
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="w-full text-[10px] text-indigo-400/70 hover:text-indigo-300 border border-dashed border-indigo-500/25 rounded py-2 hover:border-indigo-500/50 transition-colors"
+      >
+        + Assign
+      </button>
+    );
+  }
+
+  if (available.length === 0) {
+    return (
+      <div className="text-[10px] text-empire-parchment/40 py-1">
+        No available candidates.
+        <button type="button" onClick={() => setOpen(false)} className="ml-2 text-indigo-400/60 hover:text-indigo-400 underline">Close</button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-1 max-h-28 overflow-y-auto">
+      {available.map(a => (
+        <button
+          key={a.id}
+          type="button"
+          onClick={() => { onAssign(postId, a.id, a.kind); setOpen(false); }}
+          className="w-full text-left flex items-center gap-2 px-2 py-1.5 rounded text-[10px] border border-transparent hover:border-indigo-500/30 hover:bg-indigo-950/30 transition-colors"
+        >
+          <span className={`font-semibold ${a.kind === 'commander' ? 'text-red-300' : 'text-indigo-300'}`}>
+            {a.name}
+          </span>
+          <span className="text-empire-parchment/35">
+            {a.kind === 'commander' ? 'Cmdr' : 'Pol'}
+          </span>
+        </button>
+      ))}
+      <button type="button" onClick={() => setOpen(false)} className="text-[10px] text-empire-parchment/40 hover:text-empire-parchment/60 w-full text-center py-0.5">
+        Cancel
+      </button>
+    </div>
+  );
+}
+
+function EducationTab() {
+  const players = useGameStore(s => s.players);
+  const cities = useGameStore(s => s.cities);
+  const upgradeEducation = useGameStore(s => s.upgradeEducation);
+
+  const human = players.find(p => p.isHuman);
+  if (!human) return null;
+
+  const edu = human.education ?? { level: 1, literacy: 0 };
+  const canUpgrade = edu.level < 5;
+  const costIdx = edu.level - 1;
+  const upgradeCost = canUpgrade && costIdx >= 0 && costIdx < EDUCATION_UPGRADE_COSTS.length
+    ? EDUCATION_UPGRADE_COSTS[costIdx]
+    : null;
+  const canAfford = upgradeCost !== null && human.gold >= upgradeCost;
+
+  const universityCount = cities
+    .filter(c => c.ownerId === human.id)
+    .reduce((acc, c) => acc + c.buildings.filter(b => b.type === 'university').length, 0);
+
+  const totalUniLevel = cities
+    .filter(c => c.ownerId === human.id)
+    .reduce((acc, c) => acc + c.buildings.filter(b => b.type === 'university').reduce((s, b) => s + (b.level ?? 1), 0), 0);
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-indigo-950/30 rounded-lg p-4 border border-indigo-500/15">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-indigo-200 font-bold text-sm">National Education</h3>
+          <span className="text-empire-gold font-bold text-sm">Level {edu.level}</span>
+        </div>
+
+        <div className="mb-3">
+          <div className="flex items-center justify-between text-[11px] mb-1">
+            <span className="text-empire-parchment/60">Literacy</span>
+            <span className="text-cyan-300 font-semibold">{edu.literacy.toFixed(1)} / 100</span>
+          </div>
+          <div className="w-full h-2.5 bg-empire-stone/20 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-gradient-to-r from-indigo-600 to-cyan-400 rounded-full transition-all duration-500"
+              style={{ width: `${Math.min(100, edu.literacy)}%` }}
+            />
+          </div>
+          <p className="text-[10px] text-empire-parchment/40 mt-1">
+            Literacy drives technology research speed. Universities and education level increase literacy each cycle.
+          </p>
+        </div>
+
+        {canUpgrade && upgradeCost !== null && (
+          <button
+            type="button"
+            onClick={upgradeEducation}
+            disabled={!canAfford}
+            className={`w-full px-3 py-2 text-xs font-semibold rounded border transition-colors ${
+              canAfford
+                ? 'border-empire-gold/50 text-empire-gold hover:bg-empire-gold/10'
+                : 'border-empire-stone/20 text-empire-parchment/30 cursor-not-allowed'
+            }`}
+          >
+            Upgrade Education to L{edu.level + 1} — {upgradeCost}g
+          </button>
+        )}
+        {edu.level >= 5 && (
+          <div className="text-[11px] text-green-400/80 text-center py-1">Education at maximum level.</div>
+        )}
+      </div>
+
+      <div className="bg-empire-dark/60 rounded-lg p-3 border border-empire-stone/15">
+        <h4 className="text-empire-parchment/70 font-bold text-xs uppercase mb-2">Universities</h4>
+        {universityCount === 0 ? (
+          <p className="text-[11px] text-empire-parchment/40">
+            No universities built yet. Build one in a city to boost education and generate commanders & politicians.
+          </p>
+        ) : (
+          <div className="text-[11px] text-empire-parchment/60">
+            <span className="text-indigo-300 font-semibold">{universityCount}</span> universit{universityCount === 1 ? 'y' : 'ies'} across your empire
+            (total levels: {totalUniLevel}).
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ResearchTab() {
+  const players = useGameStore(s => s.players);
+  const startResearch = useGameStore(s => s.startResearch);
+  const cancelResearch = useGameStore(s => s.cancelResearch);
+
+  const human = players.find(p => p.isHuman);
+  if (!human) return null;
+
+  const researched = new Set(human.researchedTechs ?? STARTING_TECHS);
+  const activeResearch = human.activeResearch ?? null;
+  const progress = human.researchProgress ?? 0;
+  const available = getAvailableTechs(human);
+  const activeDef = activeResearch ? TECH_TREE[activeResearch] : null;
+
+  return (
+    <div className="space-y-4">
+      {/* Active Research */}
+      {activeDef && activeResearch && (
+        <div className="bg-indigo-950/30 rounded-lg p-4 border border-indigo-500/15">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-indigo-200 font-bold text-sm">Researching: {activeDef.label}</h3>
+            <button
+              type="button"
+              onClick={cancelResearch}
+              className="text-[10px] text-red-400/60 hover:text-red-400"
+            >
+              Cancel
+            </button>
+          </div>
+          <p className="text-[10px] text-empire-parchment/50 mb-2">{activeDef.desc}</p>
+          <div className="flex items-center justify-between text-[11px] mb-1">
+            <span className="text-empire-parchment/60">Progress</span>
+            <span className="text-cyan-300 font-semibold">{progress.toFixed(1)} / {activeDef.researchCost}</span>
+          </div>
+          <div className="w-full h-2.5 bg-empire-stone/20 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-gradient-to-r from-indigo-600 to-cyan-400 rounded-full transition-all duration-500"
+              style={{ width: `${activeDef.researchCost > 0 ? Math.min(100, (progress / activeDef.researchCost) * 100) : 100}%` }}
+            />
+          </div>
+        </div>
+      )}
+
+      {!activeResearch && (
+        <div className="bg-indigo-950/20 rounded-lg p-3 border border-indigo-500/10 text-center">
+          <p className="text-[11px] text-empire-parchment/50">No active research. Select a technology below to begin.</p>
+        </div>
+      )}
+
+      {/* Tech Tree */}
+      <div>
+        <h3 className="text-indigo-200 font-bold text-xs uppercase tracking-wide mb-2">Technology Tree</h3>
+        <div className="grid grid-cols-2 gap-2">
+          {TECH_IDS.map(techId => {
+            const def = TECH_TREE[techId];
+            const isResearched = researched.has(techId);
+            const isAvailable = available.includes(techId);
+            const isActive = activeResearch === techId;
+            const prereqsMet = def.prerequisites.every(p => researched.has(p));
+            const isFree = def.researchCost === 0;
+
+            return (
+              <div
+                key={techId}
+                className={`rounded-lg p-2.5 border transition-colors ${
+                  isResearched
+                    ? 'bg-green-950/20 border-green-500/25'
+                    : isActive
+                      ? 'bg-indigo-950/40 border-indigo-400/50'
+                      : isAvailable
+                        ? 'bg-empire-dark/60 border-empire-stone/25 hover:border-indigo-500/35 cursor-pointer'
+                        : 'bg-empire-dark/30 border-empire-stone/10 opacity-50'
+                }`}
+                onClick={() => {
+                  if (isAvailable && !isResearched && !activeResearch) startResearch(techId);
+                }}
+              >
+                <div className="flex items-center justify-between mb-1">
+                  <span className={`text-xs font-bold ${isResearched ? 'text-green-300' : isActive ? 'text-indigo-300' : 'text-empire-parchment/70'}`}>
+                    {def.label}
+                  </span>
+                  {isResearched && <span className="text-[9px] text-green-400/80 font-bold uppercase">Done</span>}
+                  {isActive && <span className="text-[9px] text-indigo-400/80 font-bold uppercase">Active</span>}
+                  {isFree && !isResearched && <span className="text-[9px] text-empire-gold/60 font-bold uppercase">Free</span>}
+                </div>
+                <p className="text-[10px] text-empire-parchment/45 leading-snug">{def.desc}</p>
+                {!isFree && !isResearched && (
+                  <div className="text-[9px] text-empire-parchment/35 mt-1">Cost: {def.researchCost} RP</div>
+                )}
+                {def.prerequisites.length > 0 && !isResearched && (
+                  <div className="flex flex-wrap gap-1 mt-1">
+                    {def.prerequisites.map(p => (
+                      <span
+                        key={p}
+                        className={`text-[8px] px-1 py-0.5 rounded ${
+                          researched.has(p) ? 'bg-green-900/30 text-green-400/70' : 'bg-red-900/20 text-red-400/60'
+                        }`}
+                      >
+                        {TECH_TREE[p]?.label ?? p}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {(def.unlocksBuildings.length > 0 || def.unlocksUnits.length > 0) && (
+                  <div className="text-[9px] text-empire-parchment/30 mt-1">
+                    {def.unlocksBuildings.length > 0 && `Buildings: ${def.unlocksBuildings.join(', ')}`}
+                    {def.unlocksUnits.length > 0 && ` Units: ${def.unlocksUnits.map(u => UNIT_DISPLAY_NAMES[u] ?? u).join(', ')}`}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -2327,6 +2767,13 @@ function TopBar() {
               className="text-[10px] uppercase text-violet-200/95 hover:text-violet-100 border border-violet-500/40 hover:border-violet-400/55 px-2 py-1 rounded transition-colors"
             >
               Trade
+            </button>
+            <button
+              type="button"
+              onClick={() => useGameStore.getState().openCivilianPanel()}
+              className="text-[10px] uppercase text-indigo-300/90 hover:text-indigo-200 border border-indigo-400/40 hover:border-indigo-400/60 px-2 py-1 rounded transition-colors"
+            >
+              Civilian
             </button>
             <button
               type="button"

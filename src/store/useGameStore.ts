@@ -70,6 +70,17 @@ import {
   PATROL_DEFAULT_RADIUS,
   RUINS_REPAIR_GOLD_RATIO,
   defaultCityBuildingMaxHp,
+  type Politician,
+  type CouncilPostId,
+  type TechId,
+  type UniversitySpecialization,
+  STARTING_TECHS,
+  TECH_TREE,
+  EDUCATION_UPGRADE_COSTS,
+  UNIVERSITY_BUILDING_UPGRADE_COSTS,
+  emptyNationalCouncil,
+  isBuildingUnlockedByTech,
+  maxBuildingLevelByTech,
 } from '@/types/game';
 import { renderCommanderPortraitDataUrl } from '@/lib/commanderPortrait';
 import {
@@ -153,6 +164,14 @@ import {
 import { getNextWallBuildHex, countDefensesTaskSlots } from '@/lib/wallBuilding';
 import { clusterHumanBattleEngagements } from '@/lib/battlePreview';
 import { planHumanBuilderAutomation } from '@/lib/builderAutomation';
+import { processResearchTick, canResearchTech } from '@/lib/researchTick';
+import {
+  assignToCouncilPost as assignToCouncilPostFn,
+  removeFromCouncil,
+  rollUniversityGraduate,
+  rollPoliticianIdentity,
+  createPoliticianRecord,
+} from '@/lib/nationalCouncil';
 import type { SiegeTacticId } from '@/lib/siegeTactics';
 import {
   buildWaveGroupsFromTactic,
@@ -190,6 +209,8 @@ interface GameState {
   heroes: Hero[];
   /** Named commanders: assign to city defense or a field army (anchor unit). */
   commanders: Commander[];
+  /** Named politicians: assign to national council posts for economic boosts. */
+  politicians: import('@/types/game').Politician[];
   /** Unit stacks (training templates + auto-replenish + rally). */
   unitStacks: UnitStack[];
   /** Player-created armies only (units use `armyId`; not auto-listed from map stacks). */
@@ -575,6 +596,28 @@ interface GameState {
   assignScrollToArmy: (scrollItemId: string, armyId: string) => void;
   /** Return a unit's scroll to inventory. */
   unassignScrollFromUnit: (unitId: string) => void;
+
+  // Civilian panel
+  civilianPanelOpen: boolean;
+  civilianPanelTab: 'council' | 'education' | 'research';
+  openCivilianPanel: (tab?: 'council' | 'education' | 'research') => void;
+  closeCivilianPanel: () => void;
+  setCivilianPanelTab: (tab: 'council' | 'education' | 'research') => void;
+
+  // National Council
+  assignToCouncilPost: (postId: import('@/types/game').CouncilPostId, assigneeId: string, assigneeKind: 'commander' | 'politician') => void;
+  removeFromCouncilPost: (postId: import('@/types/game').CouncilPostId) => void;
+
+  // Education
+  upgradeEducation: () => void;
+
+  // Research
+  startResearch: (techId: import('@/types/game').TechId) => void;
+  cancelResearch: () => void;
+
+  // University building specialization
+  setUniversitySpecialization: (cityId: string, buildingQ: number, buildingR: number, spec: import('@/types/game').UniversitySpecialization) => void;
+  upgradeUniversityBuilding: (cityId: string, buildingQ: number, buildingR: number) => void;
 
   // Notifications
   addNotification: (message: string, type: GameNotification['type']) => void;
@@ -1129,7 +1172,7 @@ function canLandStackEmbarkFriendlyScoutAt(
 
 export const useGameStore = create<GameState>((set, get) => ({
   tiles: new Map(), config: DEFAULT_MAP_CONFIG, provinceCenters: [], isGenerated: false,
-  phase: 'setup', cycle: 0, gameMode: 'human_vs_ai', players: [], cities: [], units: [], heroes: [], commanders: [], unitStacks: [], operationalArmies: [],
+  phase: 'setup', cycle: 0, gameMode: 'human_vs_ai', players: [], cities: [], units: [], heroes: [], commanders: [], politicians: [], unitStacks: [], operationalArmies: [],
   tacticalCityDefenseMode: 'auto_engage',
   commanderDraftOptions: [], commanderDraftSelectedIds: [], commanderDraftAssignment: {},
   constructions: [], roadConstructions: [], scoutTowers: [], defenseInstallations: [], contestedZoneHexKeys: [],
@@ -1208,6 +1251,13 @@ export const useGameStore = create<GameState>((set, get) => ({
   tacticalPatrolPaintHexKeys: [],
   unitBoxSelectRect: null,
   setUnitBoxSelectRect: (r) => set({ unitBoxSelectRect: r }),
+
+  // Civilian panel
+  civilianPanelOpen: false,
+  civilianPanelTab: 'council' as const,
+  openCivilianPanel: (tab) => set({ civilianPanelOpen: true, civilianPanelTab: tab ?? 'council' }),
+  closeCivilianPanel: () => set({ civilianPanelOpen: false }),
+  setCivilianPanelTab: (tab) => set({ civilianPanelTab: tab }),
 
   // ─── Map ────────────────────────────────────────────────────
   generateWorld: (ov) => {
@@ -3426,11 +3476,75 @@ export const useGameStore = create<GameState>((set, get) => ({
       return c;
     });
 
+    // ── Research & Education Tick ──
+    let politiciansMut = s.politicians ? [...s.politicians] : [];
+    for (const p of playersForSet) {
+      const result = processResearchTick(p, citiesWallStone, flushCommanders, politiciansMut);
+      if (result.completedTech) {
+        const techLabel = TECH_TREE[result.completedTech]?.label ?? result.completedTech;
+        notifs.push({
+          id: generateId('n'),
+          turn: newCycle,
+          message: `Research complete: ${techLabel}!`,
+          type: 'success',
+        });
+      }
+      // University graduate rolls
+      for (const city of citiesWallStone.filter(c => c.ownerId === p.id)) {
+        for (const bldg of city.buildings) {
+          if (bldg.type !== 'university') continue;
+          const grad = rollUniversityGraduate(bldg, newCycle * 1000 + city.q * 100 + city.r);
+          if (grad.kind === 'politician') {
+            const identity = rollPoliticianIdentity(grad.seed);
+            const pol = createPoliticianRecord(p.id, identity);
+            politiciansMut = [...politiciansMut, pol];
+            if (p.id === HUMAN_ID) {
+              notifs.push({
+                id: generateId('n'),
+                turn: newCycle,
+                message: `Politician ${pol.name} graduated from ${city.name}'s university.`,
+                type: 'success',
+              });
+            }
+          } else if (grad.kind === 'commander') {
+            const rolled = rollCommanderIdentity(grad.seed);
+            const portraitDataUrl = renderCommanderPortraitDataUrl(rolled.portraitSeed);
+            flushCommanders = [
+              ...flushCommanders,
+              {
+                id: generateId('cmd'),
+                name: rolled.name,
+                ownerId: p.id,
+                q: city.q,
+                r: city.r,
+                portraitSeed: rolled.portraitSeed,
+                portraitDataUrl,
+                traitIds: rolled.traitIds,
+                backstory: rolled.backstory,
+                assignment: null,
+                commanderKind: rolled.commanderKind,
+              },
+            ];
+            if (p.id === HUMAN_ID) {
+              const kindLabel = rolled.commanderKind === 'naval' ? 'Naval commander' : 'Commander';
+              notifs.push({
+                id: generateId('n'),
+                turn: newCycle,
+                message: `${kindLabel} ${rolled.name} graduated from ${city.name}'s university.`,
+                type: 'success',
+              });
+            }
+          }
+        }
+      }
+    }
+
     set({
       cities: citiesWallStone,
       units: aliveUnits,
       heroes: flushHeroes,
       commanders: flushCommanders,
+      politicians: politiciansMut,
       unitStacks: unitStacksMut,
       players: playersForSet,
       territory,
@@ -3839,6 +3953,12 @@ export const useGameStore = create<GameState>((set, get) => ({
     if (!player) return;
     if (player.gold < BUILDING_COSTS[type]) { get().addNotification('Not enough gold!', 'warning'); return; }
 
+    const playerTechs = player.researchedTechs ?? STARTING_TECHS;
+    if (!isBuildingUnlockedByTech(type, playerTechs)) {
+      get().addNotification(`Technology required to build ${type.replace(/_/g, ' ')}.`, 'warning');
+      return;
+    }
+
     const tile = s.tiles.get(tileKey(q, r));
     if (!tile || tile.biome === 'water') return;
     if (isFarmBuildingType(type) && !isValidFarmPlacementBiome(tile.biome)) {
@@ -4175,6 +4295,10 @@ export const useGameStore = create<GameState>((set, get) => ({
     const building = city.buildings.find(b => b.type === 'barracks' && b.q === buildingQ && b.r === buildingR);
     if (!building) return;
     const lvl = building.level ?? 1;
+    const techMaxLevel = maxBuildingLevelByTech('barracks', player.researchedTechs ?? STARTING_TECHS);
+    if (lvl >= techMaxLevel) {
+      get().addNotification(lvl >= 3 ? 'Barracks is at max level (L3).' : 'Research required to upgrade further.', 'info'); return;
+    }
     if (lvl >= 3) {
       get().addNotification('Barracks is at max level (L3).', 'info'); return;
     }
@@ -7640,6 +7764,151 @@ export const useGameStore = create<GameState>((set, get) => ({
     return computeEmpireIncomeStatement(s.cities, s.units, s.tiles, s.territory, s.heroes, HUMAN_ID, harvestMult);
   },
   getClusterIncomeStatement: (_clusterKey) => get().getEmpireIncomeStatement(),
+
+  // ─── National Council ────────────────────────────────────
+  assignToCouncilPost: (postId, assigneeId, assigneeKind) => {
+    const s = get();
+    const human = s.players.find(p => p.id === HUMAN_ID);
+    if (!human) return;
+    const council = human.nationalCouncil ?? emptyNationalCouncil();
+    const updated = assignToCouncilPostFn(council, postId, assigneeId, assigneeKind);
+    const players = s.players.map(p =>
+      p.id === HUMAN_ID ? { ...p, nationalCouncil: updated } : p,
+    );
+    set({ players });
+  },
+
+  removeFromCouncilPost: (postId) => {
+    const s = get();
+    const human = s.players.find(p => p.id === HUMAN_ID);
+    if (!human) return;
+    const council = human.nationalCouncil ?? emptyNationalCouncil();
+    const appt = council.appointments.find(a => a.postId === postId);
+    if (!appt) return;
+    const updated = removeFromCouncil(council, appt.assigneeId);
+    const players = s.players.map(p =>
+      p.id === HUMAN_ID ? { ...p, nationalCouncil: updated } : p,
+    );
+    set({ players });
+  },
+
+  // ─── Education ──────────────────────────────────────────
+  upgradeEducation: () => {
+    const s = get();
+    const human = s.players.find(p => p.id === HUMAN_ID);
+    if (!human) return;
+    const edu = human.education ?? { level: 1, literacy: 0 };
+    if (edu.level >= 5) return;
+    const costIdx = edu.level - 1;
+    if (costIdx < 0 || costIdx >= EDUCATION_UPGRADE_COSTS.length) return;
+    const cost = EDUCATION_UPGRADE_COSTS[costIdx];
+    if (human.gold < cost) {
+      set(prev => ({
+        notifications: [
+          ...prev.notifications,
+          { id: generateId('n'), turn: prev.cycle, message: `Not enough gold (need ${cost}g) to upgrade education.`, type: 'warning' },
+        ],
+      }));
+      return;
+    }
+    const players = s.players.map(p =>
+      p.id === HUMAN_ID
+        ? { ...p, gold: p.gold - cost, education: { level: edu.level + 1, literacy: edu.literacy } }
+        : p,
+    );
+    set({
+      players,
+      notifications: [
+        ...s.notifications,
+        { id: generateId('n'), turn: s.cycle, message: `Education upgraded to level ${edu.level + 1}!`, type: 'success' },
+      ],
+    });
+  },
+
+  // ─── Research ───────────────────────────────────────────
+  startResearch: (techId) => {
+    const s = get();
+    const human = s.players.find(p => p.id === HUMAN_ID);
+    if (!human) return;
+    if (!canResearchTech(human, techId)) return;
+    const players = s.players.map(p =>
+      p.id === HUMAN_ID ? { ...p, activeResearch: techId, researchProgress: 0 } : p,
+    );
+    const techLabel = TECH_TREE[techId]?.label ?? techId;
+    set({
+      players,
+      notifications: [
+        ...s.notifications,
+        { id: generateId('n'), turn: s.cycle, message: `Started researching: ${techLabel}`, type: 'info' },
+      ],
+    });
+  },
+
+  cancelResearch: () => {
+    const s = get();
+    const players = s.players.map(p =>
+      p.id === HUMAN_ID ? { ...p, activeResearch: null, researchProgress: 0 } : p,
+    );
+    set({ players });
+  },
+
+  // ─── University Building ────────────────────────────────
+  setUniversitySpecialization: (cityId, buildingQ, buildingR, spec) => {
+    const s = get();
+    const cities = s.cities.map(c => {
+      if (c.id !== cityId) return c;
+      const buildings = c.buildings.map(b =>
+        b.q === buildingQ && b.r === buildingR && b.type === 'university'
+          ? { ...b, universitySpecialization: spec }
+          : b,
+      );
+      return { ...c, buildings };
+    });
+    set({ cities });
+  },
+
+  upgradeUniversityBuilding: (cityId, buildingQ, buildingR) => {
+    const s = get();
+    const city = s.cities.find(c => c.id === cityId);
+    if (!city) return;
+    const building = city.buildings.find(b => b.q === buildingQ && b.r === buildingR && b.type === 'university');
+    if (!building) return;
+    const level = building.level ?? 1;
+    if (level >= 5) return;
+    const costIdx = level - 1;
+    if (costIdx < 0 || costIdx >= UNIVERSITY_BUILDING_UPGRADE_COSTS.length) return;
+    const cost = UNIVERSITY_BUILDING_UPGRADE_COSTS[costIdx];
+    const human = s.players.find(p => p.id === HUMAN_ID);
+    if (!human || human.gold < cost) {
+      set(prev => ({
+        notifications: [
+          ...prev.notifications,
+          { id: generateId('n'), turn: prev.cycle, message: `Not enough gold (need ${cost}g) to upgrade university.`, type: 'warning' },
+        ],
+      }));
+      return;
+    }
+    const players = s.players.map(p =>
+      p.id === HUMAN_ID ? { ...p, gold: p.gold - cost } : p,
+    );
+    const cities = s.cities.map(c => {
+      if (c.id !== cityId) return c;
+      const buildings = c.buildings.map(b =>
+        b.q === buildingQ && b.r === buildingR && b.type === 'university'
+          ? { ...b, level: (b.level ?? 1) + 1 }
+          : b,
+      );
+      return { ...c, buildings };
+    });
+    set({
+      players,
+      cities,
+      notifications: [
+        ...s.notifications,
+        { id: generateId('n'), turn: s.cycle, message: `University upgraded to level ${level + 1}!`, type: 'success' },
+      ],
+    });
+  },
 
   // ─── Vision ──────────────────────────────────────────────
   recomputeVision: () => {
