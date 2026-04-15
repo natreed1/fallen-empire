@@ -14,6 +14,9 @@ COPY game-server ./game-server
 WORKDIR /app/game-server
 RUN npm ci
 
+# Bare imports in /app/src resolve from that tree only; deps install under game-server/.
+ENV NODE_PATH=/app/game-server/node_modules
+
 ENV NODE_ENV=production
 EXPOSE 3333
 
