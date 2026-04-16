@@ -144,7 +144,7 @@ const SPRITE_PATHS: Record<string, string> = {
   city_center: '/sprites/buildings/silo.png',
   barracks:    '/sprites/buildings/barracks.png',
   academy:     '/sprites/buildings/academy.png',
-  university:  '/sprites/buildings/academy.png',
+  university:  '/sprites/buildings/university.png',
   market:      '/sprites/buildings/market.png',
   quarry:   '/sprites/buildings/quarry.png',
   mine:     '/sprites/buildings/mine.png',
@@ -1582,6 +1582,10 @@ function CityMarkers({ cities, tiles, players }: { cities: City[]; tiles: Map<st
         const factionColor = playerColorOrDefault(players, city.ownerId);
         const spriteColor = isHuman ? '#ffffff' : factionColor;
         const scale = isHuman ? 1.6 : 1.74;
+        /** Capitals always have a city_center building sprite on this hex; skip the extra city.png overlay (stacked “tower”). */
+        const hasCityCenterHere = city.buildings.some(
+          b => b.type === 'city_center' && b.q === city.q && b.r === city.r,
+        );
         return (
           <group key={city.id}>
             {!isHuman && (
@@ -1601,14 +1605,16 @@ function CityMarkers({ cities, tiles, players }: { cities: City[]; tiles: Map<st
                 />
               </mesh>
             )}
-            <sprite
-              position={[x, h + 0.65, z]}
-              scale={[scale, scale, 1]}
-              raycast={() => null}
-              renderOrder={MAP_ENTITY_RENDER_ORDER}
-            >
-              <spriteMaterial map={tex} {...MAP_ENTITY_SPRITE_MAT} color={spriteColor} />
-            </sprite>
+            {!hasCityCenterHere && (
+              <sprite
+                position={[x, h + 0.65, z]}
+                scale={[scale, scale, 1]}
+                raycast={() => null}
+                renderOrder={MAP_ENTITY_RENDER_ORDER}
+              >
+                <spriteMaterial map={tex} {...MAP_ENTITY_SPRITE_MAT} color={spriteColor} />
+              </sprite>
+            )}
           </group>
         );
       })}

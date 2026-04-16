@@ -474,6 +474,8 @@ export interface CityBuilding {
   buildingState?: BuildingState;
   /** University only: specialization focus (default 'general'). */
   universitySpecialization?: UniversitySpecialization;
+  /** University only: building level at which specialization was last set; change again only after population raises the university level further. */
+  universitySpecLastSetAtLevel?: number;
 }
 
 /** University workforce directive — drives automated builds and which sites get extra BP. */
@@ -495,7 +497,7 @@ export const BUILDER_TASK_LABELS: Record<BuilderTask, string> = {
   idle: 'Unassigned',
 };
 
-/** Gold to upgrade University (academy) one level; L1→L2 … L4→L5. */
+/** Gold to upgrade Academy (builder's hut) one level; L1→L2 … L4→L5. */
 export const UNIVERSITY_UPGRADE_COSTS: [number, number, number, number] = [22, 32, 42, 52];
 
 /** Social hall: one per city; boosts natural population growth by level. */
@@ -919,8 +921,10 @@ export const UNIVERSITY_SPECIALIZATION_INFO: Record<
   general: { label: 'General Studies', desc: 'Equal chance of commanders and politicians; education bonus' },
 };
 
-/** Gold to upgrade university one level (L1→L2 … L4→L5). */
-export const UNIVERSITY_BUILDING_UPGRADE_COSTS: [number, number, number, number] = [30, 50, 75, 100];
+/** Population step for university building level (L1 at 1–49, L2 at 50, …, L5 from 200+). */
+export const UNIVERSITY_LEVEL_POP_PER_STEP = 50;
+export const UNIVERSITY_LEVEL_MAX = 5;
+
 /** Per-cycle education bonus per university level (added to empire literacy). */
 export const UNIVERSITY_EDUCATION_PER_LEVEL = 0.5;
 /** Base chance per cycle to generate a graduate from a L1 university; scales with level. */
@@ -942,6 +946,10 @@ export const EDUCATION_UPGRADE_COSTS: [number, number, number, number] = [40, 70
 export const EDUCATION_BASE_LITERACY_PER_CYCLE = 0.2;
 /** Education level multiplier on literacy gain. */
 export const EDUCATION_LEVEL_LITERACY_MULT = 0.15;
+/** Global multiplier on literacy gain per economy cycle (reduced 75% vs former value 2). */
+export const LITERACY_GAIN_PACE_MULT = 0.5;
+/** Applied to research points per economy cycle vs {@link TECH_TREE} costs (>1 = faster tech completion). */
+export const RESEARCH_POINTS_PACE_MULT = 2;
 
 // ─── Technology Tree ───────────────────────────────────────────────
 
@@ -1017,7 +1025,11 @@ export const TECH_TREE: Record<TechId, TechDefinition> = {
     prerequisites: ['mining_1'],
     unlocksBuildings: ['gold_mine'],
     unlocksUnits: [],
-    raisesMaxLevel: [{ building: 'quarry', maxLevel: 2 }, { building: 'mine', maxLevel: 2 }],
+    raisesMaxLevel: [
+      { building: 'quarry', maxLevel: 2 },
+      { building: 'mine', maxLevel: 2 },
+      { building: 'gold_mine', maxLevel: 2 },
+    ],
   },
   masonry_1: {
     id: 'masonry_1',
@@ -1351,7 +1363,8 @@ export interface ScoutMission {
   id: string;
   targetQ: number;
   targetR: number;
-  completesAt: number;   // Date.now() timestamp when scouting finishes
+  /** Completes when the match global movement tick index reaches this value. */
+  completesAtMovementTick: number;
 }
 
 export const SCOUT_MISSION_COST = 5;
@@ -1407,7 +1420,7 @@ export const MOVEMENT_HEXES_PER_CYCLE_ESTIMATE = 9;
 /** Units/builders get supply when within this hex distance of any friendly city. No roads required.
  *  >= MOVEMENT_HEXES_PER_CYCLE_ESTIMATE so one cycle of movement doesn't leave supply. */
 export const SUPPLY_VICINITY_RADIUS = 24;
-export const STARTING_GOLD = 600;
+export const STARTING_GOLD = 100;
 
 export const STARTING_CITY_TEMPLATE: Omit<City, 'id' | 'name' | 'q' | 'r' | 'ownerId'> = {
   population: 150,
@@ -1651,6 +1664,100 @@ export const UNIT_DISPLAY_NAMES: Record<UnitType, string> = {
   capital_ship:     'Capital Ship',
 };
 
+/** Short labels for tech unlock / notification copy (matches in-game naming where it differs from type id). */
+export const BUILDING_DISPLAY_NAMES: Record<BuildingType, string> = {
+  city_center: 'City center',
+  farm: 'Farm',
+  banana_farm: 'Banana farm',
+  factory: 'Factory',
+  barracks: 'Barracks',
+  academy: "Builder's Hut",
+  siege_workshop: 'Siege workshop',
+  market: 'Market',
+  quarry: 'Quarry',
+  mine: 'Iron mine',
+  gold_mine: 'Gold mine',
+  sawmill: 'Sawmill',
+  port: 'Port',
+  shipyard: 'Shipyard',
+  fishery: 'Fishery',
+  logging_hut: 'Logging hut',
+  social_bar: 'Social hall',
+  university: 'University',
+};
+
+/** Summarize mechanical unlocks from {@link TECH_TREE} for research-complete notifications. */
+export function formatTechUnlockSummary(techId: TechId): string {
+  const def = TECH_TREE[techId];
+  if (!def) return '';
+  const parts: string[] = [];
+  if (def.unlocksBuildings.length > 0) {
+    parts.push(`Build: ${def.unlocksBuildings.map(b => BUILDING_DISPLAY_NAMES[b]).join(', ')}`);
+  }
+  if (def.unlocksUnits.length > 0) {
+    parts.push(`Recruit: ${def.unlocksUnits.map(u => UNIT_DISPLAY_NAMES[u]).join(', ')}`);
+  }
+  if (def.raisesMaxLevel?.length) {
+    parts.push(
+      def.raisesMaxLevel
+        .map(({ building, maxLevel }) => `${BUILDING_DISPLAY_NAMES[building]} max L${maxLevel}`)
+        .join('; '),
+    );
+  }
+  if (parts.length === 0) {
+    const d = def.desc.trim();
+    return d.endsWith('.') ? d.slice(0, -1) : d;
+  }
+  return parts.join(' · ');
+}
+
+/** Notification / tooltip copy when a building is still locked by the technology tree. */
+export function notResearchedMessageForBuilding(building: BuildingType, researchedTechs: TechId[]): string | null {
+  if (isBuildingUnlockedByTech(building, researchedTechs)) return null;
+  const set = new Set(researchedTechs);
+  const labels = TECH_IDS.filter(
+    tid => TECH_TREE[tid].unlocksBuildings.includes(building) && !set.has(tid),
+  ).map(tid => TECH_TREE[tid].label);
+  if (labels.length === 0) {
+    return 'Not researched yet — open Research and complete the required technology.';
+  }
+  return `Not researched yet — research: ${labels.join(' or ')}.`;
+}
+
+/** Notification / tooltip copy when a unit is still locked by the technology tree. */
+export function notResearchedMessageForUnit(unit: UnitType, researchedTechs: TechId[]): string | null {
+  if (isUnitUnlockedByTech(unit, researchedTechs)) return null;
+  const set = new Set(researchedTechs);
+  const gated = TECH_IDS.some(t => TECH_TREE[t].unlocksUnits.includes(unit));
+  if (!gated) return null;
+  const labels = TECH_IDS.filter(
+    tid => TECH_TREE[tid].unlocksUnits.includes(unit) && !set.has(tid),
+  ).map(tid => TECH_TREE[tid].label);
+  if (labels.length === 0) {
+    return 'Not researched yet — open Research and complete the required technology.';
+  }
+  return `Not researched yet — research: ${labels.join(' or ')}.`;
+}
+
+/** When {@link maxBuildingLevelByTech} is below `targetLevel` (e.g. upgrading to L2 farm). */
+export function notResearchedMessageForBuildingLevel(
+  building: BuildingType,
+  targetLevel: number,
+  researchedTechs: TechId[],
+): string | null {
+  if (maxBuildingLevelByTech(building, researchedTechs) >= targetLevel) return null;
+  const set = new Set(researchedTechs);
+  const labels = TECH_IDS.filter(tid => {
+    if (set.has(tid)) return false;
+    const raises = TECH_TREE[tid].raisesMaxLevel;
+    return raises?.some(r => r.building === building && r.maxLevel >= targetLevel) ?? false;
+  }).map(tid => TECH_TREE[tid].label);
+  if (labels.length === 0) {
+    return 'Not researched yet — open Research and complete the required technology.';
+  }
+  return `Not researched yet — research: ${labels.join(' or ')}.`;
+}
+
 export const UNIT_BASE_STATS: Record<UnitType, {
   maxHp: number; attack: number; range: number;
   speed: number; foodUpkeep: number; gunUpkeep: number; gunL2Upkeep?: number;
@@ -1889,8 +1996,20 @@ export const WEATHER_DISPLAY: Record<WeatherEventType, {
 
 // ─── Real-Time Constants ───────────────────────────────────────────
 
+/** @deprecated Legacy wall-clock cap; PvP modes use {@link MAX_MATCH_ECONOMY_CYCLES} instead. */
 export const GAME_DURATION_SEC = 35 * 60;   // 35 minutes
-export const CYCLE_INTERVAL_SEC = 30;        // economy cycle every 30s
+/** Legacy: was “seconds between economy cycles” at 1× wall pace; economy cadence is {@link MOVEMENT_TICKS_PER_ECONOMY_CYCLE} movement ticks. */
+export const CYCLE_INTERVAL_SEC = 30;
+/** PvP-style matches (`human_vs_ai`, `multiplayer`) end after this many economy cycles. */
+export const MAX_MATCH_ECONOMY_CYCLES = 70;
+/** One economy cycle (production, AI plan, weather tick, etc.) runs every this many movement ticks. */
+export const MOVEMENT_TICKS_PER_ECONOMY_CYCLE = 30;
+/** Reference ms advanced per movement tick at 1× sim speed (combat/movement pacing). */
+export const MS_PER_MOVEMENT_TICK = 1000;
+/** City capture hold duration in movement ticks (~5s at legacy 1 tick/s). */
+export const CITY_CAPTURE_HOLD_TICKS = 5;
+/** Scout mission completes this many movement ticks after dispatch (matches legacy 30s at 1 tick/s). */
+export const SCOUT_MISSION_MOVEMENT_TICKS = 30;
 export const COMBAT_TICK_MS = 1000;           // combat resolution every 1s
 /**
  * Multiplier on time between hex steps (1 = legacy pace). Above 1 slows armies (better for readability).
@@ -1901,7 +2020,7 @@ export const UNIT_MOVEMENT_DELAY_MULT = 3.5;
 /**
  * Multiplier on unit-vs-unit combat damage (melee same-hex, ranged/counter, hero vs unit).
  * Tuned with {@link COMBAT_KILL_XP} and hit/glance rolls so a typical same-hex fight (e.g. 5v5 L1 infantry)
- * lasts about {@link CYCLE_INTERVAL_SEC} combat ticks on average (~1 economy cycle), giving time to react;
+ * lasts about {@link MOVEMENT_TICKS_PER_ECONOMY_CYCLE} movement ticks on average (~1 economy cycle), giving time to react;
  * bigger engagements (multiple hexes, ranged/tower pressure, reinforcements) stack duration and often span multiple cycles.
  * Sanity-check: `npm run sim-combat-length`.
  * Does not apply to defense towers, siege vs walls, coastal bombardment, or starvation/upkeep.

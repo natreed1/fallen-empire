@@ -3,15 +3,22 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useGameStore } from '@/store/useGameStore';
-import { registerMultiplayerPlanSender } from '@/lib/multiplayerBridge';
+import {
+  registerMultiplayerPlanSender,
+  registerMultiplayerSimControlSender,
+  sendMultiplayerSimControl,
+  type MultiplayerSimControlPayload,
+} from '@/lib/multiplayerBridge';
 import type { SerializedSimState } from '@/lib/simStateSerialization';
+import type { SimSpeedMultiplier } from '@/store/useGameStore';
 
-/**
- * Connects to the game server when URL has `mp` + `room`.
- * - `?mp=host&room=<uuid>` — creates match state (host must open first)
- * - `?mp=join&room=<uuid>` — second player
- */
-export function useMultiplayerSession(): {
+export type MultiplayerSimSettings = {
+  tickMs: number;
+  paused: boolean;
+  speedMultiplier: SimSpeedMultiplier;
+};
+
+export type MultiplayerSessionApi = {
   multiplayerActive: boolean;
   connecting: boolean;
   peerCount: number | null;
@@ -19,15 +26,28 @@ export function useMultiplayerSession(): {
   waitingForPeer: boolean;
   inviteUrl: string;
   netError: string | null;
-} {
+  /** From server: economy tick cadence and pause (guest read-only in UI). */
+  mpSimSettings: MultiplayerSimSettings | null;
+  isMultiplayerHost: boolean;
+  sendMultiplayerSimControl: (payload: MultiplayerSimControlPayload) => void;
+};
+
+/**
+ * Connects to the game server when URL has `mp` + `room`.
+ * - `?mp=host&room=<uuid>` — creates match state (host must open first)
+ * - `?mp=join&room=<uuid>` — second player
+ */
+export function useMultiplayerSession(): MultiplayerSessionApi {
   const searchParams = useSearchParams();
   const mp = searchParams.get('mp');
   const room = searchParams.get('room');
   const [connecting, setConnecting] = useState(false);
   const [peerCount, setPeerCount] = useState<number | null>(null);
   const [netError, setNetError] = useState<string | null>(null);
+  const [mpSimSettings, setMpSimSettings] = useState<MultiplayerSimSettings | null>(null);
 
   const multiplayerActive = mp != null && room != null;
+  const isMultiplayerHost = multiplayerActive && mp !== 'join' && mp !== 'guest';
 
   const inviteUrl = useMemo(() => {
     if (typeof window === 'undefined' || !room) return '';
@@ -45,6 +65,7 @@ export function useMultiplayerSession(): {
     setConnecting(true);
     setNetError(null);
     setPeerCount(null);
+    setMpSimSettings(null);
 
     const ws = new WebSocket(wsUrl);
 
@@ -52,6 +73,12 @@ export function useMultiplayerSession(): {
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'plan', plan }));
       }
+    });
+
+    registerMultiplayerSimControlSender(payload => {
+      if (ws.readyState !== WebSocket.OPEN) return;
+      if (resolvedRole !== 'host') return;
+      ws.send(JSON.stringify({ type: 'sim_control', ...payload }));
     });
 
     ws.onopen = () => {
@@ -72,9 +99,26 @@ export function useMultiplayerSession(): {
           message?: string;
           players?: number;
           role?: string;
+          tickMs?: number;
+          paused?: boolean;
+          speedMultiplier?: number;
+        };
+        const applyMpSim = () => {
+          const tickMs = typeof msg.tickMs === 'number' ? msg.tickMs : 4000;
+          const sp = msg.speedMultiplier;
+          const speedOk = sp === 0.5 || sp === 1 || sp === 2 || sp === 4;
+          setMpSimSettings({
+            tickMs,
+            paused: Boolean(msg.paused),
+            speedMultiplier: speedOk ? sp : 1,
+          });
         };
         if (msg.type === 'lobby' && typeof msg.players === 'number') {
           setPeerCount(msg.players);
+          applyMpSim();
+        }
+        if (msg.type === 'sim_settings') {
+          applyMpSim();
         }
         if (msg.type === 'state' && msg.payload) {
           useGameStore.getState().applyMultiplayerSnapshot(msg.payload, resolvedRole);
@@ -96,6 +140,7 @@ export function useMultiplayerSession(): {
 
     return () => {
       registerMultiplayerPlanSender(null);
+      registerMultiplayerSimControlSender(null);
       ws.close();
     };
   }, [multiplayerActive, room, mp]);
@@ -107,5 +152,8 @@ export function useMultiplayerSession(): {
     waitingForPeer,
     inviteUrl,
     netError,
+    mpSimSettings,
+    isMultiplayerHost,
+    sendMultiplayerSimControl,
   };
 }

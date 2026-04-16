@@ -8,10 +8,13 @@ import {
   STARTING_TECHS,
   EDUCATION_BASE_LITERACY_PER_CYCLE,
   EDUCATION_LEVEL_LITERACY_MULT,
+  LITERACY_GAIN_PACE_MULT,
+  RESEARCH_POINTS_PACE_MULT,
   UNIVERSITY_EDUCATION_PER_LEVEL,
   EducationState,
   NationalCouncil,
 } from '@/types/game';
+import { computeUniversityBuildingLevelFromPopulation } from '@/lib/universityPopulation';
 import { computeCouncilBoosts } from './nationalCouncil';
 
 /** Compute total literacy gain per cycle for a player. */
@@ -31,7 +34,7 @@ export function computeLiteracyPerCycle(
   for (const city of playerCities) {
     for (const b of city.buildings) {
       if (b.type !== 'university') continue;
-      const level = b.level ?? 1;
+      const level = computeUniversityBuildingLevelFromPopulation(city.population);
       universityBonus += UNIVERSITY_EDUCATION_PER_LEVEL * level;
     }
   }
@@ -39,7 +42,7 @@ export function computeLiteracyPerCycle(
   const councilBoosts = computeCouncilBoosts(council, commanders, politicians);
   const raw = (baseLiteracy + levelBonus + universityBonus) * councilBoosts.researchMult;
 
-  return Math.max(0, raw);
+  return Math.max(0, raw * LITERACY_GAIN_PACE_MULT);
 }
 
 /** Compute research points generated per cycle toward the active tech. */
@@ -59,7 +62,7 @@ export function computeResearchPerCycle(
   for (const city of playerCities) {
     for (const b of city.buildings) {
       if (b.type !== 'university') continue;
-      const level = b.level ?? 1;
+      const level = computeUniversityBuildingLevelFromPopulation(city.population);
       const spec = b.universitySpecialization ?? 'general';
       let researchBase = level * 0.8;
       if (spec === 'research') researchBase *= 1.5;
@@ -70,7 +73,7 @@ export function computeResearchPerCycle(
   const councilBoosts = computeCouncilBoosts(council, commanders, politicians);
   const raw = (literacyFactor + universityResearch) * councilBoosts.researchMult;
 
-  return Math.max(0, raw);
+  return Math.max(0, raw * RESEARCH_POINTS_PACE_MULT);
 }
 
 export interface ResearchTickResult {

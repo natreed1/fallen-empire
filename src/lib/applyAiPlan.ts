@@ -7,6 +7,7 @@ import {
   type City,
   type Unit,
   type BuildingType,
+  type Player,
   BUILDING_COSTS,
   BUILDING_IRON_COSTS,
   UNIT_COSTS,
@@ -19,7 +20,12 @@ import {
   getUnitStats,
   isNavalUnitType,
   type RangedVariant,
+  isBuildingUnlockedByTech,
+  isUnitUnlockedByTech,
+  maxBuildingLevelByTech,
+  STARTING_TECHS,
 } from '@/types/game';
+import { computeUniversityBuildingLevelFromPopulation } from '@/lib/universityPopulation';
 import type { AiActions } from '@/lib/ai';
 import type { PendingLandRecruit } from '@/lib/pendingLandRecruit';
 
@@ -47,7 +53,7 @@ export function applyAiInstantBuilds(
   ctx: {
     aiPlayerId: string;
     cities: City[];
-    getPlayer: () => { gold: number } | undefined;
+    getPlayer: () => Pick<Player, 'gold' | 'researchedTechs'> | undefined;
     onSpendGold: (delta: number) => void;
     onInstantBuild?: (buildingType: BuildingType) => void;
   },
@@ -55,6 +61,8 @@ export function applyAiInstantBuilds(
   for (const build of builds) {
     const aiPlayer = ctx.getPlayer();
     if (!aiPlayer) continue;
+    const techs = aiPlayer.researchedTechs ?? STARTING_TECHS;
+    if (!isBuildingUnlockedByTech(build.type, techs)) continue;
     const city = ctx.cities.find(c => c.id === build.cityId);
     if (!city || city.ownerId !== ctx.aiPlayerId) continue;
     if (aiPlayer.gold < BUILDING_COSTS[build.type]) continue;
@@ -62,6 +70,9 @@ export function applyAiInstantBuilds(
     if (ironCost > 0 && (city.storage.iron ?? 0) < ironCost) continue;
     const b = { type: build.type, q: build.q, r: build.r } as City['buildings'][number];
     if (LEVEL1_BUILDING_TYPES.includes(build.type)) (b as { level?: number }).level = 1;
+    if (build.type === 'university') {
+      (b as { level?: number }).level = computeUniversityBuildingLevelFromPopulation(city.population);
+    }
     if (build.type === 'quarry' || build.type === 'mine' || build.type === 'gold_mine') {
       const toAssign = Math.min(WORKERS_PER_LEVEL, Math.max(0, city.population - 1));
       (b as { assignedWorkers?: number }).assignedWorkers = toAssign;
@@ -79,13 +90,14 @@ export function applyAiUpgrades(
   ctx: {
     aiPlayerId: string;
     cities: City[];
-    getPlayer: () => { gold: number } | undefined;
+    getPlayer: () => Pick<Player, 'gold' | 'researchedTechs'> | undefined;
     onSpendGold: (delta: number) => void;
   },
 ): void {
   for (const up of upgrades ?? []) {
     const aiPlayer = ctx.getPlayer();
     if (!aiPlayer) continue;
+    const techs = aiPlayer.researchedTechs ?? STARTING_TECHS;
     const city = ctx.cities.find(c => c.id === up.cityId);
     if (!city || city.ownerId !== ctx.aiPlayerId) continue;
     const cost =
@@ -97,6 +109,7 @@ export function applyAiUpgrades(
     if (aiPlayer.gold < cost) continue;
     const building = city.buildings.find(b => b.type === up.type && b.q === up.buildingQ && b.r === up.buildingR);
     if (!building || (building.level ?? 1) >= 2) continue;
+    if (maxBuildingLevelByTech(up.type, techs) < 2) continue;
     building.level = 2;
     ctx.onSpendGold(cost);
   }
@@ -112,7 +125,7 @@ export function applyAiRecruitsAsPending(
     newCycle: number;
     cities: City[];
     units: Unit[];
-    getPlayer: () => { gold: number } | undefined;
+    getPlayer: () => Pick<Player, 'gold' | 'researchedTechs'> | undefined;
     onSpendGold: (delta: number) => void;
     pendingRecruitsOut: PendingLandRecruitSink;
     generateId: (prefix: string) => string;
@@ -125,6 +138,8 @@ export function applyAiRecruitsAsPending(
   for (const rec of recruits) {
     const aiPlayer = ctx.getPlayer();
     if (!aiPlayer) continue;
+    const techs = aiPlayer.researchedTechs ?? STARTING_TECHS;
+    if (!isUnitUnlockedByTech(rec.type, techs)) continue;
     const city = ctx.cities.find(c => c.id === rec.cityId);
     if (!city || city.ownerId !== ctx.aiPlayerId || city.population <= 0 || aiTroopCount >= aiTotalPopForRecruit) {
       continue;
@@ -159,9 +174,10 @@ export function applyAiRecruitsAsPending(
     }
     if (rec.type === 'builder') continue;
     const barracks = city.buildings.find(b => b.type === 'barracks');
-    if (rec.type === 'defender' || wantL2 || wantL3) {
-      if ((barracks?.level ?? 1) < 2) continue;
-    }
+    const bl = barracks?.level ?? 1;
+    const needBarracks =
+      rec.type === 'defender' ? 3 : wantL3 ? 3 : wantL2 ? 2 : 1;
+    if (bl < needBarracks) continue;
     const sq = city.q;
     const sr = city.r;
     const effArms: 1 | 2 | 3 = rec.type === 'defender' ? 3 : wantL3 ? 3 : wantL2 ? 2 : 1;

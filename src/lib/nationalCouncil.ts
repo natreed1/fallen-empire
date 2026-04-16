@@ -10,10 +10,10 @@ import {
   COMMANDER_TRAIT_INFO,
   CommanderTraitId,
   CityBuilding,
-  UniversitySpecialization,
   UNIVERSITY_GRADUATE_CHANCE_BASE,
   generateId,
 } from '@/types/game';
+import { computeUniversityBuildingLevelFromPopulation } from '@/lib/universityPopulation';
 
 // ─── Council Boost Calculations ────────────────────────────────────
 
@@ -173,10 +173,11 @@ export interface UniversityGraduateResult {
  */
 export function rollUniversityGraduate(
   building: CityBuilding,
+  cityPopulation: number,
   cycleSeed: number,
 ): UniversityGraduateResult {
   if (building.type !== 'university') return { kind: 'none', seed: cycleSeed };
-  const level = building.level ?? 1;
+  const level = computeUniversityBuildingLevelFromPopulation(cityPopulation);
   const spec = building.universitySpecialization ?? 'general';
   const chance = UNIVERSITY_GRADUATE_CHANCE_BASE * level;
 

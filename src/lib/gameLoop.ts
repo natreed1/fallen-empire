@@ -1,3 +1,4 @@
+import { syncUniversityBuildingLevelsForCities } from '@/lib/universityPopulation';
 import {
   City, Unit, Player, Tile, GameNotification, TerritoryInfo, CityBuilding, Hero,
   Biome, TERRAIN_FOOD_YIELD, BUILDING_PRODUCTION, BUILDING_JOBS, CITY_CENTER_STORAGE,
@@ -232,7 +233,18 @@ export function processEconomyTurn(
   economicsPhase(newCities, newPlayers, tiles, territory, notify);
   moraleDrift(newCities, newPlayers);
 
-  return { cities: newCities, units: newUnits, players: newPlayers, notifications };
+  const humanIds = new Set(newPlayers.filter(p => p.isHuman).map(p => p.id));
+  const syncedCities = syncUniversityBuildingLevelsForCities(newCities, {
+    onLevelUp: ({ city, newLevel }) => {
+      if (!humanIds.has(city.ownerId)) return;
+      notify(
+        `${city.name}: University reached level ${newLevel} — you may change specialization.`,
+        'success',
+      );
+    },
+  });
+
+  return { cities: syncedCities, units: newUnits, players: newPlayers, notifications };
 }
 
 // ─── Phase 0: Auto-assign workers ───────────────────────────────────

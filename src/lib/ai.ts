@@ -13,6 +13,10 @@ import {
   isNavalUnitType,
   isFarmBuildingType,
   isValidFarmPlacementBiome,
+  STARTING_TECHS,
+  isBuildingUnlockedByTech,
+  maxBuildingLevelByTech,
+  isUnitUnlockedByTech,
 } from '@/types/game';
 import { computeCityProductionRate } from '@/lib/gameLoop';
 import {
@@ -422,6 +426,7 @@ export function planAiTurn(
   }
 
   const actions: AiActions = { builds: [], upgrades: [], recruits: [], moveTargets: [], scouts: [], incorporateVillages: [], buildWallRings: [], commanderAssignments: [], scrollAttachments: [], universityTasks: [], stanceChanges: [], retreats: [] };
+  const techs = aiPlayer.researchedTechs ?? STARTING_TECHS;
   let goldBudget = aiPlayer.gold;
   const enemyCities = cities.filter(c => c.ownerId !== aiPlayerId);
   const aiUnits = units.filter(u => u.ownerId === aiPlayerId && u.hp > 0);
@@ -452,17 +457,33 @@ export function planAiTurn(
 
     const upgradeOrder = (params.factoryUpgradePriority ?? 0.6) >= 0.5 ? ['factory', 'barracks', 'farm'] : ['barracks', 'factory', 'farm'];
     for (const kind of upgradeOrder) {
-      if (kind === 'factory' && goldBudget >= FACTORY_UPGRADE_COST && factoryToUpgrade && (city.storage.iron ?? 0) >= 5) {
+      if (
+        kind === 'factory' &&
+        goldBudget >= FACTORY_UPGRADE_COST &&
+        factoryToUpgrade &&
+        (city.storage.iron ?? 0) >= 5 &&
+        maxBuildingLevelByTech('factory', techs) >= 2
+      ) {
         actions.upgrades.push({ cityId: city.id, buildingQ: factoryToUpgrade.q, buildingR: factoryToUpgrade.r, type: 'factory' });
         goldBudget -= FACTORY_UPGRADE_COST;
         break;
       }
-      if (kind === 'barracks' && goldBudget >= BARACKS_UPGRADE_COST && barracksToUpgrade) {
+      if (
+        kind === 'barracks' &&
+        goldBudget >= BARACKS_UPGRADE_COST &&
+        barracksToUpgrade &&
+        maxBuildingLevelByTech('barracks', techs) >= 2
+      ) {
         actions.upgrades.push({ cityId: city.id, buildingQ: barracksToUpgrade.q, buildingR: barracksToUpgrade.r, type: 'barracks' });
         goldBudget -= BARACKS_UPGRADE_COST;
         break;
       }
-      if (kind === 'farm' && goldBudget >= FARM_UPGRADE_COST && farmToUpgrade) {
+      if (
+        kind === 'farm' &&
+        goldBudget >= FARM_UPGRADE_COST &&
+        farmToUpgrade &&
+        maxBuildingLevelByTech('farm', techs) >= 2
+      ) {
         actions.upgrades.push({ cityId: city.id, buildingQ: farmToUpgrade.q, buildingR: farmToUpgrade.r, type: 'farm' });
         goldBudget -= FARM_UPGRADE_COST;
         break;
@@ -507,6 +528,10 @@ export function planAiTurn(
       }
     }
 
+    if (toBuild && !isBuildingUnlockedByTech(toBuild, techs)) {
+      toBuild = null;
+    }
+
     if (toBuild) {
       let spot: [number, number] | null = null;
       if (toBuild === 'quarry' && quarrySpot) spot = quarrySpot;
@@ -537,16 +562,24 @@ export function planAiTurn(
       else if (militaryCount >= sustainableArmyCap) maxRecruits = 0;
       maxRecruits = Math.min(maxRecruits, Math.max(0, sustainableArmyCap - militaryCount));
 
-      const unitChoices: UnitType[] = barracksLvl >= 2
+      const unitChoicesBase: UnitType[] = barracksLvl >= 2
         ? ['infantry', 'infantry', 'cavalry', 'ranged', 'defender']
         : ['infantry', 'infantry', 'cavalry', 'ranged'];
-      const siegeChoices: UnitType[] = ['trebuchet', 'battering_ram'];
+      const unitChoices = unitChoicesBase.filter(u => {
+        if (!isUnitUnlockedByTech(u, techs)) return false;
+        if (u === 'defender' && barracksLvl < 3) return false;
+        return true;
+      });
+      const siegeChoices = (['trebuchet', 'battering_ram'] as const).filter(u => isUnitUnlockedByTech(u, techs));
       const allowSiege = foodStats.surplus >= foodThreshold; // hard: siege only when surplus >= threshold
       let stoneBudget = city.storage.stone ?? 0;
       let ironBudget = city.storage.iron ?? 0;
       let refinedWoodBudget = city.storage.refinedWood ?? 0;
       for (let i = 0; i < maxRecruits; i++) {
-        const useSiege = allowSiege && hasSiegeWorkshop && Math.random() < params.siegeChance;
+        const useSiege =
+          allowSiege && hasSiegeWorkshop && siegeChoices.length > 0 && Math.random() < params.siegeChance;
+        if (!useSiege && unitChoices.length === 0) break;
+        if (useSiege && siegeChoices.length === 0) continue;
         const pick = useSiege
           ? siegeChoices[Math.floor(Math.random() * siegeChoices.length)]
           : unitChoices[Math.floor(Math.random() * unitChoices.length)];
@@ -566,7 +599,12 @@ export function planAiTurn(
           const rwL3 = UNIT_L3_COSTS[pick].refinedWood ?? 0;
           const rwL2 = UNIT_L2_COSTS[pick].refinedWood ?? 0;
           const rwL1 = UNIT_COSTS[pick].refinedWood ?? 0;
-          const canL3 = barracksLvl >= 2 && hasGunsL2 && goldBudget >= UNIT_L3_COSTS[pick].gold && ironBudget >= (UNIT_L3_COSTS[pick].iron ?? 0) && refinedWoodBudget >= rwL3;
+          const canL3 =
+            barracksLvl >= 3 &&
+            hasGunsL2 &&
+            goldBudget >= UNIT_L3_COSTS[pick].gold &&
+            ironBudget >= (UNIT_L3_COSTS[pick].iron ?? 0) &&
+            refinedWoodBudget >= rwL3;
           const canL2 = barracksLvl >= 2 && hasGunsL2 && goldBudget >= UNIT_L2_COSTS[pick].gold && stoneBudget >= (UNIT_L2_COSTS[pick].stone ?? 0) && refinedWoodBudget >= rwL2;
           const canL1 = goldBudget >= UNIT_COSTS[pick].gold && refinedWoodBudget >= rwL1;
           const l3TierBias = Math.min(1, Math.max(0, (params.l3AcquisitionWeight ?? 1) * 0.35));

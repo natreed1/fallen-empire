@@ -14,6 +14,7 @@ import { setAiParams } from '@/lib/aiParams';
 import { axialToWorld, worldToAxial, HEX_RADIUS, tileKey, parseTileKey } from '@/types/game';
 import { collectHumanStackKeysInScreenRect, hexFromClientOnMap } from '@/lib/mapBoxSelect';
 import { useMultiplayerSession } from '@/hooks/useMultiplayerSession';
+import { MultiplayerSessionProvider } from '@/context/MultiplayerSessionContext';
 
 /** Match scripts/train-ai.ts default (TRAIN_MAP_SIZE / TRAIN_MAP) so watch mode uses same small map. */
 const TRAIN_MAP_SIZE = 38;
@@ -495,7 +496,8 @@ function useEscapeKey() {
 
 export default function GameScene() {
   const searchParams = useSearchParams();
-  const { multiplayerActive, connecting, waitingForPeer, inviteUrl, netError } = useMultiplayerSession();
+  const multiplayerSession = useMultiplayerSession();
+  const { multiplayerActive, connecting, waitingForPeer, inviteUrl, netError } = multiplayerSession;
   const [inviteCopied, setInviteCopied] = useState(false);
   const generateWorld = useGameStore(s => s.generateWorld);
   const isGenerated = useGameStore(s => s.isGenerated);
@@ -570,6 +572,7 @@ export default function GameScene() {
   ];
 
   return (
+    <MultiplayerSessionProvider value={multiplayerSession}>
     <div className="w-full h-screen bg-empire-dark relative" onContextMenu={e => e.preventDefault()}>
       {multiplayerActive && netError && (
         <div className="absolute inset-0 z-[200] flex flex-col items-center justify-center gap-3 bg-empire-dark/95 px-6 text-center text-empire-parchment text-sm pointer-events-auto">
@@ -640,5 +643,6 @@ export default function GameScene() {
       {/* Full HUD overlay */}
       <GameHUD />
     </div>
+    </MultiplayerSessionProvider>
   );
 }

@@ -19,15 +19,19 @@ import {
   BUILDING_BP_COST, BUILDING_JOBS, getBuildingJobs,
   BP_RATE_BASE,
   getUnitStats,
-  SCOUT_MISSION_COST, SCOUT_MISSION_DURATION_SEC,   VILLAGE_INCORPORATE_COST,
+  SCOUT_MISSION_COST,
+  SCOUT_MISSION_MOVEMENT_TICKS,
+  VILLAGE_INCORPORATE_COST,
   FRONTIER_CYCLES, CITY_NAMES, PLAYER_COLORS,
-  CITY_CAPTURE_HOLD_MS,
+  CITY_CAPTURE_HOLD_TICKS,
+  MOVEMENT_TICKS_PER_ECONOMY_CYCLE,
   WALL_SECTION_STONE_COST, WALL_SECTION_HP, WALL_SECTION_BP_COST, getHexRing,
   defenseInstallationCurrentHp,
 } from '../types/game';
 import { generateMap, placeAncientCity, rebuildSpecialTerrainForCapitals, type ScrollRelicClusters } from '../lib/mapGenerator';
 import { calculateTerritory } from '../lib/territory';
 import { processEconomyTurn } from '../lib/gameLoop';
+import { syncUniversityBuildingLevelsForCities } from '../lib/universityPopulation';
 import {
   planAiTurn,
   placeAiStartingCityAt,
@@ -94,8 +98,10 @@ export type SimState = {
   wallSections: WallSection[];
   /** Construction sites (buildings in progress); AI uses these instead of instant builds. */
   constructions: ConstructionSite[];
-  cityCaptureHold: Record<string, { attackerId: string; startedAt: number }>;
-  /** Simulated time in ms; advances 30s per cycle for capture hold & scout completion */
+  cityCaptureHold: Record<string, { attackerId: string; startedAtMovementTick: number }>;
+  /** Monotonic movement ticks (advances {@link MOVEMENT_TICKS_PER_ECONOMY_CYCLE} per economy step in headless). */
+  globalMovementTick: number;
+  /** Simulated time in ms; advances with movement ticks for combat/movement code paths */
   simTimeMs: number;
   /** Cache: unitId -> { inSupply, q, r }; recomputed only when unit moves or cities change. */
   supplyCache?: Map<string, SupplyCacheEntry>;
@@ -264,6 +270,7 @@ function initBotVsBotGameOnce(
     wallSections: [],
     constructions: [],
     cityCaptureHold: {},
+    globalMovementTick: 0,
     simTimeMs: 0,
     contestedZoneHexKeys,
     commanders,
@@ -544,7 +551,8 @@ export function stepSimulation(
   }
 
   const newCycle = state.cycle + 1;
-  const newSimTimeMs = state.simTimeMs + 30_000;
+  const newGlobalMovementTick = state.globalMovementTick + MOVEMENT_TICKS_PER_ECONOMY_CYCLE;
+  const newSimTimeMs = state.simTimeMs + MOVEMENT_TICKS_PER_ECONOMY_CYCLE * 1000;
 
   let pendingRecruitsAcc = state.pendingRecruits.filter(pr => pr.completesAtCycle !== newCycle);
 
@@ -869,7 +877,7 @@ export function stepSimulation(
           id: generateId('scout'),
           targetQ: scout.targetQ,
           targetR: scout.targetR,
-          completesAt: newSimTimeMs + SCOUT_MISSION_DURATION_SEC * 1000,
+          completesAtMovementTick: state.globalMovementTick + SCOUT_MISSION_MOVEMENT_TICKS,
         });
       }
     }
@@ -1059,7 +1067,7 @@ export function stepSimulation(
   // Complete scout missions that have passed
   const stillPending: ScoutMission[] = [];
   for (const m of scoutMissions) {
-    if (m.completesAt <= newSimTimeMs) scoutedHexes.add(tileKey(m.targetQ, m.targetR));
+    if (m.completesAtMovementTick <= newGlobalMovementTick) scoutedHexes.add(tileKey(m.targetQ, m.targetR));
     else stillPending.push(m);
   }
   scoutMissions = stillPending;
@@ -1188,7 +1196,9 @@ export function stepSimulation(
   }
 
   // ── City capture hold (5s); land military only; instant when pop 0 or undefended + no enemy wall ──
-  let captureHoldNext: Record<string, { attackerId: string; startedAt: number }> = { ...state.cityCaptureHold };
+  let captureHoldNext: Record<string, { attackerId: string; startedAtMovementTick: number }> = {
+    ...state.cityCaptureHold,
+  };
   for (const city of citiesToSet) {
     const contenders = [
       ...new Set(
@@ -1213,12 +1223,13 @@ export function stepSimulation(
     }
     const existing = captureHoldNext[city.id];
     if (!existing || existing.attackerId !== attackerId) {
-      captureHoldNext[city.id] = { attackerId, startedAt: newSimTimeMs };
-    } else if (newSimTimeMs - existing.startedAt >= CITY_CAPTURE_HOLD_MS) {
+      captureHoldNext[city.id] = { attackerId, startedAtMovementTick: state.globalMovementTick };
+    } else if (newGlobalMovementTick - existing.startedAtMovementTick >= CITY_CAPTURE_HOLD_TICKS) {
       citiesToSet = citiesToSet.map(c => (c.id === city.id ? { ...c, ownerId: attackerId } : c));
       delete captureHoldNext[city.id];
     }
   }
+  citiesToSet = syncUniversityBuildingLevelsForCities(citiesToSet);
   const territory = calculateTerritory(citiesToSet, tilesMut);
 
   // Build city id -> owner map once for O(1) lookups (avoids O(cities²) per step)
@@ -1292,6 +1303,7 @@ export function stepSimulation(
     constructions,
     cityCaptureHold: captureHoldNext,
     simTimeMs: newSimTimeMs,
+    globalMovementTick: newGlobalMovementTick,
     heroes: [],
     supplyCache: supplyCacheNext,
     contestedZoneHexKeys: state.contestedZoneHexKeys,

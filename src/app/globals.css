@@ -249,3 +249,190 @@ body {
     0 0 0 2px rgba(201, 168, 76, 0.22),
     0 4px 24px rgba(0, 0, 0, 0.45);
 }
+
+/* Civilian Affairs modal — parchment inner inside gold wood frame */
+.civilian-affairs-parchment {
+  background:
+    repeating-linear-gradient(
+      90deg,
+      transparent,
+      transparent 3px,
+      rgba(40, 32, 20, 0.04) 3px,
+      rgba(40, 32, 20, 0.04) 4px
+    ),
+    repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0, 0, 0, 0.03) 2px,
+      rgba(0, 0, 0, 0.03) 3px
+    ),
+    radial-gradient(ellipse 90% 55% at 50% 0%, rgba(180, 140, 80, 0.1) 0%, transparent 55%),
+    linear-gradient(172deg, #2a2218 0%, #18140e 48%, #1e1812 100%) !important;
+  border: 1px solid rgba(100, 80, 52, 0.45) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 230, 200, 0.04);
+}
+
+.medieval-frame-inner.civilian-affairs-parchment::after {
+  border-color: rgba(100, 75, 45, 0.15);
+}
+
+/* ─── Medieval building side panels (university / barracks / builder’s hut) ─── */
+
+.panel-university {
+  position: relative;
+  padding: 3px;
+  border-radius: 6px;
+  background: linear-gradient(160deg, #5c4a3a 0%, #3d3024 50%, #4a3c30 100%);
+  box-shadow:
+    0 0 0 1px rgba(24, 18, 12, 0.95),
+    0 0 0 2px rgba(100, 82, 58, 0.32),
+    0 6px 20px rgba(0, 0, 0, 0.5);
+}
+
+.panel-university::before {
+  content: '';
+  position: absolute;
+  inset: 3px;
+  border-radius: 6px;
+  background-image: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 3px,
+    rgba(40, 32, 22, 0.06) 3px,
+    rgba(40, 32, 22, 0.06) 4px
+  );
+  pointer-events: none;
+  opacity: 0.55;
+}
+
+.panel-university-inner {
+  position: relative;
+  border-radius: 6px;
+  background-color: #1c1812;
+  background-image:
+    repeating-linear-gradient(
+      90deg,
+      transparent,
+      transparent 2px,
+      rgba(0, 0, 0, 0.04) 2px,
+      rgba(0, 0, 0, 0.04) 3px
+    ),
+    repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0, 0, 0, 0.035) 2px,
+      rgba(0, 0, 0, 0.035) 3px
+    ),
+    radial-gradient(ellipse 110% 80% at 50% 0%, rgba(212, 188, 140, 0.14) 0%, transparent 55%),
+    linear-gradient(175deg, #2a231a 0%, #16120e 52%, #1a1510 100%);
+  border: 1px solid rgba(110, 90, 62, 0.42);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 248, 230, 0.05),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.35);
+}
+
+.university-title {
+  font-family: var(--font-cinzel-decorative), serif;
+  letter-spacing: 0.05em;
+  color: #d4c4a8;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+}
+
+.panel-barracks {
+  position: relative;
+  padding: 3px;
+  border-radius: 6px;
+  background: linear-gradient(165deg, #4a3428 0%, #322418 55%, #3d2a1c 100%);
+  box-shadow:
+    0 0 0 1px rgba(18, 10, 8, 0.95),
+    0 0 0 2px rgba(90, 62, 44, 0.3),
+    0 6px 20px rgba(0, 0, 0, 0.5);
+}
+
+.panel-barracks::before {
+  content: '';
+  position: absolute;
+  inset: 3px;
+  border-radius: 6px;
+  background: repeating-linear-gradient(
+    -12deg,
+    transparent,
+    transparent 4px,
+    rgba(0, 0, 0, 0.05) 4px,
+    rgba(0, 0, 0, 0.05) 5px
+  );
+  pointer-events: none;
+  opacity: 0.4;
+}
+
+.panel-barracks-inner {
+  position: relative;
+  border-radius: 6px;
+  background-image:
+    linear-gradient(rgba(60, 40, 28, 0.2) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(60, 40, 28, 0.15) 1px, transparent 1px),
+    radial-gradient(ellipse 100% 65% at 50% 0%, rgba(180, 120, 80, 0.1) 0%, transparent 50%),
+    linear-gradient(178deg, #221814 0%, #140c0a 100%);
+  background-size:
+    14px 14px,
+    14px 14px,
+    auto,
+    auto;
+  border: 1px solid rgba(120, 72, 48, 0.4);
+  box-shadow: inset 0 1px 0 rgba(255, 220, 180, 0.04);
+}
+
+.barracks-title {
+  font-family: var(--font-medieval), cursive;
+  letter-spacing: 0.04em;
+  color: #c9a882;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+}
+
+/* Builder's Hut (academy) — same family as .panel-cottage, not a separate “workshop” theme */
+.panel-builders-hut {
+  position: relative;
+  padding: 3px;
+  border-radius: 6px;
+  background: linear-gradient(160deg, #6b5344 0%, #4a3728 25%, #5c4332 100%);
+  box-shadow:
+    0 0 0 1px rgba(30, 22, 14, 0.9),
+    0 0 0 2px rgba(139, 105, 60, 0.35),
+    0 6px 22px rgba(0, 0, 0, 0.52);
+}
+
+.panel-builders-hut-inner {
+  position: relative;
+  border-radius: 4px;
+  background:
+    radial-gradient(ellipse 120% 80% at 50% 0%, rgba(201, 152, 90, 0.1) 0%, transparent 55%),
+    linear-gradient(175deg, #2a1f18 0%, #1a1410 48%, #221a14 100%);
+  border: 1px solid rgba(160, 120, 72, 0.35);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.builders-hut-title {
+  font-family: var(--font-cinzel-decorative), serif;
+  letter-spacing: 0.06em;
+  color: #d4b896;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
+}
+
+.medieval-building-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+
+.medieval-building-scroll::-webkit-scrollbar-track {
+  background: rgba(12, 10, 8, 0.65);
+}
+
+.medieval-building-scroll::-webkit-scrollbar-thumb {
+  background: rgba(120, 100, 72, 0.45);
+  border-radius: 3px;
+}
+
+.medieval-building-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(150, 128, 96, 0.55);
+}

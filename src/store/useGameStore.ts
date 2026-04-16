@@ -27,8 +27,14 @@ import {
   TREBUCHET_FIELD_BP_COST, TREBUCHET_FIELD_GOLD_COST, TREBUCHET_REFINED_WOOD_COST,
   DEFENDER_IRON_COST,
   SCOUT_TOWER_BP_COST, SCOUT_TOWER_GOLD_COST,
-  SCOUT_MISSION_COST, SCOUT_MISSION_DURATION_SEC,
-  GAME_DURATION_SEC, CYCLE_INTERVAL_SEC,
+  SCOUT_MISSION_COST,
+  GAME_DURATION_SEC,
+  CYCLE_INTERVAL_SEC,
+  MAX_MATCH_ECONOMY_CYCLES,
+  MOVEMENT_TICKS_PER_ECONOMY_CYCLE,
+  MS_PER_MOVEMENT_TICK,
+  CITY_CAPTURE_HOLD_TICKS,
+  SCOUT_MISSION_MOVEMENT_TICKS,
   BARACKS_UPGRADE_COST, BARACKS_L3_UPGRADE_COST, FACTORY_UPGRADE_COST, FARM_UPGRADE_COST, RESOURCE_MINE_UPGRADE_COST, WALL_SECTION_STONE_COST,
   WALL_BUILDER_STONE_PER_CYCLE_PER_SLOT,
   UNIVERSITY_UPGRADE_COSTS,
@@ -37,7 +43,6 @@ import {
   KingdomId, DEFAULT_KINGDOM_ID, TRADER_CONSTRUCTION_SPEED_MULT,
   KINGDOM_DISPLAY_NAMES, pickAiKingdom, pickOpponentKingdoms, pickKingdomsForSpectateBots,
   AI_PLAYER_IDS, aiPlayerColorBySlot,
-  CITY_CAPTURE_HOLD_MS,
   GARRISON_PATROL_RADIUS_MIN, GARRISON_PATROL_RADIUS_MAX,
   TERRITORY_RADIUS,
   WORKERS_PER_LEVEL, BUILDING_IRON_COSTS,
@@ -78,11 +83,15 @@ import {
   type UniversitySpecialization,
   STARTING_TECHS,
   TECH_TREE,
+  formatTechUnlockSummary,
   EDUCATION_UPGRADE_COSTS,
-  UNIVERSITY_BUILDING_UPGRADE_COSTS,
   emptyNationalCouncil,
   isBuildingUnlockedByTech,
   maxBuildingLevelByTech,
+  isUnitUnlockedByTech,
+  notResearchedMessageForBuilding,
+  notResearchedMessageForUnit,
+  notResearchedMessageForBuildingLevel,
 } from '@/types/game';
 import { renderCommanderPortraitDataUrl } from '@/lib/commanderPortrait';
 import {
@@ -189,6 +198,10 @@ import { assignSpatialFormationTargets } from '@/lib/formationPlacement';
 import { deserializeSimState, type SerializedSimState } from '@/lib/simStateSerialization';
 import { remapSimStateForClient } from '@/lib/multiplayerRemap';
 import { sendMultiplayerPlan } from '@/lib/multiplayerBridge';
+import {
+  computeUniversityBuildingLevelFromPopulation,
+  syncUniversityBuildingLevelsForCities,
+} from '@/lib/universityPopulation';
 
 // ─── Module-level timers ────────────────────────────────────────────
 
@@ -199,6 +212,9 @@ function clearAllTimers() {
   if (_tickInterval) { clearInterval(_tickInterval); _tickInterval = null; }
   if (_combatInterval) { clearInterval(_combatInterval); _combatInterval = null; }
 }
+
+/** Real-time sim pacing: 0.5x = half speed, 4x = four ticks per wall second. */
+export type SimSpeedMultiplier = 0.5 | 1 | 2 | 4;
 
 // ─── State Interface ───────────────────────────────────────────────
 
@@ -287,8 +303,17 @@ interface GameState {
   nextCycleTime: number;
   gameTimeRemaining: number;
   cycleTimeRemaining: number;
-  /** Simulation speed in AI-vs-AI modes only (1, 2, or 4). */
-  simSpeedMultiplier: 1 | 2 | 4;
+  /** Movement tick index within current economy cycle (0 .. MOVEMENT_TICKS_PER_ECONOMY_CYCLE-1). */
+  movementTickInCycle: number;
+  /** Monotonic movement tick count for sim-scoped timers (capture hold, scouts). */
+  globalMovementTick: number;
+  /** Simulated time (ms) advanced per movement tick; used instead of wall clock for combat/movement. */
+  simTimeMs: number;
+  /** Real-time pacing: movement ticks per second and economy cycle cadence (0.5–4x). */
+  simSpeedMultiplier: SimSpeedMultiplier;
+  /** Local real-time match paused (movement/builds frozen; match clock does not drain). */
+  realTimePaused: boolean;
+  realTimePauseStartedAtMs: number | null;
 
   /** Human kingdom for the current match (setup + playing). */
   selectedKingdom: KingdomId;
@@ -321,8 +346,8 @@ interface GameState {
   mapClickSuppressionUntilMs: number;
   /** Full city / logistics modal — opened from hex panel, not automatically on city click. */
   cityLogisticsOpen: boolean;
-  /** City capture: cityId -> { attackerId, startedAt } when attacker holds center; capture after 5s */
-  cityCaptureHold: Record<string, { attackerId: string; startedAt: number }>;
+  /** City capture: attacker must hold center for CITY_CAPTURE_HOLD_TICKS movement ticks */
+  cityCaptureHold: Record<string, { attackerId: string; startedAtMovementTick: number }>;
   /** Human: show L3 archer doctrine modal for this city id. */
   archerDoctrineModalCityId: string | null;
 
@@ -403,8 +428,10 @@ interface GameState {
   confirmCommanderDraft: () => void;
   startRealTimeLoop: (opts?: { preserveTimes?: boolean }) => void;
   stopRealTimeLoop: () => void;
-  /** Set sim speed (1x, 2x, 4x) for bot-vs-bot modes only; restarts tick interval. */
-  setSimSpeedMultiplier: (speed: 1 | 2 | 4) => void;
+  /** Set sim speed (0.5x–4x) for modes that run the local real-time loop; restarts tick interval. */
+  setSimSpeedMultiplier: (speed: SimSpeedMultiplier) => void;
+  /** Pause or resume the local real-time loop (solo / vs AI / battle test / observer). */
+  setRealTimePaused: (paused: boolean) => void;
   runCycle: () => void;
   recomputeVision: () => void;
   /** Apply authoritative snapshot from multiplayer game server (after id remap for local UI). */
@@ -625,7 +652,6 @@ interface GameState {
 
   // University building specialization
   setUniversitySpecialization: (cityId: string, buildingQ: number, buildingR: number, spec: import('@/types/game').UniversitySpecialization) => void;
-  upgradeUniversityBuilding: (cityId: string, buildingQ: number, buildingR: number) => void;
 
   // Notifications
   addNotification: (message: string, type: GameNotification['type']) => void;
@@ -683,6 +709,22 @@ export type GameMode =
   | 'battle_test'
   /** Online 1v1 — state driven by game server; local loop disabled */
   | 'multiplayer';
+
+export function gameModeSupportsLocalRtSimControls(mode: GameMode): boolean {
+  return (
+    mode === 'human_vs_ai' ||
+    mode === 'human_solo' ||
+    mode === 'battle_test' ||
+    mode === 'bot_vs_bot' ||
+    mode === 'bot_vs_bot_4' ||
+    mode === 'spectate'
+  );
+}
+
+/** Fixed economy-cycle cap: `human_vs_ai` and `multiplayer`. */
+export function gameModeUsesMatchCycleCap(mode: GameMode): boolean {
+  return mode === 'human_vs_ai' || mode === 'multiplayer';
+}
 
 /** When set on an order, only these units receive the order on confirm; omitted = whole stack (legacy). */
 type TacticalParticipation = { participatingUnitIds?: string[] };
@@ -1208,8 +1250,16 @@ export const useGameStore = create<GameState>((set, get) => ({
   combatMoraleState: new Map(),
   combatKillFeed: [],
   activeWeather: null, lastWeatherEndCycle: -10,
-  gameEndTime: 0, nextCycleTime: 0, gameTimeRemaining: GAME_DURATION_SEC, cycleTimeRemaining: CYCLE_INTERVAL_SEC,
+  gameEndTime: 0,
+  nextCycleTime: 0,
+  gameTimeRemaining: GAME_DURATION_SEC,
+  cycleTimeRemaining: CYCLE_INTERVAL_SEC,
+  movementTickInCycle: 0,
+  globalMovementTick: 0,
+  simTimeMs: 0,
   simSpeedMultiplier: 1,
+  realTimePaused: false,
+  realTimePauseStartedAtMs: null,
   selectedKingdom: DEFAULT_KINGDOM_ID,
   setSelectedKingdom: (k) => set({ selectedKingdom: k }),
   setTacticalCityDefenseMode: (mode) => set({ tacticalCityDefenseMode: mode }),
@@ -1293,6 +1343,11 @@ export const useGameStore = create<GameState>((set, get) => ({
       specialRegionSearchGuideModal: null,
       isGenerated: true,
       phase: 'setup',
+      realTimePaused: false,
+      realTimePauseStartedAtMs: null,
+      movementTickInCycle: 0,
+      globalMovementTick: 0,
+      simTimeMs: 0,
     });
   },
   getTile: (q, r) => get().tiles.get(tileKey(q, r)),
@@ -2213,21 +2268,26 @@ export const useGameStore = create<GameState>((set, get) => ({
     if (unitsNoBuilders.length !== s.units.length) {
       set({ units: unitsNoBuilders });
     }
-    const isBot = s.gameMode === 'bot_vs_bot' || s.gameMode === 'bot_vs_bot_4' || s.gameMode === 'spectate';
     const isSolo = s.gameMode === 'human_solo';
     const isBattleTest = s.gameMode === 'battle_test';
-    const speed = isBot ? (s.simSpeedMultiplier || 1) : 1;
+    const speed = gameModeSupportsLocalRtSimControls(s.gameMode) ? (s.simSpeedMultiplier || 1) : 1;
     const intervalMs = 1000 / speed;
 
     if (!opts?.preserveTimes) {
       const now = Date.now();
       const matchDurationSec =
         isBattleTest ? 86400 * 365 * 100 : isSolo ? 86400 * 365 : GAME_DURATION_SEC;
+      const capped = gameModeUsesMatchCycleCap(s.gameMode);
       set({
-        gameEndTime: now + (matchDurationSec * 1000) / speed,
-        nextCycleTime: now + (CYCLE_INTERVAL_SEC * 1000) / speed,
-        gameTimeRemaining: matchDurationSec,
-        cycleTimeRemaining: CYCLE_INTERVAL_SEC,
+        gameEndTime: capped ? now + matchDurationSec * 1000 : now + (matchDurationSec * 1000) / speed,
+        nextCycleTime: capped ? now + CYCLE_INTERVAL_SEC * 1000 : now + (CYCLE_INTERVAL_SEC * 1000) / speed,
+        gameTimeRemaining: capped ? MAX_MATCH_ECONOMY_CYCLES : matchDurationSec,
+        cycleTimeRemaining: capped ? MOVEMENT_TICKS_PER_ECONOMY_CYCLE : CYCLE_INTERVAL_SEC,
+        movementTickInCycle: 0,
+        globalMovementTick: 0,
+        simTimeMs: 0,
+        realTimePaused: false,
+        realTimePauseStartedAtMs: null,
       });
     }
 
@@ -2236,10 +2296,20 @@ export const useGameStore = create<GameState>((set, get) => ({
       const s = get();
       if (s.phase !== 'playing') { clearAllTimers(); return; }
 
-      const now = Date.now();
-      const gameRem = Math.max(0, Math.ceil((s.gameEndTime - now) / 1000));
-      const cycleRem = Math.max(0, Math.ceil((s.nextCycleTime - now) / 1000));
-      set({ gameTimeRemaining: gameRem, cycleTimeRemaining: cycleRem });
+      const nowWall = Date.now();
+      const simNow = s.simTimeMs;
+      const m = s.movementTickInCycle;
+      const capped = gameModeUsesMatchCycleCap(s.gameMode);
+      const gameRem = Math.max(0, Math.ceil((s.gameEndTime - nowWall) / 1000));
+      const cycleRem = Math.max(0, Math.ceil((s.nextCycleTime - nowWall) / 1000));
+      if (capped) {
+        set({
+          gameTimeRemaining: Math.max(0, MAX_MATCH_ECONOMY_CYCLES - s.cycle),
+          cycleTimeRemaining: Math.max(0, MOVEMENT_TICKS_PER_ECONOMY_CYCLE - m),
+        });
+      } else {
+        set({ gameTimeRemaining: gameRem, cycleTimeRemaining: cycleRem });
+      }
 
       const defenseInstallationsMut = (s.defenseInstallations ?? []).map(d => ({ ...d }));
 
@@ -2253,7 +2323,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         s.tiles,
         s.wallSections,
         s.cities,
-        Date.now(),
+        simNow,
         s.players,
         s.scrollAttachments,
         s.cycle,
@@ -2273,7 +2343,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         s.cycle,
         s.cities,
         s.tiles,
-        now,
+        simNow,
         defenseInstallationsMut,
         s.territory,
         s.scrollAttachments,
@@ -2289,7 +2359,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         s.cycle,
         s.cities,
         s.tiles,
-        now,
+        simNow,
         s.scrollAttachments,
         movingCommanders,
       );
@@ -2357,7 +2427,9 @@ export const useGameStore = create<GameState>((set, get) => ({
 
       // -- City capture hold: attacker holds center 5s to capture (design §13, 35); pop=0 = easy take
       let citiesFinal = updatedCities;
-      let captureHoldNext: Record<string, { attackerId: string; startedAt: number }> = { ...s.cityCaptureHold };
+      let captureHoldNext: Record<string, { attackerId: string; startedAtMovementTick: number }> = {
+        ...s.cityCaptureHold,
+      };
       const captureNotifs: GameNotification[] = [];
       for (const city of citiesFinal) {
         const contenders = [
@@ -2393,13 +2465,23 @@ export const useGameStore = create<GameState>((set, get) => ({
         }
         const existing = captureHoldNext[city.id];
         if (!existing || existing.attackerId !== attackerId) {
-          captureHoldNext[city.id] = { attackerId, startedAt: now };
-        } else if (now - existing.startedAt >= CITY_CAPTURE_HOLD_MS) {
+          captureHoldNext[city.id] = { attackerId, startedAtMovementTick: s.globalMovementTick };
+        } else if (s.globalMovementTick - existing.startedAtMovementTick >= CITY_CAPTURE_HOLD_TICKS) {
           citiesFinal = citiesFinal.map(c => (c.id === city.id ? { ...c, ownerId: attackerId } : c));
           delete captureHoldNext[city.id];
           captureNotifs.push({ id: generateId('n'), turn: s.cycle, message: `${city.name} captured!`, type: 'success' });
         }
       }
+      citiesFinal = syncUniversityBuildingLevelsForCities(citiesFinal, {
+        onLevelUp: ({ city, newLevel }) => {
+          if (city.ownerId === HUMAN_ID) {
+            get().addNotification(
+              `${city.name}: University reached level ${newLevel} — you may change specialization.`,
+              'success',
+            );
+          }
+        },
+      });
       clearInvalidCommanderAssignments(movingCommanders, citiesFinal, s.operationalArmies ?? []);
 
       const territoryAfterCapture = citiesFinal !== updatedCities ? calculateTerritory(citiesFinal, s.tiles) : undefined;
@@ -2465,7 +2547,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         if (ow !== undefined && ow !== d.ownerId) return { ...d, ownerId: ow };
         return d;
       });
-      const fxNow = Date.now();
+      const fxNow = nowWall;
       const defenseVolleyCombined = [
         ...combatResult.defenseVolleyFx,
         ...coastalResult.defenseVolleyFx,
@@ -2709,6 +2791,7 @@ export const useGameStore = create<GameState>((set, get) => ({
                 if (city) {
                   const b: CityBuilding = { type: site.type as BuildingType, q: site.q, r: site.r };
                   if (['quarry', 'mine', 'gold_mine', 'barracks', 'factory', 'academy', 'siege_workshop', 'farm', 'banana_farm', 'sawmill', 'port', 'shipyard', 'fishery', 'logging_hut', 'market', 'social_bar'].includes(site.type)) b.level = 1;
+                  if (site.type === 'university') b.level = computeUniversityBuildingLevelFromPopulation(city.population);
                   const jobs = BUILDING_JOBS[site.type as BuildingType] ?? 0;
                   if (jobs > 0) {
                     const totalEmployed = city.buildings.reduce((s, x) => s + ((x as CityBuilding).assignedWorkers ?? 0), 0);
@@ -2798,13 +2881,12 @@ export const useGameStore = create<GameState>((set, get) => ({
       {
         const st = get();
         if (st.scoutMissions.length > 0) {
-          const nowMs = Date.now();
           const remaining: ScoutMission[] = [];
           const newScouted = new Set(st.scoutedHexes);
           const scoutNotifs: GameNotification[] = [];
 
           for (const mission of st.scoutMissions) {
-            if (nowMs >= mission.completesAt) {
+            if (st.globalMovementTick >= mission.completesAtMovementTick) {
               newScouted.add(tileKey(mission.targetQ, mission.targetR));
               scoutNotifs.push({
                 id: generateId('n'), turn: st.cycle,
@@ -2819,7 +2901,7 @@ export const useGameStore = create<GameState>((set, get) => ({
           if (remaining.length !== st.scoutMissions.length) {
             const exploredNext = new Set(st.exploredHexes);
             for (const mission of st.scoutMissions) {
-              if (nowMs >= mission.completesAt) {
+              if (st.globalMovementTick >= mission.completesAtMovementTick) {
                 exploredNext.add(tileKey(mission.targetQ, mission.targetR));
               }
             }
@@ -2838,16 +2920,26 @@ export const useGameStore = create<GameState>((set, get) => ({
       // Recompute vision
       get().recomputeVision();
 
-      // Run economy cycle? (skipped in battle test — no resources, upkeep, or AI empire plan)
-      if (now >= s.nextCycleTime && s.gameMode !== 'battle_test') {
+      // Economy cycle after every MOVEMENT_TICKS_PER_ECONOMY_CYCLE movement ticks (skipped in battle test)
+      if (m === MOVEMENT_TICKS_PER_ECONOMY_CYCLE - 1 && s.gameMode !== 'battle_test') {
         get().runCycle();
-        const speedForCycle = (s.gameMode === 'bot_vs_bot' || s.gameMode === 'bot_vs_bot_4' || s.gameMode === 'spectate') ? (s.simSpeedMultiplier || 1) : 1;
-        set({ nextCycleTime: now + (CYCLE_INTERVAL_SEC * 1000) / speedForCycle });
       }
 
-      // Game over?
-      if (gameRem <= 0) {
-        const st = get();
+      // Advance sim tick counters (one movement tick completed)
+      {
+        const stAdv = get();
+        if (stAdv.phase === 'playing') {
+          set({
+            globalMovementTick: stAdv.globalMovementTick + 1,
+            movementTickInCycle: (m + 1) % MOVEMENT_TICKS_PER_ECONOMY_CYCLE,
+            simTimeMs: stAdv.simTimeMs + MS_PER_MOVEMENT_TICK,
+          });
+        }
+      }
+
+      // Game over? Wall-clock timeout for non-capped modes only
+      const st = get();
+      if (!gameModeUsesMatchCycleCap(st.gameMode) && gameRem <= 0) {
         if (st.gameMode === 'human_solo' || st.gameMode === 'battle_test') {
           const now = Date.now();
           const extSec = 86400 * 365;
@@ -2910,9 +3002,19 @@ export const useGameStore = create<GameState>((set, get) => ({
     }, intervalMs);
   },
 
-  setSimSpeedMultiplier: (speed: 1 | 2 | 4) => {
+  setSimSpeedMultiplier: speed => {
     const s = get();
-    if (s.phase !== 'playing' || (s.gameMode !== 'bot_vs_bot' && s.gameMode !== 'bot_vs_bot_4' && s.gameMode !== 'spectate')) return;
+    if (s.phase !== 'playing' || !gameModeSupportsLocalRtSimControls(s.gameMode)) return;
+    if (s.realTimePaused) {
+      set({ simSpeedMultiplier: speed });
+      return;
+    }
+    if (gameModeUsesMatchCycleCap(s.gameMode)) {
+      set({ simSpeedMultiplier: speed });
+      clearAllTimers();
+      get().startRealTimeLoop({ preserveTimes: true });
+      return;
+    }
     const now = Date.now();
     const curSpeed = s.simSpeedMultiplier || 1;
     const gameRemSec = Math.max(0, (s.gameEndTime - now) / 1000) * curSpeed;
@@ -2923,6 +3025,31 @@ export const useGameStore = create<GameState>((set, get) => ({
       nextCycleTime: now + (cycleRemSec * 1000) / speed,
     });
     clearAllTimers();
+    get().startRealTimeLoop({ preserveTimes: true });
+  },
+
+  setRealTimePaused: paused => {
+    const s = get();
+    if (s.phase !== 'playing' || !gameModeSupportsLocalRtSimControls(s.gameMode)) return;
+    if (paused === s.realTimePaused) return;
+    if (paused) {
+      set({ realTimePaused: true, realTimePauseStartedAtMs: Date.now() });
+      clearAllTimers();
+      return;
+    }
+    const started = s.realTimePauseStartedAtMs;
+    const now = Date.now();
+    const drift = started != null ? now - started : 0;
+    if (gameModeUsesMatchCycleCap(s.gameMode)) {
+      set({ realTimePaused: false, realTimePauseStartedAtMs: null });
+    } else {
+      set({
+        realTimePaused: false,
+        realTimePauseStartedAtMs: null,
+        gameEndTime: s.gameEndTime + drift,
+        nextCycleTime: s.nextCycleTime + drift,
+      });
+    }
     get().startRealTimeLoop({ preserveTimes: true });
   },
 
@@ -3245,7 +3372,7 @@ export const useGameStore = create<GameState>((set, get) => ({
             id: generateId('scout'),
             targetQ: scout.targetQ,
             targetR: scout.targetR,
-            completesAt: Date.now() + SCOUT_MISSION_DURATION_SEC * 1000,
+            completesAtMovementTick: s.globalMovementTick + SCOUT_MISSION_MOVEMENT_TICKS,
           }];
         }
       }
@@ -3483,6 +3610,26 @@ export const useGameStore = create<GameState>((set, get) => ({
       }
     } else if (s.gameMode === 'battle_test') {
       // No cities; victory/defeat is not city-based (runCycle is skipped in RT loop, but keep consistent).
+    } else if (gameModeUsesMatchCycleCap(s.gameMode) && newCycle >= MAX_MATCH_ECONOMY_CYCLES) {
+      phase = 'victory';
+      clearAllTimers();
+      const humanCities = citiesForSet.filter(c => c.ownerId === HUMAN_ID);
+      const aiIds = s.players.filter(p => !p.isHuman).map(p => p.id);
+      const aiCities = citiesForSet.filter(c => aiIds.includes(c.ownerId));
+      const humanPop = humanCities.reduce((a, c) => a + c.population, 0);
+      const aiPop = aiCities.reduce((a, c) => a + c.population, 0);
+      const humanWins =
+        humanCities.length > aiCities.length ||
+        (humanCities.length === aiCities.length && humanPop >= aiPop);
+      const msg = humanWins
+        ? 'Cycle limit: you control more territory. Victory!'
+        : 'Cycle limit: rival empires dominate. Defeat.';
+      notifs.push({
+        id: generateId('n'),
+        turn: newCycle,
+        message: msg,
+        type: humanWins ? 'success' : 'danger',
+      });
     } else {
       const humanCities = citiesForSet.filter(c => c.ownerId === HUMAN_ID);
       const aiIds = s.players.filter(p => !p.isHuman).map(p => p.id);
@@ -3518,12 +3665,13 @@ export const useGameStore = create<GameState>((set, get) => ({
     let politiciansMut = s.politicians ? [...s.politicians] : [];
     for (const p of playersForSet) {
       const result = processResearchTick(p, citiesWallStone, flushCommanders, politiciansMut);
-      if (result.completedTech) {
+      if (result.completedTech && p.id === HUMAN_ID) {
         const techLabel = TECH_TREE[result.completedTech]?.label ?? result.completedTech;
+        const detail = formatTechUnlockSummary(result.completedTech);
         notifs.push({
           id: generateId('n'),
           turn: newCycle,
-          message: `Research complete: ${techLabel}!`,
+          message: `Research complete: ${techLabel}! ${detail}`,
           type: 'success',
         });
       }
@@ -3531,7 +3679,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       for (const city of citiesWallStone.filter(c => c.ownerId === p.id)) {
         for (const bldg of city.buildings) {
           if (bldg.type !== 'university') continue;
-          const grad = rollUniversityGraduate(bldg, newCycle * 1000 + city.q * 100 + city.r);
+          const grad = rollUniversityGraduate(bldg, city.population, newCycle * 1000 + city.q * 100 + city.r);
           if (grad.kind === 'politician') {
             const identity = rollPoliticianIdentity(grad.seed);
             const pol = createPoliticianRecord(p.id, identity);
@@ -3576,6 +3724,15 @@ export const useGameStore = create<GameState>((set, get) => ({
         }
       }
     }
+
+    // Shallow-clone per player so literacy / research mutations are visible to Zustand subscribers.
+    playersForSet = playersForSet.map(p => ({
+      ...p,
+      education: p.education ? { ...p.education } : { level: 1, literacy: 0 },
+      researchedTechs: [...(p.researchedTechs ?? STARTING_TECHS)],
+      activeResearch: p.activeResearch ?? null,
+      researchProgress: p.researchProgress ?? 0,
+    }));
 
     set({
       cities: citiesWallStone,
@@ -3992,7 +4149,8 @@ export const useGameStore = create<GameState>((set, get) => ({
 
     const playerTechs = player.researchedTechs ?? STARTING_TECHS;
     if (!isBuildingUnlockedByTech(type, playerTechs)) {
-      get().addNotification(`Technology required to build ${type.replace(/_/g, ' ')}.`, 'warning');
+      const msg = notResearchedMessageForBuilding(type, playerTechs);
+      get().addNotification(msg ?? 'Not researched yet.', 'warning');
       return;
     }
 
@@ -4087,6 +4245,12 @@ export const useGameStore = create<GameState>((set, get) => ({
     const player = s.players.find(p => p.id === HUMAN_ID);
     if (!player || player.gold < TREBUCHET_FIELD_GOLD_COST) {
       get().addNotification(`Need ${TREBUCHET_FIELD_GOLD_COST} gold to build trebuchet!`, 'warning');
+      return;
+    }
+    const playerTechs = player.researchedTechs ?? STARTING_TECHS;
+    if (!isUnitUnlockedByTech('trebuchet', playerTechs)) {
+      const msg = notResearchedMessageForUnit('trebuchet', playerTechs);
+      get().addNotification(msg ?? 'Not researched yet.', 'warning');
       return;
     }
     const tile = s.tiles.get(tileKey(q, r));
@@ -4334,10 +4498,13 @@ export const useGameStore = create<GameState>((set, get) => ({
     const lvl = building.level ?? 1;
     const techMaxLevel = maxBuildingLevelByTech('barracks', player.researchedTechs ?? STARTING_TECHS);
     if (lvl >= techMaxLevel) {
-      get().addNotification(lvl >= 3 ? 'Barracks is at max level (L3).' : 'Research required to upgrade further.', 'info'); return;
-    }
-    if (lvl >= 3) {
-      get().addNotification('Barracks is at max level (L3).', 'info'); return;
+      if (lvl >= 3) {
+        get().addNotification('Barracks is at max level (L3).', 'info');
+      } else {
+        const msg = notResearchedMessageForBuildingLevel('barracks', lvl + 1, player.researchedTechs ?? STARTING_TECHS);
+        get().addNotification(msg ?? 'Not researched yet.', 'warning');
+      }
+      return;
     }
     const cost = lvl === 1 ? BARACKS_UPGRADE_COST : BARACKS_L3_UPGRADE_COST;
     if (player.gold < cost) {
@@ -4395,6 +4562,12 @@ export const useGameStore = create<GameState>((set, get) => ({
     if (lvl >= 2) {
       get().addNotification('Factory already upgraded!', 'info'); return;
     }
+    const techs = player.researchedTechs ?? STARTING_TECHS;
+    if (maxBuildingLevelByTech('factory', techs) < 2) {
+      const msg = notResearchedMessageForBuildingLevel('factory', 2, techs);
+      get().addNotification(msg ?? 'Not researched yet.', 'warning');
+      return;
+    }
     const newCities = s.cities.map(c => {
       if (c.id !== cityId) return c;
       return {
@@ -4428,6 +4601,13 @@ export const useGameStore = create<GameState>((set, get) => ({
     const lvl = building.level ?? 1;
     if (lvl >= 2) {
       get().addNotification('Farm already upgraded!', 'info'); return;
+    }
+    const farmTechType: BuildingType = building.type === 'banana_farm' ? 'banana_farm' : 'farm';
+    const techs = player.researchedTechs ?? STARTING_TECHS;
+    if (maxBuildingLevelByTech(farmTechType, techs) < 2) {
+      const msg = notResearchedMessageForBuildingLevel(farmTechType, 2, techs);
+      get().addNotification(msg ?? 'Not researched yet.', 'warning');
+      return;
     }
     const newCities = s.cities.map(c => {
       if (c.id !== cityId) return c;
@@ -4466,6 +4646,12 @@ export const useGameStore = create<GameState>((set, get) => ({
     const lvl = building.level ?? 1;
     if (lvl >= 2) {
       get().addNotification('This site is already upgraded (L2).', 'info');
+      return;
+    }
+    const techs = player.researchedTechs ?? STARTING_TECHS;
+    if (maxBuildingLevelByTech(building.type, techs) < 2) {
+      const msg = notResearchedMessageForBuildingLevel(building.type, 2, techs);
+      get().addNotification(msg ?? 'Not researched yet.', 'warning');
       return;
     }
     const label =
@@ -4796,6 +4982,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       get().addNotification('Build ships at a Shipyard (Ships panel).', 'info'); return;
     }
 
+    const playerTechs = player.researchedTechs ?? STARTING_TECHS;
+
     const isBuilder = type === 'builder';
     const barracks = city.buildings.find(b => b.type === 'barracks');
     const barracksLvl = barracks ? (barracks.level ?? 1) : 1;
@@ -4818,6 +5006,12 @@ export const useGameStore = create<GameState>((set, get) => ({
       }
     }
 
+    if (!isBuilder && !isUnitUnlockedByTech(type, playerTechs)) {
+      const msg = notResearchedMessageForUnit(type, playerTechs);
+      get().addNotification(msg ?? 'Not researched yet.', 'warning');
+      return;
+    }
+
     if (isBuilder) {
       get().addNotification('Builders are tied to your University level — open the University to set workforce tasks.', 'info');
       return;
@@ -4830,11 +5024,11 @@ export const useGameStore = create<GameState>((set, get) => ({
       if (!barracks) {
         get().addNotification('Build a Barracks to recruit military units!', 'warning'); return;
       }
-      if (type === 'defender' && barracksLvl < 2) {
-        get().addNotification('Upgrade barracks to L2 to recruit Defenders!', 'warning'); return;
+      if (wantL2 && barracksLvl < 2) {
+        get().addNotification('Upgrade barracks to L2 to recruit L2 units!', 'warning'); return;
       }
-      if ((wantL2 || wantL3) && type !== 'defender' && barracksLvl < 2) {
-        get().addNotification('Upgrade barracks first to recruit L2/L3 units!', 'warning'); return;
+      if (wantL3 && barracksLvl < 3) {
+        get().addNotification('Upgrade barracks to L3 to recruit L3 (iron) units!', 'warning'); return;
       }
     }
 
@@ -5459,6 +5653,12 @@ export const useGameStore = create<GameState>((set, get) => ({
     if (!player || !city) return;
     if (shipType === 'fisher_transport' && player.kingdomId !== 'fishers') {
       get().addNotification('Fisher boats are exclusive to the Fishers kingdom.', 'warning'); return;
+    }
+    const shipTechs = player.researchedTechs ?? STARTING_TECHS;
+    if (!isUnitUnlockedByTech(shipType, shipTechs)) {
+      const msg = notResearchedMessageForUnit(shipType, shipTechs);
+      get().addNotification(msg ?? 'Not researched yet.', 'warning');
+      return;
     }
     const yard = city.buildings.some(b => b.type === 'shipyard' && b.q === shipyardQ && b.r === shipyardR);
     if (!yard) {
@@ -7327,9 +7527,20 @@ export const useGameStore = create<GameState>((set, get) => ({
     }
     const ids = new Set(toRemove.map(u => u.id));
     const newUnits = s.units.filter(u => !ids.has(u.id));
-    const newCities = Object.keys(popByCity).length === 0 ? s.cities : s.cities.map(c => {
-      const add = popByCity[c.id] ?? 0;
-      return add > 0 ? { ...c, population: c.population + add } : c;
+    const popAdjusted =
+      Object.keys(popByCity).length === 0 ? s.cities : s.cities.map(c => {
+        const add = popByCity[c.id] ?? 0;
+        return add > 0 ? { ...c, population: c.population + add } : c;
+      });
+    const newCities = syncUniversityBuildingLevelsForCities(popAdjusted, {
+      onLevelUp: ({ city, newLevel }) => {
+        if (city.ownerId === HUMAN_ID) {
+          get().addNotification(
+            `${city.name}: University reached level ${newLevel} — you may change specialization.`,
+            'success',
+          );
+        }
+      },
     });
     set({ units: newUnits, cities: newCities, selectedHex: null, stackMoveUnitId: null, uiMode: 'normal' });
     get().addNotification(`Disbanded ${toRemove.length} unit(s); population returned.`, 'info');
@@ -7462,7 +7673,9 @@ export const useGameStore = create<GameState>((set, get) => ({
     if (!hasArmy) { get().addNotification('Need an army on the city!', 'warning'); return; }
 
     set({
-      cities: s.cities.map(c => c.id !== cityId ? c : { ...c, population: Math.max(1, Math.floor(c.population / 2)) }),
+      cities: syncUniversityBuildingLevelsForCities(
+        s.cities.map(c => (c.id !== cityId ? c : { ...c, population: Math.max(1, Math.floor(c.population / 2)) })),
+      ),
     });
     get().addNotification(`${city.name} burned! Population halved.`, 'danger');
   },
@@ -7702,7 +7915,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       id: generateId('scout'),
       targetQ: q,
       targetR: r,
-      completesAt: Date.now() + SCOUT_MISSION_DURATION_SEC * 1000,
+      completesAtMovementTick: s.globalMovementTick + SCOUT_MISSION_MOVEMENT_TICKS,
     };
 
     set({
@@ -7710,7 +7923,12 @@ export const useGameStore = create<GameState>((set, get) => ({
       scoutMissions: [...s.scoutMissions, mission],
       notifications: [
         ...s.notifications.slice(-8),
-        { id: generateId('n'), turn: s.cycle, message: `Scout dispatched to (${q}, ${r}) — ${SCOUT_MISSION_DURATION_SEC}s`, type: 'info' },
+        {
+          id: generateId('n'),
+          turn: s.cycle,
+          message: `Scout dispatched to (${q}, ${r}) — ${SCOUT_MISSION_MOVEMENT_TICKS} ticks`,
+          type: 'info',
+        },
       ],
     });
   },
@@ -7959,59 +8177,29 @@ export const useGameStore = create<GameState>((set, get) => ({
   // ─── University Building ────────────────────────────────
   setUniversitySpecialization: (cityId, buildingQ, buildingR, spec) => {
     const s = get();
+    const city = s.cities.find(c => c.id === cityId && c.ownerId === HUMAN_ID);
+    if (!city) return;
+    const building = city.buildings.find(b => b.q === buildingQ && b.r === buildingR && b.type === 'university');
+    if (!building) return;
+    const level = computeUniversityBuildingLevelFromPopulation(city.population);
+    const lastSet = building.universitySpecLastSetAtLevel ?? 0;
+    if (level <= lastSet) {
+      get().addNotification(
+        'Change specialization after the university gains a level from population growth (every 50 population in this city).',
+        'warning',
+      );
+      return;
+    }
     const cities = s.cities.map(c => {
       if (c.id !== cityId) return c;
       const buildings = c.buildings.map(b =>
         b.q === buildingQ && b.r === buildingR && b.type === 'university'
-          ? { ...b, universitySpecialization: spec }
+          ? { ...b, universitySpecialization: spec, universitySpecLastSetAtLevel: level }
           : b,
       );
       return { ...c, buildings };
     });
     set({ cities });
-  },
-
-  upgradeUniversityBuilding: (cityId, buildingQ, buildingR) => {
-    const s = get();
-    const city = s.cities.find(c => c.id === cityId);
-    if (!city) return;
-    const building = city.buildings.find(b => b.q === buildingQ && b.r === buildingR && b.type === 'university');
-    if (!building) return;
-    const level = building.level ?? 1;
-    if (level >= 5) return;
-    const costIdx = level - 1;
-    if (costIdx < 0 || costIdx >= UNIVERSITY_BUILDING_UPGRADE_COSTS.length) return;
-    const cost = UNIVERSITY_BUILDING_UPGRADE_COSTS[costIdx];
-    const human = s.players.find(p => p.id === HUMAN_ID);
-    if (!human || human.gold < cost) {
-      set(prev => ({
-        notifications: [
-          ...prev.notifications,
-          { id: generateId('n'), turn: prev.cycle, message: `Not enough gold (need ${cost}g) to upgrade university.`, type: 'warning' },
-        ],
-      }));
-      return;
-    }
-    const players = s.players.map(p =>
-      p.id === HUMAN_ID ? { ...p, gold: p.gold - cost } : p,
-    );
-    const cities = s.cities.map(c => {
-      if (c.id !== cityId) return c;
-      const buildings = c.buildings.map(b =>
-        b.q === buildingQ && b.r === buildingR && b.type === 'university'
-          ? { ...b, level: (b.level ?? 1) + 1 }
-          : b,
-      );
-      return { ...c, buildings };
-    });
-    set({
-      players,
-      cities,
-      notifications: [
-        ...s.notifications,
-        { id: generateId('n'), turn: s.cycle, message: `University upgraded to level ${level + 1}!`, type: 'success' },
-      ],
-    });
   },
 
   applyMultiplayerSnapshot: (data, role) => {
@@ -8028,7 +8216,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       provinceCenters: [],
       specialRegions: [],
       isGenerated: true,
-      cities: remapped.cities,
+      cities: syncUniversityBuildingLevelsForCities(remapped.cities),
       units: remapped.units,
       players: remapped.players,
       heroes: remapped.heroes,
@@ -8065,8 +8253,14 @@ export const useGameStore = create<GameState>((set, get) => ({
       combatKillFeed: [],
       gameEndTime: now + GAME_DURATION_SEC * 1000,
       nextCycleTime: now + CYCLE_INTERVAL_SEC * 1000,
-      gameTimeRemaining: GAME_DURATION_SEC,
-      cycleTimeRemaining: CYCLE_INTERVAL_SEC,
+      gameTimeRemaining: Math.max(0, MAX_MATCH_ECONOMY_CYCLES - remapped.cycle),
+      cycleTimeRemaining: Math.max(
+        0,
+        MOVEMENT_TICKS_PER_ECONOMY_CYCLE - (remapped.globalMovementTick % MOVEMENT_TICKS_PER_ECONOMY_CYCLE),
+      ),
+      movementTickInCycle: remapped.globalMovementTick % MOVEMENT_TICKS_PER_ECONOMY_CYCLE,
+      globalMovementTick: remapped.globalMovementTick,
+      simTimeMs: remapped.simTimeMs,
     });
     get().recomputeVision();
   },

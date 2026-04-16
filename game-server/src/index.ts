@@ -1,6 +1,11 @@
 /**
  * Authoritative multiplayer match process: WebSocket rooms + headless {@link stepSimulation}.
  * Run from repo root: `npm run game-server` or `cd game-server && npm run dev`.
+ *
+ * Each server interval runs one full {@link stepSimulation} (economy + one movement pass).
+ * The client live loop runs 30 movement ticks per economy; SimState.globalMovementTick
+ * advances by 30 per step so timers/scouts/capture stay in the same tick space. Finer
+ * movement parity would require extracting a movement-only step and calling it 30× per economy.
  */
 
 import { WebSocketServer, WebSocket } from 'ws';
@@ -13,12 +18,16 @@ import {
 } from '../../src/core/gameCore.ts';
 import { emptyAiActions, type AiActions } from '../../src/lib/ai.ts';
 import { serializeSimState, type SerializedSimState } from '../../src/lib/simStateSerialization.ts';
+import { MAX_MATCH_ECONOMY_CYCLES } from '../../src/types/game.ts';
 
 const PORT = Number(process.env.PORT ?? 3333);
 const TICK_MS = Number(process.env.MULTIPLAYER_TICK_MS ?? 4000);
 
 const P1 = 'player_ai';
 const P2 = 'player_ai_2';
+
+const SIM_SPEEDS = [0.5, 1, 2, 4] as const;
+type SimSpeedMultiplier = (typeof SIM_SPEEDS)[number];
 
 type ClientMeta = { socket: WebSocket; role: 'host' | 'guest'; playerId: typeof P1 | typeof P2 };
 
@@ -28,9 +37,17 @@ type Room = {
   clients: Map<WebSocket, ClientMeta>;
   pending: Record<string, AiActions>;
   tickTimer: ReturnType<typeof setInterval> | null;
+  /** Economy / AI step interval (derived from {@link TICK_MS} / speed). */
+  effectiveTickMs: number;
+  speedMultiplier: SimSpeedMultiplier;
+  paused: boolean;
 };
 
 const rooms = new Map<string, Room>();
+
+function roomEffectiveTickMs(room: Room): number {
+  return Math.max(250, Math.round(TICK_MS / room.speedMultiplier));
+}
 
 function getOrCreateRoom(roomId: string): Room {
   let r = rooms.get(roomId);
@@ -41,7 +58,11 @@ function getOrCreateRoom(roomId: string): Room {
       clients: new Map(),
       pending: { [P1]: emptyAiActions(), [P2]: emptyAiActions() },
       tickTimer: null,
+      speedMultiplier: 1,
+      paused: false,
+      effectiveTickMs: TICK_MS,
     };
+    r.effectiveTickMs = roomEffectiveTickMs(r);
     rooms.set(roomId, r);
   }
   return r;
@@ -55,11 +76,25 @@ function broadcast(room: Room, msg: object): void {
 }
 
 function broadcastLobby(room: Room): void {
+  room.effectiveTickMs = roomEffectiveTickMs(room);
   broadcast(room, {
     type: 'lobby',
     players: room.clients.size,
     maxPlayers: 2,
     started: room.clients.size >= 2 && room.state != null,
+    tickMs: room.effectiveTickMs,
+    paused: room.paused,
+    speedMultiplier: room.speedMultiplier,
+  });
+}
+
+function broadcastSimSettings(room: Room): void {
+  room.effectiveTickMs = roomEffectiveTickMs(room);
+  broadcast(room, {
+    type: 'sim_settings',
+    tickMs: room.effectiveTickMs,
+    paused: room.paused,
+    speedMultiplier: room.speedMultiplier,
   });
 }
 
@@ -92,14 +127,20 @@ function stepRoom(room: Room): void {
     { humanPlansByPlayerId: plans },
   );
 
+  if (room.state.phase === 'playing' && room.state.cycle >= MAX_MATCH_ECONOMY_CYCLES) {
+    room.state = { ...room.state, phase: 'victory' };
+  }
+
   const ser = serializeSimState(room.state) as SerializedSimState;
   broadcast(room, { type: 'state', payload: ser });
 }
 
 function maybeStartTick(room: Room): void {
   if (room.tickTimer) return;
-  if (room.clients.size < 2 || !room.state) return;
-  room.tickTimer = setInterval(() => stepRoom(room), TICK_MS);
+  if (room.paused || room.clients.size < 2 || !room.state) return;
+  const ms = roomEffectiveTickMs(room);
+  room.effectiveTickMs = ms;
+  room.tickTimer = setInterval(() => stepRoom(room), ms);
   stepRoom(room);
 }
 
@@ -108,6 +149,12 @@ function stopTick(room: Room): void {
     clearInterval(room.tickTimer);
     room.tickTimer = null;
   }
+}
+
+function restartTickIfRunning(room: Room): void {
+  if (!room.tickTimer) return;
+  stopTick(room);
+  maybeStartTick(room);
 }
 
 const wss = new WebSocketServer({ port: PORT });
@@ -119,6 +166,55 @@ wss.on('connection', (socket) => {
       msg = JSON.parse(String(data));
     } catch {
       socket.send(JSON.stringify({ type: 'error', message: 'Invalid JSON' }));
+      return;
+    }
+
+    if (msg.type === 'sim_control') {
+      let found: Room | undefined;
+      let meta: ClientMeta | undefined;
+      for (const r of rooms.values()) {
+        const m = r.clients.get(socket);
+        if (m) {
+          found = r;
+          meta = m;
+          break;
+        }
+      }
+      if (!found || !meta) {
+        socket.send(JSON.stringify({ type: 'error', message: 'Not in a room' }));
+        return;
+      }
+      if (meta.role !== 'host') {
+        socket.send(JSON.stringify({ type: 'error', message: 'Only the host can change game speed or pause.' }));
+        return;
+      }
+      const m = msg as {
+        type: string;
+        paused?: boolean;
+        speedMultiplier?: number;
+      };
+      let changed = false;
+      if (typeof m.paused === 'boolean' && m.paused !== found.paused) {
+        found.paused = m.paused;
+        changed = true;
+        if (m.paused) stopTick(found);
+        else maybeStartTick(found);
+      }
+      if (
+        typeof m.speedMultiplier === 'number' &&
+        (SIM_SPEEDS as readonly number[]).includes(m.speedMultiplier)
+      ) {
+        const sp = m.speedMultiplier as SimSpeedMultiplier;
+        if (sp !== found.speedMultiplier) {
+          found.speedMultiplier = sp;
+          changed = true;
+          restartTickIfRunning(found);
+        }
+      }
+      if (changed) {
+        broadcastSimSettings(found);
+        broadcastLobby(found);
+      }
       return;
     }
 
@@ -150,7 +246,9 @@ wss.on('connection', (socket) => {
           roomId: room.id,
           role: msg.role,
           playerSlot: msg.role === 'host' ? P1 : P2,
-          tickMs: TICK_MS,
+          tickMs: roomEffectiveTickMs(room),
+          paused: room.paused,
+          speedMultiplier: room.speedMultiplier,
         }),
       );
 
