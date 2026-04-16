@@ -43,6 +43,8 @@ const LEAGUE_MAX_CYCLES = parseInt(process.env.LEAGUE_MAX_CYCLES || '500', 10) |
 const LEAGUE_MAP_SIZE = parseInt(process.env.LEAGUE_MAP_SIZE || '38', 10) || 38;
 const LEAGUE_WORKERS = parseInt(process.env.LEAGUE_WORKERS || '0', 10) || 0; // 0 = main thread only
 const LEAGUE_SEED_POOL = process.env.LEAGUE_SEED_POOL || ''; // e.g. artifacts/seed_pool_v1.json → 12 candidates, 6/3/3 divisions
+const LEAGUE_CHECKPOINT_PATH = process.env.LEAGUE_CHECKPOINT_PATH || 'artifacts/league-checkpoint.json';
+const LEAGUE_RESUME = process.env.LEAGUE_RESUME === '1';
 
 // Robust training feature flags (default off for backward compatibility)
 const LEAGUE_DOMAIN_RANDOMIZATION = process.env.LEAGUE_DOMAIN_RANDOMIZATION === '1';
@@ -534,21 +536,93 @@ type LeagueReport = {
   finalStandingsA: { id: string; points: number; wins: number; params?: AiParams }[];
 };
 
+type LeagueCheckpointCandidate = {
+  id: string;
+  params: AiParams;
+  division: Division;
+};
+
+type LeagueCheckpoint = {
+  version: 'v1';
+  savedAt: string;
+  nextSeason: number;
+  seedPool?: string;
+  candidates: LeagueCheckpointCandidate[];
+  history: LeagueReport['history'];
+};
+
+function resolveCheckpointPath(filePath: string): string {
+  return path.isAbsolute(filePath) ? filePath : path.join(process.cwd(), filePath);
+}
+
+function saveLeagueCheckpoint(filePath: string, nextSeason: number, candidates: Candidate[], report: LeagueReport, seedPool?: string): void {
+  const resolved = resolveCheckpointPath(filePath);
+  fs.mkdirSync(path.dirname(resolved), { recursive: true });
+  const payload: LeagueCheckpoint = {
+    version: 'v1',
+    savedAt: new Date().toISOString(),
+    nextSeason,
+    seedPool,
+    candidates: candidates.map(c => ({
+      id: c.id,
+      params: cloneParams(c.params),
+      division: c.division,
+    })),
+    history: report.history,
+  };
+  fs.writeFileSync(resolved, JSON.stringify(payload, null, 2), 'utf8');
+}
+
+function loadLeagueCheckpoint(filePath: string): LeagueCheckpoint | null {
+  const resolved = resolveCheckpointPath(filePath);
+  if (!fs.existsSync(resolved)) return null;
+  try {
+    const raw = fs.readFileSync(resolved, 'utf8');
+    const data = JSON.parse(raw) as LeagueCheckpoint;
+    if (!Array.isArray(data.candidates) || !Array.isArray(data.history) || !Number.isFinite(data.nextSeason)) return null;
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+function restoreCandidatesFromCheckpoint(checkpoint: LeagueCheckpoint): Candidate[] {
+  return checkpoint.candidates.map(c => ({
+    id: c.id,
+    params: cloneParams(c.params),
+    division: c.division,
+    seasonStats: emptyStats(),
+  }));
+}
+
 function main() {
   assertAiParamsConsistency();
   const paramSummary = getMutationSpaceSummary();
   console.log(`Params: ${paramSummary.totalParamCount} total, ${paramSummary.paramsInMutationSpace.length} in mutation space, ${paramSummary.excludedFromMutation.length} excluded (${paramSummary.excludedReason})`);
 
   const useSeedPool = LEAGUE_SEED_POOL.length > 0;
+  const checkpoint = LEAGUE_RESUME ? loadLeagueCheckpoint(LEAGUE_CHECKPOINT_PATH) : null;
   const divLabel = useSeedPool ? '6/3/3 (seed pool)' : `${LEAGUE_DIV_SIZE} each`;
 
   console.log('League tournament');
   console.log(`  Seasons: ${LEAGUE_SEASONS}  Divisions: ${divLabel}  Map: ${LEAGUE_MAP_SIZE}x${LEAGUE_MAP_SIZE}  MaxCycles: ${LEAGUE_MAX_CYCLES}`);
   if (useSeedPool) console.log(`  Seed pool: ${LEAGUE_SEED_POOL}`);
+  if (checkpoint) console.log(`  Resuming from checkpoint: ${LEAGUE_CHECKPOINT_PATH} (next season ${checkpoint.nextSeason})`);
   console.log('');
 
-  let candidates = useSeedPool ? initialCandidatesFromSeedPool(LEAGUE_SEED_POOL) : initialCandidates();
-  const report: LeagueReport = {
+  let candidates = checkpoint
+    ? restoreCandidatesFromCheckpoint(checkpoint)
+    : useSeedPool
+      ? initialCandidatesFromSeedPool(LEAGUE_SEED_POOL)
+      : initialCandidates();
+  const report: LeagueReport = checkpoint ? {
+    seasons: LEAGUE_SEASONS,
+    divSize: checkpoint.seedPool ? 6 : LEAGUE_DIV_SIZE,
+    seedPool: checkpoint.seedPool,
+    history: checkpoint.history,
+    champion: { id: '', division: 'A' },
+    finalStandingsA: [],
+  } : {
     seasons: LEAGUE_SEASONS,
     divSize: useSeedPool ? 6 : LEAGUE_DIV_SIZE,
     seedPool: useSeedPool ? LEAGUE_SEED_POOL : undefined,
@@ -556,8 +630,10 @@ function main() {
     champion: { id: '', division: 'A' },
     finalStandingsA: [],
   };
+  const seedPoolForCheckpoint = checkpoint?.seedPool ?? (useSeedPool ? LEAGUE_SEED_POOL : undefined);
+  const startSeason = checkpoint?.nextSeason ?? 1;
 
-  for (let season = 1; season <= LEAGUE_SEASONS; season++) {
+  for (let season = startSeason; season <= LEAGUE_SEASONS; season++) {
     for (const c of candidates) {
       c.seasonStats = emptyStats();
       if (LEAGUE_USE_ROBUST_SELECTION) c.gameScores = [];
@@ -654,6 +730,8 @@ function main() {
     console.log('  A:', standingsA.map(s => `${s.id}=${s.points}(W${s.wins}L${s.losses}D${s.draws})`).join('  '));
     console.log('  B:', standingsB.map(s => `${s.id}=${s.points}(W${s.wins}L${s.losses}D${s.draws})`).join('  '));
     console.log('  C:', standingsC.map(s => `${s.id}=${s.points}(W${s.wins}L${s.losses}D${s.draws})`).join('  '));
+
+    saveLeagueCheckpoint(LEAGUE_CHECKPOINT_PATH, season + 1, candidates, report, seedPoolForCheckpoint);
   }
 
   const finalA = candidates.filter(c => c.division === 'A').sort(compareCandidates);
@@ -685,6 +763,13 @@ function main() {
   const reportPath = path.join(artifactsDir, 'league-last.json');
   fs.writeFileSync(reportPath, JSON.stringify(report, null, 2), 'utf8');
   console.log('Saved league report to', reportPath);
+
+  try {
+    fs.unlinkSync(resolveCheckpointPath(LEAGUE_CHECKPOINT_PATH));
+    console.log('Cleared league checkpoint at', LEAGUE_CHECKPOINT_PATH);
+  } catch {
+    // ignore missing checkpoint
+  }
 
   // Champion library: append, dedupe by param distance, cap
   const championLibraryPath = path.join(artifactsDir, 'champion-library.json');
