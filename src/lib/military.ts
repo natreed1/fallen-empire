@@ -2147,36 +2147,87 @@ function stepTowardZOC(
   return greedy;
 }
 
-/** When land units share a water hex with a friendly scout ship, board if there is cargo room. */
-export function autoEmbarkLandUnitsOntoScoutShipsAtHex(units: Unit[], tiles: Map<string, Tile>): void {
+const CARGO_SHIP_TYPES = new Set<Unit['type']>(['scout_ship', 'transport_ship', 'fisher_transport', 'capital_ship']);
+
+/** When land units share a water hex with a friendly cargo ship, board if there is cargo room. */
+export function autoEmbarkLandUnitsOntoCargoShipsAtHex(units: Unit[], tiles: Map<string, Tile>): void {
   for (const u of units) {
     if (u.hp <= 0 || u.aboardShipId || isNavalUnitType(u.type)) continue;
     const t = tiles.get(tileKey(u.q, u.r));
     if (t?.biome !== 'water') continue;
-    const ships = units.filter(
+    const shipsOnHex = units.filter(
       x =>
-        x.type === 'scout_ship' &&
+        CARGO_SHIP_TYPES.has(x.type) &&
+        getShipMaxCargo(x.type) > 0 &&
         x.ownerId === u.ownerId &&
         x.q === u.q &&
         x.r === u.r &&
         x.hp > 0 &&
         !x.aboardShipId,
     );
-    if (ships.length !== 1) continue;
-    const ship = ships[0];
-    const cap = getShipMaxCargo('scout_ship');
-    const cargo = [...(ship.cargoUnitIds ?? [])];
-    if (cargo.length >= cap) continue;
-    if (cargo.includes(u.id)) continue;
-    cargo.push(u.id);
-    ship.cargoUnitIds = cargo;
-    u.aboardShipId = ship.id;
-    u.targetQ = undefined;
-    u.targetR = undefined;
-    u.status = 'idle';
-    clearMarchFields(u);
-    if (u.garrisonCityId) delete u.garrisonCityId;
-    if (u.defendCityId) delete u.defendCityId;
+    for (const ship of shipsOnHex) {
+      const cap = getShipMaxCargo(ship.type);
+      const cargo = [...(ship.cargoUnitIds ?? [])];
+      if (cargo.length >= cap) continue;
+      if (cargo.includes(u.id)) break;
+      cargo.push(u.id);
+      ship.cargoUnitIds = cargo;
+      u.aboardShipId = ship.id;
+      u.targetQ = undefined;
+      u.targetR = undefined;
+      u.status = 'idle';
+      clearMarchFields(u);
+      if (u.garrisonCityId) delete u.garrisonCityId;
+      if (u.defendCityId) delete u.defendCityId;
+      break;
+    }
+  }
+}
+
+/** @deprecated Use {@link autoEmbarkLandUnitsOntoCargoShipsAtHex}. */
+export const autoEmbarkLandUnitsOntoScoutShipsAtHex = autoEmbarkLandUnitsOntoCargoShipsAtHex;
+
+/**
+ * Unload cargo onto an adjacent land hex (prefers enemy city tile, then neutral land, then own).
+ * Mirrors human disembark for headless / AI automation.
+ */
+export function autoDisembarkCargoShipsOntoAdjacentLand(units: Unit[], tiles: Map<string, Tile>, cities: City[]): void {
+  const cityAt = (q: number, r: number) => cities.find(c => c.q === q && c.r === r);
+  for (const ship of units) {
+    if (!isNavalUnitType(ship.type) || ship.hp <= 0) continue;
+    if (getShipMaxCargo(ship.type) <= 0) continue;
+    const cargoIds = [...(ship.cargoUnitIds ?? [])];
+    if (cargoIds.length === 0) continue;
+    const neighbors = hexNeighbors(ship.q, ship.r);
+    let best: [number, number] | null = null;
+    let bestScore = -1;
+    for (const [lq, lr] of neighbors) {
+      const t = tiles.get(tileKey(lq, lr));
+      if (!t || t.biome === 'water' || t.biome === 'mountain') continue;
+      const oc = cityAt(lq, lr);
+      let score = 0;
+      if (oc && oc.ownerId !== ship.ownerId) score = 2;
+      else if (!oc) score = 1;
+      else score = 0;
+      if (score > bestScore) {
+        bestScore = score;
+        best = [lq, lr];
+      }
+    }
+    if (!best) continue;
+    const [lq, lr] = best;
+    for (const uid of cargoIds) {
+      const u = units.find(x => x.id === uid);
+      if (!u || u.aboardShipId !== ship.id) continue;
+      u.aboardShipId = undefined;
+      u.q = lq;
+      u.r = lr;
+      u.status = 'idle';
+      u.targetQ = undefined;
+      u.targetR = undefined;
+      clearMarchFields(u);
+    }
+    ship.cargoUnitIds = [];
   }
 }
 

@@ -24,15 +24,24 @@ import {
   isUnitUnlockedByTech,
   maxBuildingLevelByTech,
   STARTING_TECHS,
+  hexNeighbors,
+  tileKey,
+  SHIP_RECRUIT_COSTS,
 } from '@/types/game';
 import { computeUniversityBuildingLevelFromPopulation } from '@/lib/universityPopulation';
 import type { AiActions } from '@/lib/ai';
 import type { PendingLandRecruit } from '@/lib/pendingLandRecruit';
+import type { PendingShipRecruit, SimPendingRecruit } from '@/lib/pendingShipRecruit';
+import type { Tile } from '@/types/game';
+import type { AiShipRecruitAction } from '@/lib/ai';
 
 /** Where queued land recruits are appended (array or custom sink). */
 export type PendingLandRecruitSink = {
   push: (item: PendingLandRecruit) => void;
 };
+
+/** Headless sim: land + ship pending share one queue. */
+export type SimPendingRecruitSink = { push: (item: SimPendingRecruit) => void };
 
 const LEVEL1_BUILDING_TYPES: BuildingType[] = [
   'quarry',
@@ -46,6 +55,11 @@ const LEVEL1_BUILDING_TYPES: BuildingType[] = [
   'banana_farm',
   'market',
   'social_bar',
+  'sawmill',
+  'logging_hut',
+  'port',
+  'shipyard',
+  'fishery',
 ];
 
 export function applyAiInstantBuilds(
@@ -127,7 +141,7 @@ export function applyAiRecruitsAsPending(
     units: Unit[];
     getPlayer: () => Pick<Player, 'gold' | 'researchedTechs'> | undefined;
     onSpendGold: (delta: number) => void;
-    pendingRecruitsOut: PendingLandRecruitSink;
+    pendingRecruitsOut: PendingLandRecruitSink | SimPendingRecruitSink;
     generateId: (prefix: string) => string;
   },
 ): void {
@@ -230,5 +244,79 @@ export function applyAiRecruitsAsPending(
       completesAtCycle: ctx.newCycle + 1,
     });
     aiTroopCount += 1;
+  }
+}
+
+type ShipRecruitSink = { push: (item: PendingShipRecruit) => void };
+
+/** Queue ship recruits (next cycle spawn); pays costs now — same rules as human recruitShip. */
+export function applyAiShipRecruitsAsPending(
+  shipRecruits: AiShipRecruitAction[],
+  ctx: {
+    aiPlayerId: string;
+    newCycle: number;
+    cities: City[];
+    units: Unit[];
+    tiles: Map<string, Tile>;
+    getPlayer: () => Pick<Player, 'gold' | 'researchedTechs' | 'kingdomId'> | undefined;
+    onSpendGold: (delta: number) => void;
+    pendingShipsOut: ShipRecruitSink;
+    generateId: (prefix: string) => string;
+  },
+): void {
+  for (const rec of shipRecruits) {
+    const aiPlayer = ctx.getPlayer();
+    if (!aiPlayer) continue;
+    const techs = aiPlayer.researchedTechs ?? STARTING_TECHS;
+    if (!isUnitUnlockedByTech(rec.shipType, techs)) continue;
+    if (rec.shipType === 'fisher_transport' && aiPlayer.kingdomId !== 'fishers') continue;
+
+    const city = ctx.cities.find(c => c.id === rec.cityId);
+    if (!city || city.ownerId !== ctx.aiPlayerId) continue;
+    const yard = city.buildings.some(b => b.type === 'shipyard' && b.q === rec.shipyardQ && b.r === rec.shipyardR);
+    if (!yard) continue;
+
+    const costs = SHIP_RECRUIT_COSTS[rec.shipType];
+    if (aiPlayer.gold < costs.gold) continue;
+    if ((costs.wood ?? 0) > 0 && (city.storage.wood ?? 0) < (costs.wood ?? 0)) continue;
+    if ((costs.refinedWood ?? 0) > 0 && (city.storage.refinedWood ?? 0) < (costs.refinedWood ?? 0)) continue;
+
+    const neighbors = hexNeighbors(rec.shipyardQ, rec.shipyardR);
+    let spawn: [number, number] | null = null;
+    for (const [nq, nr] of neighbors) {
+      const tile = ctx.tiles.get(tileKey(nq, nr));
+      if (tile?.biome !== 'water') continue;
+      const blocked = ctx.units.some(u => !u.aboardShipId && u.q === nq && u.r === nr && u.hp > 0);
+      if (!blocked) {
+        spawn = [nq, nr];
+        break;
+      }
+    }
+    if (!spawn) continue;
+
+    const woodCost = costs.wood ?? 0;
+    const rwCost = costs.refinedWood ?? 0;
+    ctx.onSpendGold(costs.gold);
+    const cidx = ctx.cities.findIndex(c => c.id === city.id);
+    if (cidx >= 0) {
+      const c = ctx.cities[cidx];
+      ctx.cities[cidx] = {
+        ...c,
+        storage: {
+          ...c.storage,
+          wood: Math.max(0, (c.storage.wood ?? 0) - woodCost),
+          refinedWood: Math.max(0, (c.storage.refinedWood ?? 0) - rwCost),
+        },
+      };
+    }
+    ctx.pendingShipsOut.push({
+      id: ctx.generateId('pr'),
+      playerId: ctx.aiPlayerId,
+      cityId: city.id,
+      shipType: rec.shipType,
+      spawnQ: spawn[0],
+      spawnR: spawn[1],
+      completesAtCycle: ctx.newCycle + 1,
+    });
   }
 }

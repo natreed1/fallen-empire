@@ -129,7 +129,8 @@ import {
   placeManyAiCapitalsApart,
 } from '@/lib/ai';
 import { spawnUnitFromPendingLand, type PendingLandRecruit } from '@/lib/pendingLandRecruit';
-import { applyAiInstantBuilds, applyAiUpgrades, applyAiRecruitsAsPending } from '@/lib/applyAiPlan';
+import { spawnUnitFromPendingShip } from '@/lib/pendingShipRecruit';
+import { applyAiInstantBuilds, applyAiUpgrades, applyAiRecruitsAsPending, applyAiShipRecruitsAsPending } from '@/lib/applyAiPlan';
 import { getAiParams } from '@/lib/aiParams';
 import {
   movementTick,
@@ -141,7 +142,8 @@ import {
   siegeBuildingsTick,
   landUnitBuildingDamageTick,
   defenseInstallationsLandRaidTick,
-  autoEmbarkLandUnitsOntoScoutShipsAtHex,
+  autoEmbarkLandUnitsOntoCargoShipsAtHex,
+  autoDisembarkCargoShipsOntoAdjacentLand,
   landMilitaryContestsCityCapture,
   enemyIntactWallOnCityHex,
   type DefenseVolleyFx,
@@ -155,6 +157,7 @@ import {
   applyDeployFlagsForMoveMutable,
   withoutPatrolFields,
   clearPatrolFieldsMutable,
+  haltLandMilitaryOnHexForIncorporationQueueMutable,
   isLandMilitaryUnit,
   marchHexDistanceAtOrder,
 } from '@/lib/garrison';
@@ -177,7 +180,7 @@ import {
 } from '@/lib/builders';
 import { getNextWallBuildHex, countDefensesTaskSlots } from '@/lib/wallBuilding';
 import { clusterHumanBattleEngagements } from '@/lib/battlePreview';
-import { planHumanBuilderAutomation } from '@/lib/builderAutomation';
+import { planBuilderAutomation } from '@/lib/builderAutomation';
 import { processResearchTick, canResearchTech } from '@/lib/researchTick';
 import {
   assignToCouncilPost as assignToCouncilPostFn,
@@ -1172,28 +1175,6 @@ function incorporateVillagePatch(
     territory,
   );
   return { players: newPlayers, cities: newCities, tiles: newTiles, territory, visibleHexes, newCity };
-}
-
-function spawnUnitFromPendingShip(item: PendingShipRecruit, cities: City[]): Unit | null {
-  if (!cities.some(c => c.id === item.cityId)) return null;
-  const cap = getShipMaxCargo(item.shipType);
-  const stats = getUnitStats({ type: item.shipType });
-  return {
-    id: generateId('unit'),
-    type: item.shipType,
-    q: item.spawnQ,
-    r: item.spawnR,
-    ownerId: item.playerId,
-    hp: stats.maxHp,
-    maxHp: stats.maxHp,
-    xp: 0,
-    level: 0,
-    status: 'idle',
-    stance: 'aggressive',
-    nextMoveAt: 0,
-    originCityId: item.cityId,
-    cargoUnitIds: cap > 0 ? [] : undefined,
-  };
 }
 
 function canLandStackEmbarkFriendlyScoutAt(
@@ -2331,7 +2312,8 @@ export const useGameStore = create<GameState>((set, get) => ({
         s.territory,
         defenseInstallationsMut,
       );
-      autoEmbarkLandUnitsOntoScoutShipsAtHex(movingUnits, s.tiles);
+      autoEmbarkLandUnitsOntoCargoShipsAtHex(movingUnits, s.tiles);
+      autoDisembarkCargoShipsOntoAdjacentLand(movingUnits, s.tiles, s.cities);
       releaseAttackWaveHolds(movingUnits, s.cities);
       releaseMarchEchelonHolds(movingUnits, s.cities);
       syncCommandersToAssignments(movingCommanders, s.cities, movingUnits);
@@ -3283,28 +3265,34 @@ export const useGameStore = create<GameState>((set, get) => ({
     notifs.push(...upkeepResult.notifications);
 
     let constructionsForSet = s.constructions;
-    const autoBuild = planHumanBuilderAutomation({
-      cities,
-      players,
-      tiles: flushTiles,
-      territory: flushTerritory,
-      constructions: constructionsForSet,
-      defenseInstallations: s.defenseInstallations ?? [],
-      scoutTowers: s.scoutTowers ?? [],
-      humanPlayerId: HUMAN_ID,
-      generateId,
-    });
-    if (autoBuild) {
-      cities = autoBuild.nextCities;
-      players = players.map(p => (p.id === HUMAN_ID ? { ...p, gold: autoBuild.nextGold } : p));
-      constructionsForSet = [...constructionsForSet, ...autoBuild.newConstructions];
-      if (autoBuild.notification) {
-        notifs.push({
-          id: generateId('n'),
-          turn: newCycle,
-          message: autoBuild.notification,
-          type: 'info',
-        });
+    const aiPlayerIdsForBuilders =
+      s.gameMode === 'human_solo' ? [] : s.players.filter(p => !p.isHuman).map(p => p.id);
+    const builderAutomationOrder = [HUMAN_ID, ...aiPlayerIdsForBuilders];
+    for (const builderOwnerId of builderAutomationOrder) {
+      const autoBuild = planBuilderAutomation({
+        cities,
+        players,
+        tiles: flushTiles,
+        territory: flushTerritory,
+        constructions: constructionsForSet,
+        defenseInstallations: s.defenseInstallations ?? [],
+        scoutTowers: s.scoutTowers ?? [],
+        playerId: builderOwnerId,
+        generateId,
+        notify: builderOwnerId === HUMAN_ID,
+      });
+      if (autoBuild) {
+        cities = autoBuild.nextCities;
+        players = players.map(p => (p.id === builderOwnerId ? { ...p, gold: autoBuild.nextGold } : p));
+        constructionsForSet = [...constructionsForSet, ...autoBuild.newConstructions];
+        if (autoBuild.notification) {
+          notifs.push({
+            id: generateId('n'),
+            turn: newCycle,
+            message: autoBuild.notification,
+            type: 'info',
+          });
+        }
       }
     }
 
@@ -3323,6 +3311,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         aiPlayerId, cities, units, players, tilesMut, flushTerritory, getAiParams(), wallSectionsMut,
         s.contestedZoneHexKeys ?? [], s.commanders ?? [], s.scrollInventory ?? {}, s.scrollAttachments ?? [],
         s.scrollRelics ?? [], s.scrollRegionClaimed ?? emptyScrollRegionClaimed(),
+        s.config.mapTerrain,
       );
       const aiPlayer = players.find(p => p.id === aiPlayerId);
       if (!aiPlayer) continue;
@@ -3364,6 +3353,21 @@ export const useGameStore = create<GameState>((set, get) => ({
         generateId,
       });
 
+      applyAiShipRecruitsAsPending(aiPlan.shipRecruits ?? [], {
+        aiPlayerId,
+        newCycle,
+        cities,
+        units,
+        tiles: tilesMut,
+        getPlayer: () => players.find(p => p.id === aiPlayerId),
+        onSpendGold: d => {
+          const p = players.find(pl => pl.id === aiPlayerId);
+          if (p) p.gold -= d;
+        },
+        pendingShipsOut: pendingRecruitsAcc,
+        generateId,
+      });
+
       for (const scout of aiPlan.scouts ?? []) {
         const key = tileKey(scout.targetQ, scout.targetR);
         if (aiPlayer.gold >= SCOUT_MISSION_COST && !scoutedHexes.has(key) && !scoutMissions.some(m => m.targetQ === scout.targetQ && m.targetR === scout.targetR)) {
@@ -3384,14 +3388,21 @@ export const useGameStore = create<GameState>((set, get) => ({
         const militaryHere = units.filter(u => u.ownerId === aiPlayerId && u.hp > 0 && u.type !== 'builder' && u.q === inc.q && u.r === inc.r);
         if (militaryHere.length === 0) continue;
         if (pendingIncorporationsAcc.some(p => p.q === inc.q && p.r === inc.r && p.playerId === aiPlayerId)) continue;
+        aiPlayer.gold -= VILLAGE_INCORPORATE_COST;
         pendingIncorporationsAcc.push({
           id: generateId('pinc'),
           playerId: aiPlayerId,
           q: inc.q,
           r: inc.r,
           completesAtCycle: newCycle + 1,
-          alreadyPaidGold: false,
+          alreadyPaidGold: true,
         });
+        for (const u of units) {
+          if (u.ownerId !== aiPlayerId || u.hp <= 0) continue;
+          if (u.q !== inc.q || u.r !== inc.r) continue;
+          if (!isLandMilitaryUnit(u)) continue;
+          haltLandMilitaryOnHexForIncorporationQueueMutable(u);
+        }
       }
 
       for (const mt of aiPlan.moveTargets) {

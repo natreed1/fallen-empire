@@ -106,6 +106,7 @@ function mergePlan(base: AiActions, patch: Partial<AiActions>): AiActions {
     ...base,
     ...patch,
     moveTargets: Array.from(mt.values()),
+    shipRecruits: patch.shipRecruits !== undefined ? patch.shipRecruits : base.shipRecruits,
   };
 }
 

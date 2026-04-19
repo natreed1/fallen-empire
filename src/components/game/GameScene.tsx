@@ -10,7 +10,6 @@ import HexGrid from './HexGrid';
 import MapController, { MAP_CAMERA_OFFSET } from './MapController';
 import GameHUD from '../ui/GameHUD';
 import { useGameStore } from '@/store/useGameStore';
-import { setAiParams } from '@/lib/aiParams';
 import { axialToWorld, worldToAxial, HEX_RADIUS, tileKey, parseTileKey } from '@/types/game';
 import { collectHumanStackKeysInScreenRect, hexFromClientOnMap } from '@/lib/mapBoxSelect';
 import { useMultiplayerSession } from '@/hooks/useMultiplayerSession';
@@ -507,10 +506,16 @@ export default function GameScene() {
   const isBotWatch =
     gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4' || gameMode === 'spectate' || gameMode === 'multiplayer';
   const [mapTarget, setMapTarget] = useState(liveTarget);
-  const [aiParamsLoadAttempted, setAiParamsLoadAttempted] = useState(false);
   const prevPhaseForCameraRef = useRef(phase);
 
   useEffect(() => {
+    // Spectate: set target once when the match begins; do not follow the moving centroid of all cities (would fight user pan).
+    if (gameMode === 'spectate') {
+      const enteredPlaying = prevPhaseForCameraRef.current !== 'playing' && phase === 'playing';
+      if (enteredPlaying) setMapTarget(liveTarget);
+      prevPhaseForCameraRef.current = phase;
+      return;
+    }
     if (isBotWatch) {
       setMapTarget(liveTarget);
       prevPhaseForCameraRef.current = phase;
@@ -522,7 +527,7 @@ export default function GameScene() {
       setMapTarget(liveTarget);
     }
     prevPhaseForCameraRef.current = phase;
-  }, [liveTarget, phase, isBotWatch]);
+  }, [liveTarget, phase, isBotWatch, gameMode]);
 
   useEscapeKey();
 
@@ -538,26 +543,17 @@ export default function GameScene() {
     }
   }, [isGenerated, generateWorld, watchMode, watchFour, sandboxMode]);
 
-  // Load champion AI params from public/ai-params.json (written by npm run train-ai)
-  useEffect(() => {
-    fetch('/ai-params.json')
-      .then(r => r.ok ? r.json() : null)
-      .then(data => {
-        if (data) setAiParams(data);
-        setAiParamsLoadAttempted(true);
-      })
-      .catch(() => setAiParamsLoadAttempted(true));
-  }, []);
+  // Champion params: bundled from public/ai-params.json via @/lib/aiParams (no fetch / race).
 
-  // ?watch (1v1): use champion from ai-params.json; map matches train-ai (38×38). Start only after params load attempted.
+  // ?watch (1v1): map matches train-ai (38×38).
   useEffect(() => {
-    if (!aiParamsLoadAttempted || phase !== 'setup') return;
+    if (phase !== 'setup') return;
     if (watchFour) {
       useGameStore.getState().startFourBotVsBot();
       return;
     }
     if (watchMode && isGenerated) useGameStore.getState().startBotVsBot();
-  }, [watchMode, watchFour, isGenerated, phase, aiParamsLoadAttempted]);
+  }, [watchMode, watchFour, isGenerated, phase]);
 
   // ?sandbox: 38×38 map, human-only placement (no AI).
   useEffect(() => {

@@ -13,7 +13,8 @@ export type ScenarioName =
   | 'wide'
   | 'lean-food'
   | 'high-expansion'
-  | 'fortress-adaptation';
+  | 'fortress-adaptation'
+  | 'naval-islands';
 
 /** Map override for each named scenario. Uses map knobs when available. */
 const SCENARIO_OVERRIDES: Record<ScenarioName, Partial<MapConfig>> = {
@@ -66,11 +67,22 @@ const SCENARIO_OVERRIDES: Record<ScenarioName, Partial<MapConfig>> = {
     provinceDensity: 0.02,
     villageDensity: 0.02,
   },
+  /** Archipelago-style training: ocean-heavy map, reliable corner land for bot spawns. */
+  'naval-islands': {
+    width: 44,
+    height: 44,
+    noiseScale: 0.035,
+    moistureScale: DEFAULT_MAP_CONFIG.moistureScale,
+    provinceDensity: DEFAULT_MAP_CONFIG.provinceDensity,
+    villageDensity: DEFAULT_MAP_CONFIG.villageDensity,
+    mapTerrain: 'islands',
+    ensureCornerLand: true,
+  },
 };
 
 /** Parse LEAGUE_SCENARIO_MIX env (e.g. "balanced:0.4,tight:0.2,wide:0.2,lean-food:0.1,high-expansion:0.1"). */
 export function parseScenarioMix(
-  mixEnv: string = 'balanced:0.4,tight:0.2,wide:0.2,lean-food:0.1,high-expansion:0.1',
+  mixEnv: string = 'balanced:0.38,tight:0.18,wide:0.18,lean-food:0.1,high-expansion:0.1,naval-islands:0.06',
 ): { name: ScenarioName; weight: number }[] {
   const entries: { name: ScenarioName; weight: number }[] = [];
   const seen = new Set<string>();

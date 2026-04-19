@@ -145,10 +145,10 @@ function findNearestRemoteResourceHex(
 }
 
 /**
- * One automated construction start per human city per economy cycle (when task matches and budget allows).
+ * One automated construction start per player per economy cycle (when task matches and budget allows).
  * Returns patch fragments for the store caller to merge.
  */
-export function planHumanBuilderAutomation(input: {
+export function planBuilderAutomation(input: {
   cities: City[];
   players: Player[];
   tiles: Map<string, Tile>;
@@ -156,8 +156,10 @@ export function planHumanBuilderAutomation(input: {
   constructions: ConstructionSite[];
   defenseInstallations: DefenseInstallation[];
   scoutTowers: ScoutTower[];
-  humanPlayerId: string;
+  playerId: string;
   generateId: (prefix: string) => string;
+  /** If false, omit the optional HUD notification (e.g. for AI). Defaults to true. */
+  notify?: boolean;
 }): {
   newConstructions: ConstructionSite[];
   nextGold: number;
@@ -172,15 +174,16 @@ export function planHumanBuilderAutomation(input: {
     constructions,
     defenseInstallations,
     scoutTowers,
-    humanPlayerId,
+    playerId,
     generateId,
+    notify = true,
   } = input;
 
-  const player = players.find(p => p.id === humanPlayerId);
-  if (!player?.isHuman) return null;
+  const player = players.find(p => p.id === playerId);
+  if (!player) return null;
 
-  const humanCities = cities.filter(c => c.ownerId === humanPlayerId);
-  const sorted = [...humanCities].sort((a, b) => a.id.localeCompare(b.id));
+  const ownedCities = cities.filter(c => c.ownerId === playerId);
+  const sorted = [...ownedCities].sort((a, b) => a.id.localeCompare(b.id));
 
   for (const city of sorted) {
     const academy = city.buildings.find(b => b.type === 'academy');
@@ -357,7 +360,7 @@ export function planHumanBuilderAutomation(input: {
       if (!bt || !th) continue;
 
       const alreadyBuildingThisTask = constructions.some(cs => {
-        if (cs.cityId !== city.id || cs.ownerId !== humanPlayerId) return false;
+        if (cs.cityId !== city.id || cs.ownerId !== playerId) return false;
         return universityTaskMatchesSiteType(tryTask, cs.type);
       });
       if (alreadyBuildingThisTask) continue;
@@ -387,7 +390,7 @@ export function planHumanBuilderAutomation(input: {
       q: targetHex.q,
       r: targetHex.r,
       cityId: city.id,
-      ownerId: humanPlayerId,
+      ownerId: playerId,
       bpRequired: BUILDING_BP_COST[buildType],
       bpAccumulated: 0,
     };
@@ -396,9 +399,24 @@ export function planHumanBuilderAutomation(input: {
       newConstructions: [site],
       nextGold,
       nextCities,
-      notification: `University workforce: started ${buildType} near ${city.name}.`,
+      ...(notify ? { notification: `University workforce: started ${buildType} near ${city.name}.` } : {}),
     };
   }
 
   return null;
+}
+
+/** @deprecated Use {@link planBuilderAutomation} with `playerId`. */
+export function planHumanBuilderAutomation(input: {
+  cities: City[];
+  players: Player[];
+  tiles: Map<string, Tile>;
+  territory: Map<string, { cityId: string; playerId: string }>;
+  constructions: ConstructionSite[];
+  defenseInstallations: DefenseInstallation[];
+  scoutTowers: ScoutTower[];
+  humanPlayerId: string;
+  generateId: (prefix: string) => string;
+}): ReturnType<typeof planBuilderAutomation> {
+  return planBuilderAutomation({ ...input, playerId: input.humanPlayerId });
 }

@@ -66,6 +66,9 @@ export const EVOLVABLE_PARAM_KEYS = [
   'scrollTerrainMaxDivert',
   'universityIronMinePref',
   'universityCityDefenseThreshold',
+  'navalRecruitBias',
+  'transportPriority',
+  'minShipsBeforeInvade',
 ] as const;
 
 export type EvolvableParamKey = (typeof EVOLVABLE_PARAM_KEYS)[number];
@@ -143,6 +146,9 @@ export const MUTATION_RANGES: Record<Exclude<EvolvableParamKey, 'militaryLevelMi
   scrollTerrainMaxDivert: { min: 0, max: 5, round: true, exploration: 'medium' },
   universityIronMinePref: { min: 0, max: 1, exploration: 'medium' },
   universityCityDefenseThreshold: { min: 0, max: 1, exploration: 'medium' },
+  navalRecruitBias: { min: 0, max: 1, exploration: 'medium' },
+  transportPriority: { min: 0, max: 1, exploration: 'medium' },
+  minShipsBeforeInvade: { min: 0, max: 8, round: true, exploration: 'low' },
 };
 
 /**

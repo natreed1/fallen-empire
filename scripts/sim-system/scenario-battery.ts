@@ -23,6 +23,13 @@ export const SCENARIO_SPECS: ScenarioSpec[] = [
   { id: 'resource_shock', name: 'Resource shock (lean-food map)', minScoreThreshold: -30, seedBase: 50003, gamesPerScenario: 4 },
   { id: 'village_timing', name: 'Village timing (high-expansion)', minScoreThreshold: 0, seedBase: 50004, gamesPerScenario: 4 },
   { id: 'fortress_adaptation', name: 'Fortress adaptation', minScoreThreshold: -20, seedBase: 50005, gamesPerScenario: 4 },
+  {
+    id: 'naval_crossing',
+    name: 'Naval / ocean gauntlet (islands + seeded ships)',
+    minScoreThreshold: -35,
+    seedBase: 50006,
+    gamesPerScenario: 4,
+  },
 ];
 
 /** Opponent and map per scenario (deterministic). */
@@ -32,6 +39,7 @@ const SCENARIO_OPPONENT: Record<string, string> = {
   resource_shock: 'arch_turtle',
   village_timing: 'arch_expansion',
   fortress_adaptation: 'arch_turtle', // defender closes ring vs turtle; or attacker vs pre-fortified
+  naval_crossing: 'arch_turtle',
 };
 
 const SCENARIO_MAP: Record<string, string> = {
@@ -40,13 +48,20 @@ const SCENARIO_MAP: Record<string, string> = {
   resource_shock: 'lean-food',
   village_timing: 'high-expansion',
   fortress_adaptation: 'fortress-adaptation',
+  naval_crossing: 'naval-islands',
 };
 
-function getSimOpts(mapName: string, mapSize: number, maxCycles: number): RunSimulationOptions {
+function getSimOpts(
+  mapName: string,
+  mapSize: number,
+  maxCycles: number,
+  postInit?: RunSimulationOptions['postInit'],
+): RunSimulationOptions {
   const override = getScenarioMapOverride(mapName as import('../lib/scenarios').ScenarioName);
   return {
     maxCycles,
     mapConfigOverride: { width: mapSize, height: mapSize, ...override },
+    ...(postInit ? { postInit } : {}),
   };
 }
 
@@ -62,7 +77,12 @@ export function runScenario(
   const opponentId = SCENARIO_OPPONENT[scenarioId] ?? FIXED_ARCHETYPES[0].id;
   const opponentParams = getAnchorParamsById(opponentId) ?? FIXED_ARCHETYPES[0].params;
   const mapName = SCENARIO_MAP[scenarioId] ?? 'balanced';
-  const opts = getSimOpts(mapName, config.mapSize, config.maxCycles);
+  const opts = getSimOpts(
+    mapName,
+    config.mapSize,
+    config.maxCycles,
+    scenarioId === 'naval_crossing' ? 'naval-gauntlet' : undefined,
+  );
 
   const scores: number[] = [];
   for (let i = 0; i < spec.gamesPerScenario; i++) {

@@ -14,14 +14,15 @@ The game can **self-improve** the AI by running many headless bot-vs-bot simulat
 - **`initBotVsBotGame(seed, paramsA?, paramsB?)`** – Generates a map with the given seed and places two AI capitals at opposite corners. Sets up **contested zone**, **starting commanders** (5 per AI), and **scroll inventory**. Returns initial `SimState`.
 - **`stepSimulation(state, paramsA, paramsB)`** – One step = one economy cycle + contested zone payouts + scroll search progress + AI planning (including new actions) + movement/combat/siege/capture + commander sync + scroll carrier cleanup.
 - **`runSimulation(paramsA, paramsB, seed, maxCycles?)`** – Runs a full game until one side has no cities or `maxCycles` is reached. Returns **`SimResult`** (winner, cycle, cities/pop per side).
+- **Naval gauntlet** – `RunSimulationOptions.postInit: 'naval-gauntlet'` seeds scout/warship/transport ships and infantry after `initBotVsBotGame` (for scenario battery / island maps). Bots receive **`naval_technology`** and **`advanced_naval`** in `researchedTechs` so ports/shipyards and ships are legal in headless sim. Domain scenario **`naval-islands`** is in `scripts/lib/scenarios.ts` (see also **`naval_crossing`** in `scripts/sim-system/scenario-battery.ts`).
 
 The core reuses the same logic as the main game (economy, upkeep, AI planning, movement, combat, siege, city capture, victory, **contested zone payouts**, **scroll discovery**, **commander syncing**). **Simulation clock consistency:** headless runs use simulated time (`simTimeMs`, 30s per cycle) for movement/combat gating so units advance and engage correctly; the live game still uses wall-clock time.
 
 ### Live parity checklist (headless vs `useGameStore.runCycle`)
 
-Shared code applies AI **instant** building placement, **upgrades**, and **pending land recruits** (`src/lib/applyAiPlan.ts`, `src/lib/pendingLandRecruit.ts`). Each step:
+Shared code applies AI **instant** building placement, **upgrades**, **pending land recruits**, and **pending ship recruits** (`src/lib/applyAiPlan.ts`, `src/lib/pendingLandRecruit.ts`, `src/lib/pendingShipRecruit.ts`). Each step:
 
-1. Completes pending recruits whose `completesAtCycle` equals the new cycle, then HP regen and `computeArmyReplenishment`.
+1. Completes pending land and ship recruits whose `completesAtCycle` equals the new cycle, then HP regen and `computeArmyReplenishment`.
 2. Runs economy, contested zone, upkeep, then **`planAiTurn`**.
 3. Applies the same instant builds/recruit queue as the client; **wall rings** still use construction sites + BP.
 4. Ticks constructions (walls), scouts, movement/combat/siege.
@@ -29,6 +30,8 @@ Shared code applies AI **instant** building placement, **upgrades**, and **pendi
 **Mutation:** `MUTATION_EXCLUDED_KEYS` in `aiParamsSchema.ts` holds parameters not yet read by `planAiTurn`, so evolution does not waste budget on them; `l3AcquisitionWeight` and `l2AdoptionRate` are wired (L3 tier pick and L3 ranged variant when no doctrine).
 
 ## 2. Training script (`scripts/train-ai.ts`)
+
+By default, each evaluation match uses **domain-randomized map scenarios** (`TRAIN_USE_SCENARIO_MIX=1`): the scenario is chosen deterministically from the mix using the match seed (aligned with `scripts/tournament-league.ts`). When the draw is **`naval-islands`** and `TRAIN_NAVAL_POSTINIT=1`, the run also uses **`postInit: 'naval-gauntlet'`** so evolution sees seeded fleets. Set `TRAIN_USE_SCENARIO_MIX=0` for the older behavior (fixed square map size only).
 
 Evolutionary training:
 
@@ -75,6 +78,9 @@ Env overrides (all optional):
 | `TRAIN_VARIANCE_PENALTY` | 0.5 | Penalize inconsistent performance |
 | `TRAIN_DRAW_PENALTY` | 10 | Score penalty for draws |
 | `TRAIN_FROM_CHAMPION` | 1 | Set 0 to start from defaults instead of champion |
+| `TRAIN_USE_SCENARIO_MIX` | 1 | Set **0** to use a plain `TRAIN_MAP_SIZE` square map only (legacy). When **1** (default), each match picks a scenario deterministically from the mix (same mechanism as `tournament-league` / `validate-robustness`). |
+| `TRAIN_SCENARIO_MIX` | (see `parseScenarioMix` default in `scripts/lib/scenarios.ts`) | Optional override string, e.g. `balanced:0.4,naval-islands:0.15,...` — same format as `LEAGUE_SCENARIO_MIX`. |
+| `TRAIN_NAVAL_POSTINIT` | 1 | When **1** (default) and the drawn scenario is **`naval-islands`**, runs `postInit: 'naval-gauntlet'` (seeded ships + infantry). Set **0** to use island geometry only without the seed. |
 
 ## Evolvable params (`AiParams`)
 

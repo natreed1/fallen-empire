@@ -7,15 +7,15 @@
 import * as path from 'path';
 import * as fs from 'fs';
 import {
-  MapConfig, DEFAULT_MAP_CONFIG, GamePhase, tileKey, generateId, hexDistance,
+  MapConfig, DEFAULT_MAP_CONFIG, GamePhase, tileKey, generateId, hexDistance, hexNeighbors,
   City, Unit, Player, Hero, Tile, TerritoryInfo,
   CityBuilding, ScoutMission, WallSection, ScoutTower, WeatherEvent,
   ConstructionSite, BuildingType,
   Commander, ScrollItem, ScrollAttachment, COMMANDER_STARTING_PICK,
   SpecialRegionKind, ScrollRelicSite,
   DefenseInstallation, UnitStack, OperationalArmy,
-  ensureCityBuildingHp, UNIT_HP_REGEN_FRACTION_PER_CYCLE, isNavalUnitType,
-  STARTING_GOLD, VILLAGE_CITY_TEMPLATE, CITY_CENTER_STORAGE,
+  ensureCityBuildingHp, UNIT_HP_REGEN_FRACTION_PER_CYCLE, isNavalUnitType, getShipMaxCargo,
+  STARTING_GOLD, VILLAGE_CITY_TEMPLATE, CITY_CENTER_STORAGE, STARTING_TECHS, type TechId,
   BUILDING_BP_COST, BUILDING_JOBS, getBuildingJobs,
   BP_RATE_BASE,
   getUnitStats,
@@ -57,7 +57,8 @@ import {
   siegeBuildingsTick,
   landUnitBuildingDamageTick,
   defenseInstallationsLandRaidTick,
-  autoEmbarkLandUnitsOntoScoutShipsAtHex,
+  autoEmbarkLandUnitsOntoCargoShipsAtHex,
+  autoDisembarkCargoShipsOntoAdjacentLand,
   type SupplyCacheEntry,
   landMilitaryContestsCityCapture,
   enemyIntactWallOnCityHex,
@@ -71,14 +72,112 @@ import { computeConstructionAvailableBp, fillUniversitySlotTasks } from '../lib/
 import { computeContestedZoneHexKeys, applyContestedZonePayout } from '../lib/contestedZone';
 import { rollCommanderIdentity, createCommanderRecord, syncCommandersToAssignments, unassignCommandersWithDeadAnchors, clearInvalidCommanderAssignments } from '../lib/commanders';
 import { tickScrollRelicPickup, returnScrollsForDeadCarriers } from '../lib/scrolls';
-import { spawnUnitFromPendingLand, type PendingLandRecruit } from '../lib/pendingLandRecruit';
-import { applyAiInstantBuilds, applyAiUpgrades, applyAiRecruitsAsPending } from '../lib/applyAiPlan';
+import { spawnUnitFromPendingLand } from '../lib/pendingLandRecruit';
+import {
+  spawnUnitFromPendingShip,
+  isPendingShipRecruit,
+  type SimPendingRecruit,
+} from '../lib/pendingShipRecruit';
+import { applyAiInstantBuilds, applyAiUpgrades, applyAiRecruitsAsPending, applyAiShipRecruitsAsPending } from '../lib/applyAiPlan';
+import { planBuilderAutomation } from '../lib/builderAutomation';
 
 export type { AiParams };
 export { DEFAULT_AI_PARAMS };
 
 const AI_ID = 'player_ai';
 const AI_ID_2 = 'player_ai_2';
+
+/** Headless bots get naval tech so port/shipyard and ships can appear in sim (live game researches separately). */
+function botResearchedTechs(): TechId[] {
+  const extra: TechId[] = ['naval_technology', 'advanced_naval'];
+  return [...new Set([...STARTING_TECHS, ...extra])];
+}
+
+function makeNavalUnit(
+  shipType: 'scout_ship' | 'warship' | 'transport_ship',
+  q: number,
+  r: number,
+  ownerId: string,
+  cityId: string,
+): Unit {
+  const stats = getUnitStats({ type: shipType });
+  const cap = getShipMaxCargo(shipType);
+  return {
+    id: generateId('unit'),
+    type: shipType,
+    q,
+    r,
+    ownerId,
+    hp: stats.maxHp,
+    maxHp: stats.maxHp,
+    xp: 0,
+    level: 0,
+    status: 'idle',
+    stance: 'aggressive',
+    nextMoveAt: 0,
+    originCityId: cityId,
+    cargoUnitIds: cap > 0 ? [] : undefined,
+  };
+}
+
+function makeGauntletInfantry(q: number, r: number, ownerId: string, cityId: string): Unit {
+  const stats = getUnitStats({ type: 'infantry' });
+  return {
+    id: generateId('unit'),
+    type: 'infantry',
+    q,
+    r,
+    ownerId,
+    hp: stats.maxHp,
+    maxHp: stats.maxHp,
+    xp: 0,
+    level: 0,
+    status: 'idle',
+    stance: 'aggressive',
+    nextMoveAt: 0,
+    originCityId: cityId,
+    garrisonCityId: cityId,
+    defendCityId: cityId,
+  };
+}
+
+/** Water hexes adjacent to (q,r) that are unblocked by surface ships (for gauntlet seeding). */
+function adjacentFreeWaterHexes(
+  q: number,
+  r: number,
+  tiles: Map<string, Tile>,
+  units: Unit[],
+  need: number,
+): [number, number][] {
+  const out: [number, number][] = [];
+  for (const [nq, nr] of hexNeighbors(q, r)) {
+    const t = tiles.get(tileKey(nq, nr));
+    if (t?.biome !== 'water') continue;
+    const blocked = units.some(u => !u.aboardShipId && u.q === nq && u.r === nr && u.hp > 0);
+    if (blocked) continue;
+    out.push([nq, nr]);
+    if (out.length >= need) break;
+  }
+  return out;
+}
+
+/** Deterministic naval gauntlet: ships + infantry so movement/combat exercises water and cargo paths. */
+export function applyNavalGauntletPostInit(state: SimState): SimState {
+  let units = [...state.units];
+  for (const pid of [AI_ID, AI_ID_2]) {
+    const city = state.cities.find(c => c.ownerId === pid);
+    if (!city) continue;
+    const water = adjacentFreeWaterHexes(city.q, city.r, state.tiles, units, 3);
+    if (water.length === 0) continue;
+    const cityId = city.id;
+    if (water[0]) units.push(makeNavalUnit('scout_ship', water[0][0], water[0][1], pid, cityId));
+    if (water[1]) units.push(makeNavalUnit('warship', water[1][0], water[1][1], pid, cityId));
+    if (water[2]) units.push(makeNavalUnit('transport_ship', water[2][0], water[2][1], pid, cityId));
+    units.push(makeGauntletInfantry(city.q, city.r, pid, cityId));
+    units.push(makeGauntletInfantry(city.q, city.r, pid, cityId));
+  }
+  return { ...state, units };
+}
 
 export type SimState = {
   config: MapConfig;
@@ -129,8 +228,8 @@ export type SimState = {
   operationalArmies: OperationalArmy[];
   /** Persistent morale stacks from land combat (same as live game). */
   combatMoraleState: MoraleState;
-  /** Land recruits completing next cycle (parity with useGameStore pendingRecruits). */
-  pendingRecruits: PendingLandRecruit[];
+  /** Land + ship recruits completing next cycle (parity with useGameStore pendingRecruits). */
+  pendingRecruits: SimPendingRecruit[];
 };
 
 let _cityNameIdx = 0;
@@ -226,8 +325,26 @@ function initBotVsBotGameOnce(
   ]);
 
   const players: Player[] = [
-    { id: AI_ID, name: 'North', color: PLAYER_COLORS.ai, gold: STARTING_GOLD, taxRate: 0.3, foodPriority: 'military', isHuman: false },
-    { id: AI_ID_2, name: 'South', color: PLAYER_COLORS.ai2, gold: STARTING_GOLD, taxRate: 0.3, foodPriority: 'military', isHuman: false },
+    {
+      id: AI_ID,
+      name: 'North',
+      color: PLAYER_COLORS.ai,
+      gold: STARTING_GOLD,
+      taxRate: 0.3,
+      foodPriority: 'military',
+      isHuman: false,
+      researchedTechs: botResearchedTechs(),
+    },
+    {
+      id: AI_ID_2,
+      name: 'South',
+      color: PLAYER_COLORS.ai2,
+      gold: STARTING_GOLD,
+      taxRate: 0.3,
+      foodPriority: 'military',
+      isHuman: false,
+      researchedTechs: botResearchedTechs(),
+    },
   ];
 
   const heroes: Hero[] = [];
@@ -323,6 +440,8 @@ export type RunSimulationOptions = {
   mapConfigOverride?: Partial<MapConfig>;
   /** If set, per-cycle trace is written to this path (JSON array of CycleTrace). */
   tracePath?: string;
+  /** After map init, seed ships/infantry for naval gauntlet scenarios. */
+  postInit?: 'naval-gauntlet';
 };
 
 /** Run one full simulation until victory or maxCycles. Returns result. */
@@ -336,6 +455,9 @@ export function runSimulation(
   const maxC = options?.maxCycles ?? maxCycles;
   const mapOverride = options?.mapConfigOverride;
   let state = initBotVsBotGame(seed, paramsA, paramsB, mapOverride);
+  if (options?.postInit === 'naval-gauntlet') {
+    state = applyNavalGauntletPostInit(state);
+  }
   while (state.phase === 'playing' && state.cycle < maxC) {
     state = stepSimulation(state, paramsA, paramsB);
   }
@@ -395,6 +517,9 @@ export function runSimulationWithDiagnostics(
     : undefined;
 
   let state = initBotVsBotGame(seed, paramsA, paramsB, mapOverride);
+  if (options?.postInit === 'naval-gauntlet') {
+    state = applyNavalGauntletPostInit(state);
+  }
   while (state.phase === 'playing' && state.cycle < maxC) {
     state = stepSimulation(state, paramsA, paramsB, diag, traceCallback);
   }
@@ -523,6 +648,10 @@ export type SimDiagnostics = {
   commanderFieldAssignmentsAi1?: number;
   /** Commanders assigned to field by AI2. */
   commanderFieldAssignmentsAi2?: number;
+  /** Ship recruits queued (pending) by AI1 this game. */
+  shipsQueuedAi1?: number;
+  /** Ship recruits queued (pending) by AI2 this game. */
+  shipsQueuedAi2?: number;
 };
 
 export type StepSimulationOptions = {
@@ -563,8 +692,13 @@ export function stepSimulation(
   }));
   let unitsPrep = [...state.units];
   for (const pr of state.pendingRecruits.filter(p => p.completesAtCycle === newCycle)) {
-    const u = spawnUnitFromPendingLand(pr, citiesPrep);
-    if (u) unitsPrep.push(u);
+    if (isPendingShipRecruit(pr)) {
+      const u = spawnUnitFromPendingShip(pr, citiesPrep);
+      if (u) unitsPrep.push(u);
+    } else {
+      const u = spawnUnitFromPendingLand(pr, citiesPrep);
+      if (u) unitsPrep.push(u);
+    }
   }
 
   // ── Passive HP regen + army rally/replenish ──
@@ -590,7 +724,7 @@ export function stepSimulation(
   playersPrep = replen.players;
   unitStacksState = replen.unitStacks;
   for (const pr of replen.newPending) {
-    pendingRecruitsAcc.push(pr as PendingLandRecruit);
+    pendingRecruitsAcc.push(pr as SimPendingRecruit);
   }
 
   // ── Weather ──
@@ -771,6 +905,27 @@ export function stepSimulation(
   let constructions = [...state.constructions];
   let wallSectionsAfterAi: WallSection[] = state.wallSections.map(w => ({ ...w }));
 
+  const territoryForBuilders = calculateTerritory(cities, state.tiles);
+  for (const pid of [AI_ID, AI_ID_2]) {
+    const auto = planBuilderAutomation({
+      cities,
+      players,
+      tiles: state.tiles,
+      territory: territoryForBuilders,
+      constructions,
+      defenseInstallations: state.defenseInstallations,
+      scoutTowers: state.scoutTowers,
+      playerId: pid,
+      generateId,
+      notify: false,
+    });
+    if (auto) {
+      cities = auto.nextCities;
+      players = players.map(p => (p.id === pid ? { ...p, gold: auto.nextGold } : p));
+      constructions = [...constructions, ...auto.newConstructions];
+    }
+  }
+
   const aiConfigs: { id: string; params: AiParams }[] = [
     { id: AI_ID, params: paramsA },
     { id: AI_ID_2, params: paramsB },
@@ -782,6 +937,7 @@ export function stepSimulation(
       id, cities, units, players, state.tiles, state.territory, params, state.wallSections,
       state.contestedZoneHexKeys, state.commanders, scrollInventory, scrollAttachments,
       state.scrollRelics, state.scrollRegionClaimed,
+      state.config.mapTerrain,
     ));
 
   if (traceCallback) {
@@ -868,6 +1024,28 @@ export function stepSimulation(
       pendingRecruitsOut: pendingRecruitsAcc,
       generateId,
     });
+
+    const nShipBefore = pendingRecruitsAcc.filter(isPendingShipRecruit).length;
+    applyAiShipRecruitsAsPending(aiPlan.shipRecruits ?? [], {
+      aiPlayerId,
+      newCycle,
+      cities,
+      units,
+      tiles: state.tiles,
+      getPlayer: () => players.find(p => p.id === aiPlayerId),
+      onSpendGold: d => {
+        const p = players.find(pl => pl.id === aiPlayerId);
+        if (p) p.gold -= d;
+      },
+      pendingShipsOut: pendingRecruitsAcc,
+      generateId,
+    });
+    const nShipAfter = pendingRecruitsAcc.filter(isPendingShipRecruit).length;
+    if (diagnostics && nShipAfter > nShipBefore) {
+      const added = nShipAfter - nShipBefore;
+      if (aiPlayerId === AI_ID) diagnostics.shipsQueuedAi1 = (diagnostics.shipsQueuedAi1 ?? 0) + added;
+      else diagnostics.shipsQueuedAi2 = (diagnostics.shipsQueuedAi2 ?? 0) + added;
+    }
 
     for (const scout of aiPlan.scouts ?? []) {
       const key = tileKey(scout.targetQ, scout.targetR);
@@ -1112,7 +1290,8 @@ export function stepSimulation(
     territoryForMovement,
     defenseInstallationsMut,
   );
-  autoEmbarkLandUnitsOntoScoutShipsAtHex(movingUnits, tilesMut);
+  autoEmbarkLandUnitsOntoCargoShipsAtHex(movingUnits, tilesMut);
+  autoDisembarkCargoShipsOntoAdjacentLand(movingUnits, tilesMut, citiesToSet);
   releaseAttackWaveHolds(movingUnits, citiesToSet);
   releaseMarchEchelonHolds(movingUnits, citiesToSet);
   syncCommandersToAssignments(movingCommanders, citiesToSet, movingUnits);

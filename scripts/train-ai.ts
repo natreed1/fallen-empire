@@ -10,11 +10,13 @@
  * Env overrides: TRAIN_POPULATION_SIZE, TRAIN_GENERATIONS, TRAIN_MATCHES_PER_PAIR,
  * TRAIN_MAX_CYCLES, TRAIN_MAP_SIZE, TRAIN_ELITE_COUNT, TRAIN_MUTATION_STRENGTH,
  * TRAIN_DRAW_PENALTY, TRAIN_VARIANCE_PENALTY, TRAIN_FROM_CHAMPION (set 0 to skip), TRAIN_SEED_JSON,
- * TRAIN_SHOW_BATTLES, TRAIN_WON_QUICKLY_BONUS, TRAIN_LOST_SLOWLY_BONUS.
+ * TRAIN_SHOW_BATTLES, TRAIN_WON_QUICKLY_BONUS, TRAIN_LOST_SLOWLY_BONUS,
+ * TRAIN_USE_SCENARIO_MIX, TRAIN_SCENARIO_MIX, TRAIN_NAVAL_POSTINIT (see docs/AI_TRAINING.md).
  */
 
 import * as path from 'path';
 import * as fs from 'fs';
+import { spawnSync } from 'child_process';
 import {
   runSimulation,
   DEFAULT_AI_PARAMS,
@@ -29,6 +31,7 @@ import {
   EVOLVABLE_PARAM_KEYS,
   type TrendMutationOverrides,
 } from '../src/lib/aiParamsSchema';
+import { parseScenarioMix, selectScenario, getScenarioMapOverride } from './lib/scenarios';
 
 // ─── Config (env overrides for main knobs only) ────────────────────────
 const POPULATION_SIZE = parseInt(process.env.TRAIN_POPULATION_SIZE || '12', 10) || 12;
@@ -46,8 +49,34 @@ const DRAW_PENALTY = parseFloat(process.env.TRAIN_DRAW_PENALTY || '10') || 10;
 const WON_QUICKLY_BONUS_PER_CYCLE = parseFloat(process.env.TRAIN_WON_QUICKLY_BONUS || '0.05') || 0.05;
 const LOST_SLOWLY_BONUS_PER_CYCLE = parseFloat(process.env.TRAIN_LOST_SLOWLY_BONUS || '0.03') || 0.03;
 
-const TRAIN_MAP = { width: MAP_SIZE, height: MAP_SIZE };
-const SIM_OPTS: RunSimulationOptions = { maxCycles: MAX_CYCLES, mapConfigOverride: TRAIN_MAP };
+/** Domain-randomized maps + optional naval gauntlet seed (set TRAIN_USE_SCENARIO_MIX=0 for legacy flat map only). */
+const TRAIN_USE_SCENARIO_MIX =
+  process.env.TRAIN_USE_SCENARIO_MIX !== '0' && process.env.TRAIN_USE_SCENARIO_MIX !== 'false';
+const TRAIN_NAVAL_POSTINIT =
+  process.env.TRAIN_NAVAL_POSTINIT !== '0' && process.env.TRAIN_NAVAL_POSTINIT !== 'false';
+const TRAIN_SCENARIO_MIX_ENV = process.env.TRAIN_SCENARIO_MIX?.trim();
+const SCENARIO_MIX = TRAIN_USE_SCENARIO_MIX
+  ? parseScenarioMix(TRAIN_SCENARIO_MIX_ENV && TRAIN_SCENARIO_MIX_ENV.length > 0 ? TRAIN_SCENARIO_MIX_ENV : undefined)
+  : [];
+
+/**
+ * Per-match sim options: scenario picked deterministically from `matchSeed` (same as league/tournament).
+ * When `naval-islands` is selected and TRAIN_NAVAL_POSTINIT is on, seeds ships/infantry (see gameCore postInit).
+ */
+function getTrainSimOpts(matchSeed: number): RunSimulationOptions {
+  if (!TRAIN_USE_SCENARIO_MIX) {
+    return { maxCycles: MAX_CYCLES, mapConfigOverride: { width: MAP_SIZE, height: MAP_SIZE } };
+  }
+  const scenarioName = selectScenario(SCENARIO_MIX, matchSeed);
+  const override = getScenarioMapOverride(scenarioName);
+  const postInit: RunSimulationOptions['postInit'] =
+    TRAIN_NAVAL_POSTINIT && scenarioName === 'naval-islands' ? 'naval-gauntlet' : undefined;
+  return {
+    maxCycles: MAX_CYCLES,
+    mapConfigOverride: { width: MAP_SIZE, height: MAP_SIZE, ...override },
+    ...(postInit ? { postInit } : {}),
+  };
+}
 
 /** Ensure params have all keys (merge with defaults). */
 function ensureFullParams(p: Partial<AiParams>): AiParams {
@@ -151,7 +180,7 @@ function scoreResult(
 }
 
 function runMatch(paramsA: AiParams, paramsB: AiParams, seed: number): SimResult {
-  return runSimulation(paramsA, paramsB, seed, MAX_CYCLES, SIM_OPTS);
+  return runSimulation(paramsA, paramsB, seed, MAX_CYCLES, getTrainSimOpts(seed));
 }
 
 function mean(arr: number[]): number {
@@ -169,19 +198,85 @@ function effectiveScore(matchScores: number[]): number {
   return mean(matchScores) - VARIANCE_PENALTY * std(matchScores);
 }
 
+/** Aggregates from every SimResult in a candidate evaluation (two sims per match pair). */
+type FlowStats = {
+  avg_cycle: number;
+  draw_rate: number;
+  max_cycle_rate: number;
+  avg_city_margin: number;
+  game_count: number;
+};
+
+function accumulateFlowStats(results: SimResult[]): FlowStats {
+  const n = results.length;
+  if (n === 0) {
+    return { avg_cycle: 0, draw_rate: 0, max_cycle_rate: 0, avg_city_margin: 0, game_count: 0 };
+  }
+  let sumCycle = 0;
+  let draws = 0;
+  let maxHits = 0;
+  let sumMargin = 0;
+  for (const r of results) {
+    sumCycle += r.cycle;
+    if (r.winner === null) draws += 1;
+    if (r.cycle >= MAX_CYCLES) maxHits += 1;
+    sumMargin += Math.abs(r.ai1Cities - r.ai2Cities);
+  }
+  return {
+    avg_cycle: sumCycle / n,
+    draw_rate: draws / n,
+    max_cycle_rate: maxHits / n,
+    avg_city_margin: sumMargin / n,
+    game_count: n,
+  };
+}
+
 /** One candidate vs baseline: MATCHES_PER_PAIR match pairs (two sims each). Seeds vary by candidate index. */
-function evaluateCandidate(candidate: AiParams, baseline: AiParams, candidateIndex: number): number[] {
+function evaluateCandidate(
+  candidate: AiParams,
+  baseline: AiParams,
+  candidateIndex: number,
+): { matchScores: number[]; flowStats: FlowStats } {
   const matchScores: number[] = [];
+  const simResults: SimResult[] = [];
   const t0 = Date.now();
   for (let i = 0; i < MATCHES_PER_PAIR; i++) {
     const seed = (t0 + candidateIndex * 1000 + i * 997) % 1_000_000;
     const asAi1 = runMatch(candidate, baseline, seed);
     const asAi2 = runMatch(baseline, candidate, seed + 1);
+    simResults.push(asAi1, asAi2);
     matchScores.push(
       scoreResult(asAi1, 'ai1') + scoreResult(asAi2, 'ai2'),
     );
   }
-  return matchScores;
+  return { matchScores, flowStats: accumulateFlowStats(simResults) };
+}
+
+function logMetricsToPython(payload: Record<string, unknown>): void {
+  const script = path.join(process.cwd(), 'log_metrics.py');
+  const py = process.env.PYTHON || 'python3';
+  try {
+    const r = spawnSync(py, [script], {
+      input: JSON.stringify(payload),
+      encoding: 'utf-8',
+      maxBuffer: 1024 * 1024,
+    });
+    if (r.status !== 0) {
+      console.warn('[metrics]', (r.stderr || r.stdout || '').trim() || 'log_metrics failed');
+    }
+  } catch (e) {
+    console.warn('[metrics] could not run Python logger:', (e as Error).message);
+  }
+}
+
+function appendTrainingLiveLog(line: string): void {
+  try {
+    const logPath = path.join(process.cwd(), 'artifacts', 'training-live.log');
+    fs.mkdirSync(path.dirname(logPath), { recursive: true });
+    fs.appendFileSync(logPath, `${line}\n`, 'utf-8');
+  } catch (e) {
+    console.warn('[training-live.log]', (e as Error).message);
+  }
 }
 
 function main() {
@@ -191,7 +286,17 @@ function main() {
   console.log('Training AI parameters (evolutionary + multi-game evaluation)...');
   console.log(`Param count: ${summary.totalParamCount}  In mutation space: ${summary.paramsInMutationSpace.length}  Excluded: ${summary.excludedFromMutation.length} (${summary.excludedReason})`);
   console.log(`Evolvable params: ${EVOLVABLE_PARAM_KEYS.join(', ')}`);
-  console.log(`Map: ${TRAIN_MAP.width}x${TRAIN_MAP.height}  maxCycles: ${MAX_CYCLES}`);
+  if (TRAIN_USE_SCENARIO_MIX) {
+    const mixStr =
+      TRAIN_SCENARIO_MIX_ENV && TRAIN_SCENARIO_MIX_ENV.length > 0
+        ? TRAIN_SCENARIO_MIX_ENV
+        : '(default mix from scripts/lib/scenarios.ts — includes naval-islands)';
+    console.log(
+      `Maps: scenario mix ON  ${mixStr}  naval postInit: ${TRAIN_NAVAL_POSTINIT ? 'on (when naval-islands)' : 'off'}  base size: ${MAP_SIZE} (overridden by scenario)  maxCycles: ${MAX_CYCLES}`,
+    );
+  } else {
+    console.log(`Map: ${MAP_SIZE}x${MAP_SIZE} (flat; set TRAIN_USE_SCENARIO_MIX=1 for domain randomization)  maxCycles: ${MAX_CYCLES}`);
+  }
   console.log(`Gens: ${GENERATIONS}  population: ${POPULATION_SIZE}  matches/candidate: ${MATCHES_PER_PAIR}  elite: ${ELITE_COUNT}`);
   if (trendOverrides) {
     const n = Object.keys(trendOverrides).length;
@@ -214,24 +319,45 @@ function main() {
 
     const start = Date.now();
     const matchScoresPerCandidate: number[][] = [];
+    const flowStatsPerCandidate: FlowStats[] = [];
     for (let idx = 0; idx < population.length; idx++) {
       process.stdout.write(`  Candidate ${idx + 1}/${population.length}...`);
-      const ms = evaluateCandidate(population[idx], baseline, idx);
+      const { matchScores: ms, flowStats } = evaluateCandidate(population[idx], baseline, idx);
       matchScoresPerCandidate.push(ms);
+      flowStatsPerCandidate.push(flowStats);
       console.log(` ${effectiveScore(ms).toFixed(1)} (μ=${mean(ms).toFixed(1)} σ=${std(ms).toFixed(1)})`);
     }
-    console.log(`  Generation eval: ${((Date.now() - start) / 1000).toFixed(1)}s`);
+    const evalSeconds = (Date.now() - start) / 1000;
+    console.log(`  Generation eval: ${evalSeconds.toFixed(1)}s`);
 
     const scored = population.map((p, i) => ({
       params: p,
       score: effectiveScore(matchScoresPerCandidate[i]),
       mean: mean(matchScoresPerCandidate[i]),
       std: std(matchScoresPerCandidate[i]),
+      flowStats: flowStatsPerCandidate[i],
     }));
     scored.sort((a, b) => b.score - a.score);
     const best = scored[0];
     const prevBaseline = baseline;
     baseline = best.params;
+
+    const bestFlow = best.flowStats;
+    logMetricsToPython({
+      epoch: gen + 1,
+      loss: best.std,
+      reward: best.score,
+      avg_cycle: bestFlow.avg_cycle,
+      draw_rate: bestFlow.draw_rate,
+      max_cycle_rate: bestFlow.max_cycle_rate,
+      avg_city_margin: bestFlow.avg_city_margin,
+      eval_seconds: evalSeconds,
+      mean: best.mean,
+      std: best.std,
+    });
+    appendTrainingLiveLog(
+      `[${new Date().toISOString()}] gen=${gen + 1}/${GENERATIONS} eval=${evalSeconds.toFixed(1)}s bestScore=${best.score.toFixed(1)} avgCycle=${bestFlow.avg_cycle.toFixed(1)} drawRate=${(bestFlow.draw_rate * 100).toFixed(1)}% maxCycleRate=${(bestFlow.max_cycle_rate * 100).toFixed(1)}%`,
+    );
 
     console.log('');
     console.log(`  ► Best: score ${best.score.toFixed(1)} (μ=${best.mean.toFixed(1)} σ=${best.std.toFixed(1)})  ` + formatParamsShort(best.params));

@@ -6,10 +6,11 @@ import {
   STARTING_CITY_TEMPLATE, CITY_CENTER_STORAGE,
   BUILDING_IRON_COSTS, SCOUT_MISSION_COST, VILLAGE_INCORPORATE_COST, DEFENDER_IRON_COST,
   WALL_SECTION_STONE_COST, WALL_SECTION_HP, WALL_BUILDER_STONE_PER_CYCLE_PER_SLOT,
-  MapConfig,
+  MapConfig, hexTouchesBiome, SHIP_RECRUIT_COSTS,
   Commander, ScrollItem, ScrollAttachment, BuilderTask,
   SpecialRegionKind,
   ScrollRelicSite,
+  type MapTerrainPreset,
   isNavalUnitType,
   isFarmBuildingType,
   isValidFarmPlacementBiome,
@@ -27,6 +28,7 @@ import {
   clearVillageForCapitalTile,
 } from '@/lib/kingdomSpawn';
 import { countDefensesTaskSlots } from '@/lib/wallBuilding';
+import { strategicLandReachableKeys } from '@/lib/navalReachability';
 
 // ─── AI Action Types ───────────────────────────────────────────────
 
@@ -97,10 +99,25 @@ export interface AiRetreatAction {
   unitId: string;
 }
 
+export type AiShipType =
+  | 'scout_ship'
+  | 'warship'
+  | 'transport_ship'
+  | 'fisher_transport'
+  | 'capital_ship';
+
+export interface AiShipRecruitAction {
+  cityId: string;
+  shipyardQ: number;
+  shipyardR: number;
+  shipType: AiShipType;
+}
+
 export interface AiActions {
   builds: AiBuildAction[];
   upgrades: AiUpgradeAction[];
   recruits: AiRecruitAction[];
+  shipRecruits: AiShipRecruitAction[];
   moveTargets: AiMoveAction[];
   scouts: AiScoutAction[];
   incorporateVillages: AiIncorporateAction[];
@@ -118,6 +135,7 @@ export function emptyAiActions(): AiActions {
     builds: [],
     upgrades: [],
     recruits: [],
+    shipRecruits: [],
     moveTargets: [],
     scouts: [],
     incorporateVillages: [],
@@ -268,6 +286,14 @@ export interface AiParams {
   universityIronMinePref: number;
   /** When to switch university to city_defenses (0–1; higher = switch earlier). */
   universityCityDefenseThreshold: number;
+
+  // ── Naval / amphibious ──
+  /** Weight toward building ports/shipyards and recruiting ships when useful (0–1). */
+  navalRecruitBias: number;
+  /** When naval mix is chosen, preference for transports vs combat hulls (0–1). */
+  transportPriority: number;
+  /** Prefer at least this many combat ships before emphasizing transports (0–8). */
+  minShipsBeforeInvade: number;
 }
 
 const DEFAULT_MILITARY_LEVEL_MIX: MilitaryLevelMix = { L1: 0.6, L2: 0.3, L3: 0.1 };
@@ -331,6 +357,9 @@ export const DEFAULT_AI_PARAMS: AiParams = {
   scrollTerrainMaxDivert: 2,
   universityIronMinePref: 0.5,
   universityCityDefenseThreshold: 0.3,
+  navalRecruitBias: 0.35,
+  transportPriority: 0.4,
+  minShipsBeforeInvade: 2,
 };
 
 /**
@@ -418,18 +447,41 @@ export function planAiTurn(
     forest_secrets: [],
     isle_lost: [],
   },
+  /** When set, island/lake presets get a stronger passive nudge toward ports/shipyards. */
+  mapTerrain?: MapTerrainPreset,
 ): AiActions {
   const aiCities = cities.filter(c => c.ownerId === aiPlayerId);
   const aiPlayer = players.find(p => p.id === aiPlayerId);
   if (!aiPlayer || aiCities.length === 0) {
-    return { builds: [], upgrades: [], recruits: [], moveTargets: [], scouts: [], incorporateVillages: [], buildWallRings: [], commanderAssignments: [], scrollAttachments: [], universityTasks: [], stanceChanges: [], retreats: [] };
+    return { builds: [], upgrades: [], recruits: [], shipRecruits: [], moveTargets: [], scouts: [], incorporateVillages: [], buildWallRings: [], commanderAssignments: [], scrollAttachments: [], universityTasks: [], stanceChanges: [], retreats: [] };
   }
 
-  const actions: AiActions = { builds: [], upgrades: [], recruits: [], moveTargets: [], scouts: [], incorporateVillages: [], buildWallRings: [], commanderAssignments: [], scrollAttachments: [], universityTasks: [], stanceChanges: [], retreats: [] };
+  const actions: AiActions = {
+    builds: [],
+    upgrades: [],
+    recruits: [],
+    shipRecruits: [],
+    moveTargets: [],
+    scouts: [],
+    incorporateVillages: [],
+    buildWallRings: [],
+    commanderAssignments: [],
+    scrollAttachments: [],
+    universityTasks: [],
+    stanceChanges: [],
+    retreats: [],
+  };
   const techs = aiPlayer.researchedTechs ?? STARTING_TECHS;
   let goldBudget = aiPlayer.gold;
   const enemyCities = cities.filter(c => c.ownerId !== aiPlayerId);
   const aiUnits = units.filter(u => u.ownerId === aiPlayerId && u.hp > 0);
+  const cityCenterKeys = new Set(cities.map(c => tileKey(c.q, c.r)));
+  const neutralVillageKeys = new Set<string>();
+  for (const t of tiles.values()) {
+    if (t.hasVillage && !cityCenterKeys.has(tileKey(t.q, t.r))) {
+      neutralVillageKeys.add(tileKey(t.q, t.r));
+    }
+  }
 
   const foodStats = estimateAiFoodSurplus(aiPlayerId, cities, units, tiles, territory);
   const militaryUnits = aiUnits.filter(u => u.type !== 'builder');
@@ -451,6 +503,7 @@ export function planAiTurn(
     const hasSiegeWorkshop = city.buildings.some(b => b.type === 'siege_workshop');
     const hasQuarry = city.buildings.some(b => b.type === 'quarry');
     const hasMine = city.buildings.some(b => b.type === 'mine');
+    const hasAcademy = city.buildings.some(b => b.type === 'academy');
     const factoryToUpgrade = city.buildings.find(b => b.type === 'factory' && (b.level ?? 1) < 2);
     const barracksToUpgrade = city.buildings.find(b => b.type === 'barracks' && (b.level ?? 1) < 2);
     const farmToUpgrade = city.buildings.find(b => b.type === 'farm' && (b.level ?? 1) < 2);
@@ -515,6 +568,8 @@ export function planAiTurn(
         toBuild = 'factory';
       } else if (!hasSiegeWorkshop && goldBudget >= BUILDING_COSTS.siege_workshop) {
         toBuild = 'siege_workshop';
+      } else if (!hasAcademy && goldBudget >= BUILDING_COSTS.academy) {
+        toBuild = 'academy';
       } else if (!hasMarket && goldBudget >= BUILDING_COSTS.market) {
         toBuild = 'market';
       } else if (!hasQuarry && quarrySpot && goldBudget >= BUILDING_COSTS.quarry && city.population >= 10) {
@@ -644,6 +699,96 @@ export function planAiTurn(
       }
     }
 
+    // ── Naval: ports / shipyards / ships when expansion or warfare requires crossing water ──
+    const needsNavalLandScan = enemyCities.length > 0 || neutralVillageKeys.size > 0;
+    const reachableLand = needsNavalLandScan ? strategicLandReachableKeys(tiles, city.q, city.r) : null;
+    let nearestEnemy: City | null = null;
+    let nearestEnemyDist = Infinity;
+    for (const ec of enemyCities) {
+      const d = hexDistance(city.q, city.r, ec.q, ec.r);
+      if (d < nearestEnemyDist) {
+        nearestEnemyDist = d;
+        nearestEnemy = ec;
+      }
+    }
+    const needsNavalForEnemy =
+      nearestEnemy !== null &&
+      reachableLand !== null &&
+      !reachableLand.has(tileKey(nearestEnemy.q, nearestEnemy.r));
+    let needsNavalForVillages = false;
+    if (reachableLand !== null) {
+      for (const vk of neutralVillageKeys) {
+        if (!reachableLand.has(vk)) {
+          needsNavalForVillages = true;
+          break;
+        }
+      }
+    }
+    const navalBias = params.navalRecruitBias ?? 0.35;
+    const passiveNavalRoll =
+      mapTerrain === 'islands' || mapTerrain === 'lake' ? navalBias * 0.1 : navalBias * 0.06;
+    const wantNavalInfra =
+      needsNavalForEnemy ||
+      needsNavalForVillages ||
+      Math.random() < passiveNavalRoll;
+    const hasPort = city.buildings.some(b => b.type === 'port');
+    const shipyardB = city.buildings.find(b => b.type === 'shipyard');
+    const occupiedForDock = new Set<string>(
+      city.buildings.filter(b => b.type === 'port' || b.type === 'shipyard').map(b => tileKey(b.q, b.r)),
+    );
+    const portSpot = wantNavalInfra && !hasPort ? findCoastalEmptyTile(city, territory, tiles, cities) : null;
+    const yardSpot =
+      wantNavalInfra && hasPort && !shipyardB
+        ? findCoastalEmptyTile(city, territory, tiles, cities, occupiedForDock)
+        : null;
+
+    if (
+      portSpot &&
+      isBuildingUnlockedByTech('port', techs) &&
+      goldBudget >= BUILDING_COSTS.port &&
+      city.population >= 10
+    ) {
+      actions.builds.push({ cityId: city.id, type: 'port', q: portSpot[0], r: portSpot[1] });
+      goldBudget -= BUILDING_COSTS.port;
+    } else if (
+      yardSpot &&
+      shipyardB === undefined &&
+      isBuildingUnlockedByTech('shipyard', techs) &&
+      goldBudget >= BUILDING_COSTS.shipyard &&
+      city.population >= 10
+    ) {
+      actions.builds.push({ cityId: city.id, type: 'shipyard', q: yardSpot[0], r: yardSpot[1] });
+      goldBudget -= BUILDING_COSTS.shipyard;
+    } else if (shipyardB && wantNavalInfra && foodStats.surplus >= (params.foodBufferThreshold ?? 10)) {
+      const myShips = aiUnits.filter(u => isNavalUnitType(u.type));
+      const nShips = myShips.length;
+      const minShips = Math.max(0, Math.min(8, Math.round(params.minShipsBeforeInvade ?? 2)));
+      const tp = Math.max(0, Math.min(1, params.transportPriority ?? 0.4));
+      let pickShip: AiShipType = 'scout_ship';
+      if (nShips < minShips) {
+        pickShip = Math.random() < 0.55 && isUnitUnlockedByTech('warship', techs) ? 'warship' : 'scout_ship';
+      } else {
+        if (Math.random() < tp && isUnitUnlockedByTech('transport_ship', techs)) pickShip = 'transport_ship';
+        else if (Math.random() < 0.5 && isUnitUnlockedByTech('warship', techs)) pickShip = 'warship';
+        else pickShip = 'scout_ship';
+      }
+      if (!isUnitUnlockedByTech(pickShip, techs)) pickShip = 'scout_ship';
+      const costs = SHIP_RECRUIT_COSTS[pickShip];
+      if (
+        goldBudget >= costs.gold &&
+        ((costs.wood ?? 0) === 0 || (city.storage.wood ?? 0) >= (costs.wood ?? 0)) &&
+        ((costs.refinedWood ?? 0) === 0 || (city.storage.refinedWood ?? 0) >= (costs.refinedWood ?? 0))
+      ) {
+        actions.shipRecruits.push({
+          cityId: city.id,
+          shipyardQ: shipyardB.q,
+          shipyardR: shipyardB.r,
+          shipType: pickShip,
+        });
+        goldBudget -= costs.gold;
+      }
+    }
+
   }
 
   // Scout: chance per cycle when gold allows (scoutChance)
@@ -691,7 +836,6 @@ export function planAiTurn(
     return 1 + supplyGain - starvationRisk + cityBias;
   };
 
-  const cityCenterKeys = new Set(cities.map(c => tileKey(c.q, c.r)));
   const villageTilesForIncorp: { q: number; r: number; score: number }[] = [];
   const villagesNeedingUnits: { q: number; r: number; score: number }[] = [];
   for (const tile of tiles.values()) {
@@ -711,8 +855,20 @@ export function planAiTurn(
     }
   }
 
+  /** Land military on a hex we're incorporating this cycle — must not get a conflicting move order (incorporation completes next economy cycle). */
+  const reservedForIncorporation = new Set<string>();
+  for (const inc of actions.incorporateVillages) {
+    for (const u of aiUnits) {
+      if (u.q === inc.q && u.r === inc.r && u.type !== 'builder' && u.hp > 0 && !isNavalUnitType(u.type)) {
+        reservedForIncorporation.add(u.id);
+      }
+    }
+  }
+
   villagesNeedingUnits.sort((a, b) => b.score - a.score);
-  const movableForVillage = aiUnits.filter(u => u.hp > 0 && u.type !== 'builder' && u.status !== 'fighting');
+  const movableForVillage = aiUnits.filter(
+    u => u.hp > 0 && u.type !== 'builder' && u.status !== 'fighting' && !reservedForIncorporation.has(u.id),
+  );
   const assignedToVillage = new Set<string>();
   if (villagesNeedingUnits.length > 0 && goldBudget >= VILLAGE_INCORPORATE_COST && expansionPriority > 0) {
     const cap = expansionPriority >= 0.5 ? 3 : 2;
@@ -734,7 +890,14 @@ export function planAiTurn(
 
   // Move units toward best enemy target (units not already sent to villages). Tie-breaker: prefer targets that become anchors (supplyCityAcquisitionBias).
   if (enemyCities.length > 0) {
-    const movableUnits = aiUnits.filter(u => u.hp > 0 && u.type !== 'builder' && u.status !== 'fighting' && !assignedToVillage.has(u.id));
+    const movableUnits = aiUnits.filter(
+      u =>
+        u.hp > 0 &&
+        u.type !== 'builder' &&
+        u.status !== 'fighting' &&
+        !assignedToVillage.has(u.id) &&
+        !reservedForIncorporation.has(u.id),
+    );
     const enemyUnitCount = (eq: number, er: number): number =>
       units.filter(u => u.ownerId !== aiPlayerId && u.hp > 0 && hexDistance(u.q, u.r, eq, er) <= 2).length;
     const popW = params.targetPopWeight ?? 1;
@@ -806,7 +969,13 @@ export function planAiTurn(
     const commitShare = Math.max(0, Math.min(1, params.contestedZoneCommitShare ?? 0.15));
     const minSurplus = Math.max(0, params.contestedZoneMinSurplusMilitary ?? 4);
     const idleForContest = aiUnits.filter(
-      u => u.hp > 0 && u.type !== 'builder' && !isNavalUnitType(u.type) && !unitIdsAlreadyTargeted.has(u.id) && u.status !== 'fighting',
+      u =>
+        u.hp > 0 &&
+        u.type !== 'builder' &&
+        !isNavalUnitType(u.type) &&
+        !unitIdsAlreadyTargeted.has(u.id) &&
+        u.status !== 'fighting' &&
+        !reservedForIncorporation.has(u.id),
     );
     const numToCommit = Math.max(0, Math.min(
       Math.floor(idleForContest.length * commitShare),
@@ -883,6 +1052,7 @@ export function planAiTurn(
       const nearbyIdle = aiUnits.filter(u =>
         u.hp > 0 && u.type !== 'builder' && !isNavalUnitType(u.type) &&
         u.status !== 'fighting' && !unitIdsAlreadyTargeted.has(u.id) &&
+        !reservedForIncorporation.has(u.id) &&
         hexDistance(u.q, u.r, hq, hr) <= 4 && hexDistance(u.q, u.r, hq, hr) > 1
       );
       const [flankQ, flankR] = emptyNeighbors[Math.floor(Math.random() * emptyNeighbors.length)];
@@ -990,7 +1160,8 @@ export function planAiTurn(
             u.type !== 'builder' &&
             (needShip ? isNavalUnitType(u.type) : !isNavalUnitType(u.type)) &&
             !unitIdsAlreadyTargeted.has(u.id) &&
-            u.status !== 'fighting',
+            u.status !== 'fighting' &&
+            !reservedForIncorporation.has(u.id),
         );
         const nearest = divertable
           .sort((a, b) => hexDistance(a.q, a.r, dest.q, dest.r) - hexDistance(b.q, b.r, dest.q, dest.r))[0];
@@ -1065,6 +1236,30 @@ function getRingTopology(
   const isClosed = targetCount > 0 && builtCount === targetCount;
   const isBreached = hasAnySection && hasBroken;
   return { targetCount, builtCount, missingCount, isClosed, isBreached };
+}
+
+function findCoastalEmptyTile(
+  city: City,
+  territory: Map<string, TerritoryInfo>,
+  tiles: Map<string, Tile>,
+  allCities: City[],
+  excludeHexKeys?: Set<string>,
+): [number, number] | null {
+  const cityKeys = new Set(allCities.map(c => tileKey(c.q, c.r)));
+  for (const [key, info] of Array.from(territory.entries())) {
+    if (info.cityId !== city.id) continue;
+    if (excludeHexKeys?.has(key)) continue;
+    const tile = tiles.get(key);
+    if (!tile || tile.biome === 'water' || tile.biome === 'mountain') continue;
+    const [q, r] = key.split(',').map(Number);
+    if (!hexTouchesBiome(tiles, q, r, 'water')) continue;
+    if (cityKeys.has(key)) continue;
+    const hasBuilding = allCities.some(c => c.buildings.some(b => tileKey(b.q, b.r) === key));
+    if (!hasBuilding) {
+      return [q, r];
+    }
+  }
+  return null;
 }
 
 function findEmptyTerritoryTile(

@@ -151,7 +151,7 @@ export function generateMap(config: MapConfig): GeneratorResult {
   scatterRuins(allTiles, tileMap, config, rng);
 
   // ── Pass 4: Villages (not inside scroll regions) ───────────────────────
-  spawnVillages(allTiles, config, rng);
+  spawnVillages(allTiles, tileMap, config, rng);
 
   // ── Pass 5: Quarry & Mine deposits (biome-based) ───────────────────────
   scatterResourceDeposits(allTiles, rng);
@@ -782,25 +782,190 @@ function scatterResourceDeposits(
 
 // ─── Village Spawning ──────────────────────────────────────────────
 
+function tileEligibleForVillagePlacement(t: Tile): boolean {
+  return (
+    t.biome !== 'water' &&
+    t.biome !== 'mountain' &&
+    !t.isProvinceCenter &&
+    !t.hasRuins &&
+    !t.specialTerrainKind
+  );
+}
+
+function landTouchesWater(tile: Tile, tileMap: Map<string, Tile>): boolean {
+  return hexNeighbors(tile.q, tile.r).some(([nq, nr]) => {
+    return tileMap.get(tileKey(nq, nr))?.biome === 'water';
+  });
+}
+
+function shuffleInPlace<T>(arr: T[], rng: () => number): void {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [arr[i], arr[j]] = [arr[j]!, arr[i]!];
+  }
+}
+
+/** Every connected landmass gets at least one incorporatable village (when any eligible hex exists). */
+function ensureVillageOnEachLandmass(
+  allTiles: Tile[],
+  tileMap: Map<string, Tile>,
+  rng: () => number,
+): void {
+  const seen = new Set<string>();
+  for (const start of allTiles) {
+    if (start.biome === 'water' || seen.has(tileKey(start.q, start.r))) continue;
+    const stack: Tile[] = [start];
+    const comp: Tile[] = [];
+    let hasVillage = false;
+    while (stack.length > 0) {
+      const t = stack.pop()!;
+      const k = tileKey(t.q, t.r);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      comp.push(t);
+      if (t.hasVillage) hasVillage = true;
+      for (const [nq, nr] of hexNeighbors(t.q, t.r)) {
+        const nk = tileKey(nq, nr);
+        if (seen.has(nk)) continue;
+        const n = tileMap.get(nk);
+        if (n && n.biome !== 'water') stack.push(n);
+      }
+    }
+    if (hasVillage) continue;
+    const candidates = comp.filter(tileEligibleForVillagePlacement);
+    if (candidates.length === 0) continue;
+    shuffleInPlace(candidates, rng);
+    candidates[0]!.hasVillage = true;
+  }
+}
+
+/** Coastal strips need villages so expansion (ports / embark chains) is not walled off for long coastlines. */
+function ensureMinimumCoastalVillages(
+  allTiles: Tile[],
+  tileMap: Map<string, Tile>,
+  config: MapConfig,
+  rng: () => number,
+): void {
+  const coastal: Tile[] = [];
+  for (const t of allTiles) {
+    if (!tileEligibleForVillagePlacement(t)) continue;
+    if (!landTouchesWater(t, tileMap)) continue;
+    coastal.push(t);
+  }
+  if (coastal.length === 0) return;
+
+  let have = 0;
+  for (const t of coastal) {
+    if (t.hasVillage) have += 1;
+  }
+
+  const mapArea = config.width * config.height;
+  const target = Math.min(
+    coastal.length,
+    Math.max(5, Math.floor(Math.sqrt(mapArea) / 3.5)),
+  );
+  if (have >= target) return;
+
+  const need = target - have;
+  const missing = coastal.filter(t => !t.hasVillage);
+  shuffleInPlace(missing, rng);
+  for (let i = 0; i < need && i < missing.length; i++) {
+    missing[i]!.hasVillage = true;
+  }
+}
+
+/**
+ * Cap the hex-walk distance from any land tile to the nearest village so one player is not stranded
+ * in a huge village-less interior (multi-source BFS over non-water hexes).
+ */
+function fillVillageCoverageGaps(
+  allTiles: Tile[],
+  tileMap: Map<string, Tile>,
+  config: MapConfig,
+  rng: () => number,
+): void {
+  const mapArea = config.width * config.height;
+  const maxGap = Math.max(9, Math.min(16, Math.floor(Math.sqrt(mapArea) / 5)));
+  /** Avoid runaway village counts if the random pass was extremely sparse. */
+  const maxGapFillAdds = Math.min(95, Math.max(28, Math.floor(mapArea / 48)));
+  let gapFillAdds = 0;
+
+  const distToNearestVillage = (): Map<string, number> => {
+    const dist = new Map<string, number>();
+    const q: string[] = [];
+    for (const t of allTiles) {
+      if (t.biome === 'water') continue;
+      if (!t.hasVillage) continue;
+      const k = tileKey(t.q, t.r);
+      dist.set(k, 0);
+      q.push(k);
+    }
+    let qi = 0;
+    while (qi < q.length) {
+      const k = q[qi++]!;
+      const d = dist.get(k)!;
+      const [cq, cr] = k.split(',').map(Number);
+      for (const [nq, nr] of hexNeighbors(cq, cr)) {
+        const nk = tileKey(nq, nr);
+        const n = tileMap.get(nk);
+        if (!n || n.biome === 'water') continue;
+        if (dist.has(nk)) continue;
+        dist.set(nk, d + 1);
+        q.push(nk);
+      }
+    }
+    return dist;
+  };
+
+  for (let iter = 0; iter < 140; iter++) {
+    const dist = distToNearestVillage();
+    const unreachable: Tile[] = [];
+    let best = -1;
+    const tooFar: Tile[] = [];
+    for (const t of allTiles) {
+      if (t.biome === 'water' || !tileEligibleForVillagePlacement(t) || t.hasVillage) continue;
+      const k = tileKey(t.q, t.r);
+      const d = dist.get(k);
+      if (d === undefined) {
+        unreachable.push(t);
+      } else if (d > maxGap) {
+        if (d > best) {
+          best = d;
+          tooFar.length = 0;
+          tooFar.push(t);
+        } else if (d === best) {
+          tooFar.push(t);
+        }
+      }
+    }
+    const pool = unreachable.length > 0 ? unreachable : tooFar;
+    if (pool.length === 0) return;
+    if (gapFillAdds >= maxGapFillAdds) return;
+    shuffleInPlace(pool, rng);
+    pool[0]!.hasVillage = true;
+    gapFillAdds += 1;
+  }
+}
+
 function spawnVillages(
   allTiles: Tile[],
+  tileMap: Map<string, Tile>,
   config: MapConfig,
   rng: () => number,
 ): void {
   for (const tile of allTiles) {
-    if (
-      tile.biome === 'water' ||
-      tile.biome === 'mountain' ||
-      tile.isProvinceCenter ||
-      tile.hasRuins ||
-      tile.specialTerrainKind
-    ) continue;
+    if (!tileEligibleForVillagePlacement(tile)) continue;
 
     const islandBoost = tile.isIsland ? 1.8 : 1;
-    if (rng() < config.villageDensity * islandBoost) {
+    const coastalBoost = landTouchesWater(tile, tileMap) ? 1.5 : 1;
+    if (rng() < config.villageDensity * islandBoost * coastalBoost) {
       tile.hasVillage = true;
     }
   }
+
+  ensureVillageOnEachLandmass(allTiles, tileMap, rng);
+  ensureMinimumCoastalVillages(allTiles, tileMap, config, rng);
+  fillVillageCoverageGaps(allTiles, tileMap, config, rng);
 }
 
 /** Landmasses inside oceans — larger archipelagos and occasional high ground. */

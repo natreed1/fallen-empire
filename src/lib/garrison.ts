@@ -63,6 +63,27 @@ export function clearPatrolFieldsMutable(u: Unit): void {
   delete u.patrolHexKeys;
 }
 
+/**
+ * When AI queues pending village incorporation, land armies must not march for a full economy cycle
+ * (30 movement ticks) or they leave the hex and incorporation fails. Call for each land military
+ * on the village hex in the same tick as queueing {@link PendingIncorporationItem}.
+ */
+export function haltLandMilitaryOnHexForIncorporationQueueMutable(u: Unit): void {
+  if (u.hp <= 0 || u.aboardShipId || !isLandMilitaryUnit(u)) return;
+  if (u.status === 'fighting') return;
+  clearPatrolFieldsMutable(u);
+  delete u.marchInitialHexDistance;
+  delete u.moveLegMs;
+  u.status = 'idle';
+  delete u.targetQ;
+  delete u.targetR;
+  u.nextMoveAt = 0;
+  delete u.attackWaveHold;
+  delete u.marchEchelonHold;
+  delete u.siegingCityId;
+  delete u.assaulting;
+}
+
 export function withoutPatrolFields<U extends Unit>(u: U): U {
   const next = { ...u };
   clearPatrolFieldsMutable(next);
