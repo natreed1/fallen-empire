@@ -14,6 +14,11 @@ import { axialToWorld, worldToAxial, HEX_RADIUS, tileKey, parseTileKey } from '@
 import { collectHumanStackKeysInScreenRect, hexFromClientOnMap } from '@/lib/mapBoxSelect';
 import { useMultiplayerSession } from '@/hooks/useMultiplayerSession';
 import { MultiplayerSessionProvider } from '@/context/MultiplayerSessionContext';
+import {
+  MultiplayerConnectingOverlay,
+  MultiplayerErrorOverlay,
+  MultiplayerWaitingForPeerOverlay,
+} from '@/components/ui/MultiplayerConnectionScreens';
 
 /** Match scripts/train-ai.ts default (TRAIN_MAP_SIZE / TRAIN_MAP) so watch mode uses same small map. */
 const TRAIN_MAP_SIZE = 38;
@@ -279,6 +284,7 @@ function HexInteractionPlane() {
           stackMoveUnitId: null,
           uiMode: 'normal',
           pendingMove: null,
+          pendingCityPatrol: null,
           cityLogisticsOpen: false,
         });
         skipClickAfterBoxRef.current = true;
@@ -378,9 +384,10 @@ function useCameraTarget(): [number, number, number] {
         return [x, 0, z];
       }
     }
-    // Bot-vs-bot / online 1v1: center camera on capitals so both are visible
+    // Bot-vs-bot / spectate: center on the centroid of capitals so both sides are visible.
+    // Multiplayer uses the human capital path below (same as human_vs_ai) so the view stays on your spawn and panning is not overwritten every tick.
     if (
-      (gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4' || gameMode === 'spectate' || gameMode === 'multiplayer') &&
+      (gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4' || gameMode === 'spectate') &&
       cities.length >= 2
     ) {
       let sumX = 0, sumZ = 0;
@@ -434,7 +441,7 @@ function CameraZoomController() {
     const cam = camera as THREE.OrthographicCamera;
     if (
       phase === 'playing' &&
-      (gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4' || gameMode === 'spectate' || gameMode === 'multiplayer') &&
+      (gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4' || gameMode === 'spectate') &&
       !botZoomSet.current
     ) {
       botZoomSet.current = true;
@@ -453,7 +460,7 @@ function CameraZoomController() {
     if (
       (prevPhaseRef.current === 'place_city' || prevPhaseRef.current === 'starting_game') &&
       phase === 'playing' &&
-      (gameMode === 'human_vs_ai' || gameMode === 'human_solo')
+      (gameMode === 'human_vs_ai' || gameMode === 'human_solo' || gameMode === 'multiplayer')
     ) {
       const targetZoom = 35;
       const startZoom = cam.zoom;
@@ -496,7 +503,14 @@ function useEscapeKey() {
 export default function GameScene() {
   const searchParams = useSearchParams();
   const multiplayerSession = useMultiplayerSession();
-  const { multiplayerActive, connecting, waitingForPeer, inviteUrl, netError } = multiplayerSession;
+  const {
+    multiplayerActive,
+    connecting,
+    waitingForPeer,
+    inviteUrl,
+    netError,
+    peerCount,
+  } = multiplayerSession;
   const [inviteCopied, setInviteCopied] = useState(false);
   const generateWorld = useGameStore(s => s.generateWorld);
   const isGenerated = useGameStore(s => s.isGenerated);
@@ -504,7 +518,7 @@ export default function GameScene() {
   const gameMode = useGameStore(s => s.gameMode);
   const liveTarget = useCameraTarget();
   const isBotWatch =
-    gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4' || gameMode === 'spectate' || gameMode === 'multiplayer';
+    gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4' || gameMode === 'spectate';
   const [mapTarget, setMapTarget] = useState(liveTarget);
   const prevPhaseForCameraRef = useRef(phase);
 
@@ -530,6 +544,9 @@ export default function GameScene() {
   }, [liveTarget, phase, isBotWatch, gameMode]);
 
   useEscapeKey();
+
+  const mpRole = searchParams.get('mp');
+  const joiningAsGuest = mpRole === 'join' || mpRole === 'guest';
 
   const watchParam = searchParams.get('watch') ?? searchParams.get('mode');
   const watchMode = watchParam != null;
@@ -571,42 +588,31 @@ export default function GameScene() {
     <MultiplayerSessionProvider value={multiplayerSession}>
     <div className="w-full h-screen bg-empire-dark relative" onContextMenu={e => e.preventDefault()}>
       {multiplayerActive && netError && (
-        <div className="absolute inset-0 z-[200] flex flex-col items-center justify-center gap-3 bg-empire-dark/95 px-6 text-center text-empire-parchment text-sm pointer-events-auto">
-          <p className="text-amber-200/90 max-w-md">{netError}</p>
-          <p className="text-empire-parchment/55 text-xs max-w-md">
-            From the repo root run <code className="text-empire-gold/80">npm run game-server</code> in a separate terminal, then refresh.
-          </p>
-        </div>
+        <MultiplayerErrorOverlay
+          message={netError}
+          hint={
+            <p className="max-w-md text-center">
+              From the repo root run <code className="text-empire-gold/80">npm run game-server</code> in a separate
+              terminal, then refresh.
+            </p>
+          }
+        />
       )}
       {multiplayerActive && connecting && !netError && (
-        <div className="absolute inset-0 z-[200] flex items-center justify-center bg-empire-dark/90 text-empire-parchment text-sm pointer-events-none">
-          Connecting to multiplayer…
-        </div>
+        <MultiplayerConnectingOverlay asGuest={joiningAsGuest} />
       )}
       {multiplayerActive && waitingForPeer && !connecting && !netError && (
-        <div className="absolute inset-0 z-[199] flex flex-col items-center justify-center gap-4 bg-black/55 px-4 text-center pointer-events-auto">
-          <p className="text-empire-parchment font-cinzel text-lg tracking-wide">Waiting for opponent</p>
-          <p className="text-empire-parchment/65 text-xs max-w-lg">
-            Share this invite link (guest opens it on another machine or browser profile):
-          </p>
-          <div className="flex flex-col sm:flex-row gap-2 max-w-2xl w-full items-stretch justify-center">
-            <code className="flex-1 text-left text-[11px] leading-relaxed break-all rounded border border-empire-gold/25 bg-black/40 px-3 py-2 text-empire-parchment/90">
-              {inviteUrl}
-            </code>
-            <button
-              type="button"
-              onClick={() => {
-                void navigator.clipboard.writeText(inviteUrl).then(() => {
-                  setInviteCopied(true);
-                  setTimeout(() => setInviteCopied(false), 2000);
-                });
-              }}
-              className="shrink-0 px-4 py-2 rounded border border-empire-gold/50 bg-empire-gold/15 text-empire-gold text-sm hover:bg-empire-gold/25"
-            >
-              {inviteCopied ? 'Copied' : 'Copy link'}
-            </button>
-          </div>
-        </div>
+        <MultiplayerWaitingForPeerOverlay
+          inviteUrl={inviteUrl}
+          inviteCopied={inviteCopied}
+          peerCount={peerCount}
+          onCopy={() => {
+            void navigator.clipboard.writeText(inviteUrl).then(() => {
+              setInviteCopied(true);
+              setTimeout(() => setInviteCopied(false), 2000);
+            });
+          }}
+        />
       )}
       <Canvas
         shadows

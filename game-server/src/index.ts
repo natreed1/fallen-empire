@@ -99,13 +99,17 @@ function broadcastSimSettings(room: Room): void {
 }
 
 function mergePlan(base: AiActions, patch: Partial<AiActions>): AiActions {
-  const mt = new Map<string, { unitId: string; toQ: number; toR: number }>();
+  const mt = new Map<string, { unitId: string; toQ: number; toR: number; stance?: import('../../src/types/game').ArmyStance }>();
   for (const m of base.moveTargets) mt.set(m.unitId, m);
   for (const m of patch.moveTargets ?? []) mt.set(m.unitId, m);
+  const da = new Map<string, { unitId: string; cityId: string; mode: 'auto_engage' | 'stagnant' }>();
+  for (const d of base.defendAssignments ?? []) da.set(d.unitId, d);
+  for (const d of patch.defendAssignments ?? []) da.set(d.unitId, d);
   return {
     ...base,
     ...patch,
     moveTargets: Array.from(mt.values()),
+    defendAssignments: Array.from(da.values()),
     shipRecruits: patch.shipRecruits !== undefined ? patch.shipRecruits : base.shipRecruits,
   };
 }

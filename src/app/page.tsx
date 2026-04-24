@@ -2,6 +2,7 @@
 
 import dynamic from 'next/dynamic';
 import { Suspense } from 'react';
+import { GameLoadingScreen } from '@/components/ui/GameLoadingScreen';
 
 // Dynamic import with SSR disabled — Three.js requires browser APIs
 const GameScene = dynamic(
@@ -9,9 +10,9 @@ const GameScene = dynamic(
   {
     ssr: false,
     loading: () => (
-      <div
-        className="w-full h-screen bg-empire-dark"
-        aria-hidden
+      <GameLoadingScreen
+        title="Awakening the engine"
+        message="Loading the map renderer and game client…"
       />
     ),
   },
@@ -22,11 +23,7 @@ function GameSceneShell() {
   return (
     <Suspense
       fallback={
-        <div
-          className="w-full h-screen bg-empire-dark flex items-center justify-center text-empire-parchment/50 text-sm"
-        >
-          Loading…
-        </div>
+        <GameLoadingScreen title="Almost there" message="Resolving play mode from the address…" />
       }
     >
       <GameScene />

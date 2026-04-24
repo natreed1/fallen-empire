@@ -13,9 +13,9 @@ Deep audit of the Fallen Empire codebase (Mar 2026). Findings are grouped by sev
 | Security | 0 | 2 | 0 | 0 |
 | Tests | 0 | 1 | 0 | 0 |
 | Dead code / duplication | 0 | 0 | 2 | 1 |
-| Documentation / config | 0 | 0 | 2 | 1 |
+| Documentation / config | 0 | 0 | 1 | 1 |
 
-**Top priorities:** Wrap the game tick in try/catch; validate evolve API body and consider auth for workflow/evolve; remove `.bak`; centralize hex key parsing; fix README/WORKFLOW port; add ESLint config and (optionally) a test suite.
+**Top priorities:** Wrap the game tick in try/catch; validate evolve API body and consider auth for workflow/evolve; remove `.bak`; centralize hex key parsing; add ESLint config and (optionally) a test suite. *(README/WORKFLOW dev port and doc index addressed 2026-04-23 — see §6.1, §6.3.)*
 
 ---
 
@@ -158,12 +158,10 @@ The same logic (`key.split(',').map(Number)`) is inlined in:
 
 ## 6. Documentation and configuration
 
-### 6.1 [Medium] Wrong port in docs
+### 6.1 [Resolved 2026-04-23] Wrong port in docs
 
-- **README.md:** Says “Open http://localhost:3000”; dev server runs on **3010** (`next dev -p 3010` in `package.json`).
-- **docs/WORKFLOW.md:** Links to `http://localhost:3000/workflow`; same issue.
-
-**Recommendation:** Update both to use port **3010** (or document that the port is configurable).
+- **README.md** and **docs/WORKFLOW.md** now use dev port **3010** (matches `next dev -p 3010` in `package.json`).
+- **docs/README.md** added as a documentation hub; links use 3010 where relevant.
 
 ### 6.2 [Medium] ESLint not configured
 
@@ -171,9 +169,9 @@ Running `npm run lint` triggers Next.js’s “How would you like to configure E
 
 **Recommendation:** Run the Next.js ESLint setup (e.g. “Strict”) so `npm run lint` runs without prompts and CI can enforce rules.
 
-### 6.3 [Low] README and layout
+### 6.3 [Resolved 2026-04-23] README and layout
 
-README describes map generation and controls well but doesn’t mention `src/core/`, API routes, or the scripts. Optional: add a short “Scripts” and “API” subsection so new contributors know where to look.
+README now includes **Repository layout** (app, `src/lib/`, `gameCore`, store, types, `game-server/`, `scripts/`), **Common npm scripts**, and pointers to **docs/README.md** and **docs/WORKFLOW.md**. Map generation and rendering sections are unchanged.
 
 ### 6.4 JSDoc
 
@@ -193,18 +191,16 @@ No systematic JSDoc (`@param`, `@returns`) in `src/`. Some files have short comm
 | Medium | No React Error Boundary | (none) |
 | Medium | Backup file in repo | `src/components/ui/GameHUD.tsx.bak` |
 | Medium | Inlined hex parsing instead of `parseTileKey` | ai.ts, military.ts, mapGenerator, HexGrid, GameHUD, useGameStore |
-| Medium | Wrong port in README / WORKFLOW | README.md, docs/WORKFLOW.md |
 | Medium | ESLint not configured | (no .eslintrc) |
 | Low | Empty catch in aiParams | `src/lib/aiParams.ts` |
-| Low | README could mention scripts/API | README.md |
 
 ---
 
 ## 8. Suggested order of work
 
-1. **Immediate:** Wrap game tick in try/catch and set error state; fix README/WORKFLOW port; remove `GameHUD.tsx.bak`.
+1. **Immediate:** Wrap game tick in try/catch and set error state; remove `GameHUD.tsx.bak`.
 2. **Short term:** Validate and bound evolve POST body; add ESLint config; add an Error Boundary around the game.
 3. **Next:** Introduce a test runner and a few unit tests; centralize hex key parsing on `parseTileKey`.
 4. **If exposing APIs:** Add auth or rate limits for workflow and evolve; add body size limit for workflow PUT.
 
-*Last updated: 2026-03-16*
+*Last updated: 2026-04-23*

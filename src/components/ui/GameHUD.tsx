@@ -10,9 +10,12 @@ import {
 } from '@/store/useGameStore';
 import { useMultiplayerSessionValue } from '@/context/MultiplayerSessionContext';
 import { countVillagesInPlayerTerritory, isUnitInSupplyVicinityOfPlayerCities } from '@/lib/empireEconomy';
+import { computeEmpirePopUsedForPlayer, landPending } from '@/lib/battalionTraining';
+import type { PendingLandRecruit } from '@/lib/pendingLandRecruit';
 import { computeCityProductionRate, computeSawmillBuildingPreview } from '@/lib/gameLoop';
 import { getWeatherHarvestMultiplier } from '@/lib/weather';
-import { BUILDING_COSTS, BUILDING_PRODUCTION, BUILDING_BP_COST, BUILDING_JOBS, CITY_BUILDING_POWER, BUILDER_POWER, BP_RATE_BASE, TERRAIN_FOOD_YIELD, UNIT_COSTS, UNIT_L2_COSTS, UNIT_L3_COSTS, UNIT_BASE_STATS, UNIT_DISPLAY_NAMES, getUnitDisplayName, ARMS_TIER_LABELS, type RangedVariant, COMMANDER_TRAIT_INFO, COMMANDER_RECRUIT_GOLD, VILLAGE_INCORPORATE_COST, MARKET_GOLD_PER_CYCLE, MARKET_GOLD_PER_VILLAGE, POPULATION_TAX_GOLD_MULT, SCOUT_MISSION_COST, WEATHER_DISPLAY, BARACKS_UPGRADE_COST, BARACKS_L3_UPGRADE_COST, FACTORY_UPGRADE_COST, FARM_UPGRADE_COST, RESOURCE_MINE_UPGRADE_COST, FARM_L2_FOOD_PER_CYCLE, WALL_SECTION_STONE_COST, WALL_BUILDER_STONE_PER_CYCLE_PER_SLOT, WORKERS_PER_LEVEL, MIN_STAFFING_RATIO, TREBUCHET_FIELD_BP_COST, TREBUCHET_FIELD_GOLD_COST, TREBUCHET_REFINED_WOOD_COST, SAWMILL_WOOD_PER_REFINED, getBuildingJobs, getUnitStats, BuildingType, UnitType, ArmyStance, Biome, hexDistance, getHexRing, tileKey, POP_BIRTH_RATE, POP_NATURAL_DEATHS, POP_CARRYING_CAPACITY_PER_FOOD, POP_EXPECTED_K_ALPHA, STARVATION_DEATHS, SHIP_RECRUIT_COSTS, isNavalUnitType, getShipMaxCargo, hexTouchesBiome, AttackCityStyle, DefenseTowerType, DefenseTowerLevel, DEFENSE_TOWER_LEVEL_COSTS, DEFENSE_TOWER_MAX_PER_CITY, DEFENSE_TOWER_DISPLAY_NAME, defenseInstallationCurrentHp, defenseInstallationMaxHp, City, CONTESTED_ZONE_GOLD_REWARD, CONTESTED_ZONE_IRON_REWARD, KingdomId, KINGDOM_IDS, KINGDOM_DISPLAY_NAMES, KINGDOM_SETUP_ICONS, SCROLL_DISPLAY_NAME, scrollItemDisplayName, SCROLL_RELIC_LORE, SCROLL_REGION_ITEM_NAME, SPECIAL_REGION_DISPLAY_NAME, SPECIAL_REGION_OVERLAY_COLORS, SCROLL_COMBAT_BONUS, SCROLL_DEFENSE_BONUS, SCROLL_MOVEMENT_BONUS, SCROLL_ARMY_SLOT_ORDER, SCROLL_SLOT_LABEL, MAP_SIZE_PRESETS, type MapSizePreset, type MapTerrainPreset, type ScrollKind, type SpecialRegionKind, type ScrollAttachment, type ScrollItem, type Commander, UNIVERSITY_UPGRADE_COSTS, BUILDER_TASK_LABELS, type BuilderTask, type ArmyMarchSpreadMode, DEFAULT_BUILDER_TASK, ABILITY_DEFS,   getAbilityForUnit, TERRITORY_RADIUS, GARRISON_PATROL_RADIUS_MIN, GARRISON_PATROL_RADIUS_MAX, defaultCityBuildingMaxHp, RUINS_REPAIR_GOLD_RATIO, isCityBuildingOperational, EMPTY_MAP_QUADRANTS, TRADE_MAP_QUADRANT_GOLD, TRADE_MAP_FULL_ATLAS_GOLD, TRADE_RESOURCE_PACK_GOLD, TRADE_MORALE_FESTIVAL_GOLD, TRADE_MORALE_FESTIVAL_DELTA, TRADE_ROYAL_SURVEY_GOLD, MAP_QUADRANT_LABELS, type MapQuadrantId, SOCIAL_BAR_BUILD_GOLD, SOCIAL_BAR_BP, SOCIAL_BAR_UPGRADE_COSTS, SOCIAL_BAR_BIRTH_MULT_PER_LEVEL, isFarmBuildingType, isValidFarmPlacementBiome, type CouncilPostId, COUNCIL_POST_INFO, COUNCIL_POST_IDS, POLITICIAN_TRAIT_INFO, type PoliticianTraitId, type Politician, type TechId, TECH_TREE, TECH_IDS, STARTING_TECHS, EDUCATION_UPGRADE_COSTS, UNIVERSITY_LEVEL_POP_PER_STEP, UNIVERSITY_SPECIALIZATION_INFO, type UniversitySpecialization, isBuildingUnlockedByTech, isUnitUnlockedByTech, maxBuildingLevelByTech, notResearchedMessageForBuilding, notResearchedMessageForUnit, notResearchedMessageForBuildingLevel,
+import { BUILDING_COSTS, BUILDING_PRODUCTION, BUILDING_BP_COST, BUILDING_JOBS, CITY_BUILDING_POWER, BUILDER_POWER, BP_RATE_BASE, TERRAIN_FOOD_YIELD, UNIT_COSTS, UNIT_L2_COSTS, UNIT_L3_COSTS, UNIT_BASE_STATS, UNIT_DISPLAY_NAMES, getUnitDisplayName, ARMS_TIER_LABELS, type RangedVariant, COMMANDER_TRAIT_INFO, COMMANDER_RECRUIT_GOLD, VILLAGE_INCORPORATE_COST, MARKET_GOLD_PER_CYCLE, MARKET_GOLD_PER_VILLAGE, POPULATION_TAX_GOLD_MULT, SCOUT_MISSION_COST, WEATHER_DISPLAY, BARACKS_UPGRADE_COST, BARACKS_L3_UPGRADE_COST, FACTORY_UPGRADE_COST, FARM_UPGRADE_COST, RESOURCE_MINE_UPGRADE_COST, FARM_L2_FOOD_PER_CYCLE, WALL_SECTION_STONE_COST, WALL_BUILDER_STONE_PER_CYCLE_PER_SLOT, WORKERS_PER_LEVEL, MIN_STAFFING_RATIO, TREBUCHET_FIELD_BP_COST, TREBUCHET_FIELD_GOLD_COST, TREBUCHET_REFINED_WOOD_COST, TREBUCHET_SIEGE_STONE_COST, TREBUCHET_SIEGE_WOOD_COST, SAWMILL_WOOD_PER_REFINED, getBuildingJobs, getUnitStats, BuildingType, UnitType, ArmyStance, Biome, hexDistance, getHexRing, tileKey, POP_BIRTH_RATE, POP_NATURAL_DEATHS, POP_CARRYING_CAPACITY_PER_FOOD, POP_EXPECTED_K_ALPHA, STARVATION_DEATHS, SHIP_RECRUIT_COSTS, isNavalUnitType, getShipMaxCargo, hexTouchesBiome, AttackCityStyle, DefenseTowerType, DefenseTowerLevel, DEFENSE_TOWER_LEVEL_COSTS, DEFENSE_TOWER_MAX_PER_CITY, DEFENSE_TOWER_DISPLAY_NAME, defenseInstallationCurrentHp, defenseInstallationMaxHp, City, CONTESTED_ZONE_GOLD_REWARD, CONTESTED_ZONE_IRON_REWARD, KingdomId, KINGDOM_IDS, KINGDOM_DISPLAY_NAMES, KINGDOM_SETUP_ICONS, SCROLL_DISPLAY_NAME, scrollItemDisplayName, SCROLL_RELIC_LORE, SCROLL_REGION_ITEM_NAME, SPECIAL_REGION_DISPLAY_NAME, SPECIAL_REGION_OVERLAY_COLORS, SCROLL_COMBAT_BONUS, SCROLL_DEFENSE_BONUS, SCROLL_MOVEMENT_BONUS, SCROLL_ARMY_SLOT_ORDER, SCROLL_SLOT_LABEL, MAP_SIZE_PRESETS, type MapSizePreset, type MapTerrainPreset, type ScrollKind, type SpecialRegionKind, type ScrollAttachment, type ScrollItem, type Commander, UNIVERSITY_UPGRADE_COSTS, BUILDER_TASK_LABELS, type BuilderTask, type ArmyMarchSpreadMode, DEFAULT_BUILDER_TASK, ABILITY_DEFS,   getAbilityForUnit, TERRITORY_RADIUS, GARRISON_PATROL_RADIUS_MIN, GARRISON_PATROL_RADIUS_MAX, defaultCityBuildingMaxHp, RUINS_REPAIR_GOLD_RATIO, isCityBuildingOperational, EMPTY_MAP_QUADRANTS, TRADE_MAP_QUADRANT_GOLD, TRADE_MAP_FULL_ATLAS_GOLD, TRADE_RESOURCE_PACK_GOLD, TRADE_MORALE_FESTIVAL_GOLD, TRADE_MORALE_FESTIVAL_DELTA, TRADE_ROYAL_SURVEY_GOLD, MAP_QUADRANT_LABELS, type MapQuadrantId, SOCIAL_BAR_BUILD_GOLD, SOCIAL_BAR_BP, SOCIAL_BAR_UPGRADE_COSTS, SOCIAL_BAR_BIRTH_MULT_PER_LEVEL, isFarmBuildingType, isValidFarmPlacementBiome, type CouncilPostId, COUNCIL_POST_INFO, COUNCIL_POST_IDS, POLITICIAN_TRAIT_INFO, type PoliticianTraitId, type Politician, type TechId, TECH_TREE, TECH_IDS, STARTING_TECHS, EDUCATION_UPGRADE_COSTS, UNIVERSITY_LEVEL_POP_PER_STEP, UNIVERSITY_SPECIALIZATION_INFO, type UniversitySpecialization, isBuildingUnlockedByTech, isUnitUnlockedByTech, maxBuildingLevelByTech, notResearchedMessageForBuilding, notResearchedMessageForUnit, notResearchedMessageForBuildingLevel,
+  getUnitPopCost,
   MAX_MATCH_ECONOMY_CYCLES,
   MOVEMENT_TICKS_PER_ECONOMY_CYCLE,
   SCOUT_MISSION_MOVEMENT_TICKS,
@@ -36,13 +39,15 @@ import { computeUniversityBuildingLevelFromPopulation, nextUniversityLevelPopula
 import { countLandMilitaryByType, TACTICAL_FILTER_LAND_TYPES, unitIdsMatchingTypes } from '@/lib/siege';
 import type { SiegeTacticId } from '@/lib/siegeTactics';
 import { SIEGE_TACTIC_META, buildWaveGroupsFromTactic } from '@/lib/siegeTactics';
-import { findCityForRefinedWoodSpend } from '@/lib/territory';
+import { findCityForSiegeFieldSpend } from '@/lib/territory';
+import { countPlayerSiegePieces, siegeCompositionAllowsRecruit } from '@/lib/siegeRecruitment';
 import { countDefensesTaskSlots } from '@/lib/wallBuilding';
 import Image from 'next/image';
 import Link from 'next/link';
 import { BuilderCottagePanel } from '@/components/ui/panelThemes/BuilderCottagePanel';
 import { MapRoomPanel } from '@/components/ui/panelThemes/MapRoomPanel';
 import { MedievalBuildingPanel } from '@/components/ui/panelThemes/MedievalBuildingPanels';
+import { EmpireLoadingCard } from '@/components/ui/GameLoadingScreen';
 
 function scrollAttachmentLabel(att: Pick<ScrollAttachment, 'kind' | 'sourceRegion'>): string {
   if (att.sourceRegion) return SCROLL_REGION_ITEM_NAME[att.sourceRegion];
@@ -116,6 +121,151 @@ function formatDefenseLevelCost(level: DefenseTowerLevel): string {
   if (c.stone) parts.push(`${c.stone} stone`);
   if (c.iron) parts.push(`${c.iron} iron`);
   return parts.join(' · ');
+}
+
+/** Live battalion training progress — bottom-right FAB; panel opens on demand (default closed). */
+function TrainingQueuePanel() {
+  const pendingRecruits = useGameStore(s => s.pendingRecruits);
+  const cities = useGameStore(s => s.cities);
+  const players = useGameStore(s => s.players);
+  const human = players.find(p => p.isHuman);
+  const [open, setOpen] = useState(false);
+
+  const rows = useMemo(() => {
+    if (!human) return [];
+    return (pendingRecruits.filter(landPending) as PendingLandRecruit[]).filter(
+      pr => pr.playerId === human.id && pr.trainingCyclesTotal != null,
+    );
+  }, [pendingRecruits, human]);
+
+  useEffect(() => {
+    if (rows.length === 0) setOpen(false);
+  }, [rows.length]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setOpen(false);
+        e.preventDefault();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open]);
+
+  if (!human || rows.length === 0) return null;
+
+  return (
+    <div className="fixed bottom-4 right-2 sm:right-3 z-[88] pointer-events-auto flex flex-col items-end gap-2">
+      {open && (
+        <div
+          id="training-queue-panel"
+          role="region"
+          aria-labelledby="training-queue-toggle"
+          className="w-[min(19rem,calc(100vw-1.25rem))] rounded border border-amber-800/40 bg-black/70 backdrop-blur-sm px-2.5 py-2 shadow-xl"
+        >
+          <div className="flex items-center justify-between gap-2 mb-1.5">
+            <div className="text-[9px] uppercase tracking-wider text-amber-200/70 font-semibold">Training queue</div>
+            <button
+              type="button"
+              onClick={() => setOpen(false)}
+              className="w-7 h-7 shrink-0 flex items-center justify-center rounded text-empire-parchment/55 hover:text-empire-parchment hover:bg-amber-950/40 text-base leading-none"
+              aria-label="Close training queue"
+            >
+              ×
+            </button>
+          </div>
+          <ul className="space-y-2 max-h-[min(40vh,22rem)] overflow-y-auto pr-0.5">
+            {rows.map(pr => {
+              const city = cities.find(c => c.id === pr.cityId);
+              const totalT = pr.trainingCyclesTotal ?? 1;
+              const elapsed = Math.min(pr.trainingCyclesElapsed ?? 0, totalT);
+              const gNeed = pr.gunsRequired ?? 0;
+              const gDel = pr.gunsDelivered ?? 0;
+              const g2Need = pr.gunsL2Required ?? 0;
+              const g2Del = pr.gunsL2Delivered ?? 0;
+              const tier =
+                pr.effectiveArmsLevel === 3 || pr.type === 'defender'
+                  ? 'L3 '
+                  : pr.effectiveArmsLevel === 2
+                    ? 'L2 '
+                    : '';
+              const name = getUnitDisplayName(
+                pr.type,
+                pr.effectiveArmsLevel,
+                pr.type === 'ranged' && pr.effectiveArmsLevel === 3 ? pr.rangedVariant : undefined,
+              );
+              const timePct = totalT > 0 ? Math.round((100 * elapsed) / totalT) : 0;
+              const swordPct = gNeed > 0 ? Math.min(100, Math.round((100 * gDel) / gNeed)) : 100;
+              const steelPct = g2Need > 0 ? Math.min(100, Math.round((100 * g2Del) / g2Need)) : 100;
+              return (
+                <li key={pr.id} className="text-[10px] border-b border-amber-900/25 pb-2 last:border-0 last:pb-0">
+                  <div className="flex justify-between gap-2 text-empire-parchment/90">
+                    <span className="font-medium truncate" title={city?.name}>
+                      {tier}
+                      {name}
+                    </span>
+                    <span className="text-empire-parchment/45 shrink-0">{city?.name ?? 'City'}</span>
+                  </div>
+                  <div className="mt-1 space-y-1">
+                    <div className="flex justify-between text-[9px] text-empire-parchment/55">
+                      <span>Drill</span>
+                      <span>
+                        {elapsed}/{totalT} cycles ({timePct}%)
+                      </span>
+                    </div>
+                    <div className="h-1 rounded-full bg-empire-stone/25 overflow-hidden">
+                      <div className="h-full bg-amber-600/80 rounded-full transition-all" style={{ width: `${timePct}%` }} />
+                    </div>
+                    {gNeed > 0 && (
+                      <>
+                        <div className="flex justify-between text-[9px] text-empire-parchment/55">
+                          <span>Swords</span>
+                          <span>
+                            {gDel}/{gNeed} ({swordPct}%)
+                          </span>
+                        </div>
+                        <div className="h-1 rounded-full bg-empire-stone/25 overflow-hidden">
+                          <div className="h-full bg-sky-600/75 rounded-full transition-all" style={{ width: `${swordPct}%` }} />
+                        </div>
+                      </>
+                    )}
+                    {g2Need > 0 && (
+                      <>
+                        <div className="flex justify-between text-[9px] text-empire-parchment/55">
+                          <span>Fine steel</span>
+                          <span>
+                            {g2Del}/{g2Need} ({steelPct}%)
+                          </span>
+                        </div>
+                        <div className="h-1 rounded-full bg-empire-stone/25 overflow-hidden">
+                          <div className="h-full bg-violet-500/70 rounded-full transition-all" style={{ width: `${steelPct}%` }} />
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+      <button
+        type="button"
+        onClick={() => setOpen(v => !v)}
+        aria-expanded={open}
+        aria-controls="training-queue-panel"
+        id="training-queue-toggle"
+        className="flex items-center gap-2 rounded-lg border border-amber-700/50 bg-amber-950/85 px-3 py-2 shadow-lg text-amber-100/95 text-[11px] font-semibold tracking-wide hover:bg-amber-900/90 hover:border-amber-500/45 active:scale-[0.98] transition-transform"
+      >
+        <span className="uppercase text-[10px]">Training</span>
+        <span className="min-w-[1.25rem] h-5 px-1 rounded-full bg-amber-600/90 text-black text-[10px] font-bold flex items-center justify-center tabular-nums">
+          {rows.length}
+        </span>
+      </button>
+    </div>
+  );
 }
 
 export default function GameHUD() {
@@ -293,6 +443,20 @@ function SetupScreen() {
 
   if (menuStep === 'multiplayer_lobby') {
     return <MultiplayerOnlinePanel onBack={() => setMenuStep('root')} />;
+  }
+
+  if (
+    !isGenerated &&
+    (menuStep === 'play_setup' || menuStep === 'spectate_setup')
+  ) {
+    return (
+      <div className="absolute inset-0 z-[20] flex items-center justify-center bg-black/70 backdrop-blur-md pointer-events-auto">
+        <EmpireLoadingCard
+          title="Preparing the realm"
+          subtitle="Generating terrain, resources, and viable capital sites…"
+        />
+      </div>
+    );
   }
 
   if (menuStep === 'root') {
@@ -650,6 +814,7 @@ function PlayingHUD() {
         <BattleTestTopBar />
         <SidePanel />
         <MoveConfirmPopup />
+        <CityPatrolOfferPopup />
         <CombatHud />
         <div className="fixed bottom-4 left-2 z-30 flex flex-col-reverse gap-2 items-start max-w-[min(20rem,calc(100vw-1rem))] pointer-events-none">
           <div className="pointer-events-auto w-56 min-w-0">
@@ -664,6 +829,7 @@ function PlayingHUD() {
     <>
       <ArcherDoctrineModal />
       <TopBar />
+      <TrainingQueuePanel />
       <WeatherOverlay />
       <CityModal />
       <SidePanel />
@@ -680,6 +846,7 @@ function PlayingHUD() {
       <SupplyClusterSidePanel />
       <SupplyViewPanel />
       <MoveConfirmPopup />
+      <CityPatrolOfferPopup />
       <CombatHud />
       <ScrollSearchPromptModal />
       <SpecialRegionSearchGuideModal />
@@ -2640,6 +2807,60 @@ function BattleReportModal() {
   );
 }
 
+// ─── City border patrol (move-click on own territory) ───────────────
+
+function CityPatrolOfferPopup() {
+  const pending = useGameStore(s => s.pendingCityPatrol);
+  const selectedHex = useGameStore(s => s.selectedHex);
+  const cities = useGameStore(s => s.cities);
+  const confirmCityBorderPatrol = useGameStore(s => s.confirmCityBorderPatrol);
+  const cancelCityPatrolOffer = useGameStore(s => s.cancelCityPatrolOffer);
+  const marchFromCityPatrolOffer = useGameStore(s => s.marchFromCityPatrolOffer);
+  const getSelectedUnits = useGameStore(s => s.getSelectedUnits);
+
+  if (!pending || !selectedHex) return null;
+  const city = cities.find(c => c.id === pending.cityId);
+  const cityLabel = city?.name ?? 'City';
+  const units = getSelectedUnits();
+
+  return (
+    <div className="absolute top-20 left-1/2 -translate-x-1/2 pointer-events-auto z-[25]">
+      <div className="bg-empire-dark/95 border border-teal-500/45 rounded-lg px-6 py-4 text-center shadow-xl min-w-[300px]">
+        <p className="text-teal-300 font-bold tracking-wide text-sm mb-2">PATROL CITY BORDER?</p>
+        <p className="text-xs text-empire-parchment/70 mb-3 leading-relaxed">
+          <span className="text-empire-parchment font-medium">{cityLabel}</span> — assign{' '}
+          <span className="text-empire-parchment tabular-nums">{units.length}</span>{' '}
+          {units.length !== 1 ? 'armies' : 'army'} to roam this city&apos;s land and hold its territorial edge. With
+          fewer armies than border hexes, goals rotate so they circulate the front over time.
+        </p>
+        <div className="flex flex-wrap gap-2 justify-center">
+          <button
+            type="button"
+            onClick={() => confirmCityBorderPatrol()}
+            className="px-4 py-2 border rounded-lg font-bold text-xs tracking-wide bg-teal-800/50 border-teal-400/60 text-teal-100 hover:bg-teal-700/55 transition-colors"
+          >
+            PATROL BORDER
+          </button>
+          <button
+            type="button"
+            onClick={() => marchFromCityPatrolOffer()}
+            className="px-4 py-2 border rounded-lg font-bold text-xs tracking-wide bg-empire-stone/25 border-empire-stone/45 text-empire-parchment hover:bg-empire-stone/35 transition-colors"
+          >
+            MARCH HERE
+          </button>
+          <button
+            type="button"
+            onClick={() => cancelCityPatrolOffer()}
+            className="px-4 py-2 bg-red-900/40 border border-red-500/50 rounded-lg text-red-300 font-bold text-xs hover:bg-red-800/50 transition-colors"
+          >
+            CANCEL
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Move Confirmation Popup ──────────────────────────────────────
 
 function MoveConfirmPopup() {
@@ -4422,7 +4643,7 @@ function TacticalPanel() {
                   <span className="text-[8px] uppercase tracking-wide text-cyan-300/55">Map</span>
           <div className="space-y-2 max-h-44 overflow-y-auto">
             {humanStacks.length === 0 ? (
-              <p className="text-empire-parchment/50 text-[11px]">No units on the map.</p>
+              <p className="text-empire-parchment/50 text-[11px]">No armies or fleets on the map.</p>
             ) : (
               humanStacks.map(({ q, r, units: stackUnits }) => {
                 const stackKey = tileKey(q, r);
@@ -4465,7 +4686,7 @@ function TacticalPanel() {
                         }}
                         onClick={e => e.stopPropagation()}
                         className="shrink-0 mt-0.5 text-[14px] leading-none text-empire-parchment/35 hover:text-empire-gold/90 cursor-grab active:cursor-grabbing px-0.5"
-                        title="Drag onto an army card to attach these troops"
+                        title="Drag onto a field army card to attach these map armies"
                         aria-hidden
                       >
                         ⠿
@@ -4498,7 +4719,14 @@ function TacticalPanel() {
                           </div>
                           <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-empire-parchment/55">
                             <span>
-                              {stackUnits.length} unit{stackUnits.length !== 1 ? 's' : ''}
+                              {stackUnits.length}{' '}
+                              {isNavalStack
+                                ? stackUnits.length !== 1
+                                  ? 'ships'
+                                  : 'ship'
+                                : stackUnits.length !== 1
+                                  ? 'armies'
+                                  : 'army'}
                             </span>
                             {isSelected && (
                               <span className="text-teal-300/90 font-medium">· Orders scope</span>
@@ -4524,7 +4752,7 @@ function TacticalPanel() {
                                   ? 'border-teal-400/65 ring-1 ring-teal-400/30'
                                   : 'border-empire-stone/35'
                               }`}
-                              title="Scope pending orders to this unit type on this hex (click again for whole stack)"
+                              title="Scope pending orders to this army type on this hex (click again for the full stack)"
                               onClick={e => {
                                 e.stopPropagation();
                                 toggleTacticalStackUnitTypeFocus(stackKey, t as UnitType);
@@ -4537,7 +4765,7 @@ function TacticalPanel() {
                       </div>
                       {typeFocus && (
                         <p className="text-[9px] text-cyan-300/80 mt-0.5">
-                          Orders: {UNIT_DISPLAY_NAMES[typeFocus]} only — click the type again to order the full stack.
+                          Orders: {UNIT_DISPLAY_NAMES[typeFocus]} armies only — click the type again to order the full stack.
                         </p>
                       )}
                       {splitStackPendingStore &&
@@ -4545,7 +4773,9 @@ function TacticalPanel() {
                         splitStackPendingStore.fromR === r && (
                           <div className="mt-1.5 flex flex-wrap items-center justify-between gap-1 rounded border border-cyan-600/35 bg-cyan-950/20 px-2 py-1">
                             <p className="text-[9px] text-cyan-300/90">
-                              Splitting {splitStackPendingStore.count} unit(s) — adjacent land (armies) or water (fleets)
+                              Splitting {splitStackPendingStore.count} map{' '}
+                              {splitStackPendingStore.count !== 1 ? 'armies' : 'army'} — adjacent land (armies) or water
+                              (fleets)
                             </p>
                             <button
                               type="button"
@@ -6446,6 +6676,7 @@ const MILITARY_RECRUIT_INFO: MilitaryRecruitRow[] = [
   { type: 'cavalry', maintain: '2 grain/cycle', desc: 'Fast melee. 1.5x speed.' },
   { type: 'ranged', maintain: '1 grain/cycle', desc: 'Archer. Attacks from 2 hex.' },
   { type: 'defender', maintain: '1 grain/cycle', desc: 'Tank. L3 only, iron only. High HP, damage resist.', l3BarracksOnly: true },
+  { type: 'scout', maintain: 'none', desc: 'Recon only — no combat. Trains instantly.', fixedLevel: 1 },
 ];
 
 const SIEGE_RECRUIT_INFO: MilitaryRecruitRow[] = [
@@ -6530,11 +6761,13 @@ function BarracksPanel({ city, barracksQ, barracksR }: { city: import('@/types/g
   const cities = useGameStore(s => s.cities);
   const barracks = city.buildings.find(b => b.type === 'barracks' && b.q === barracksQ && b.r === barracksR);
   const barracksLvl = barracks?.level ?? 1;
-  const totalGunsL2 = cities.filter(c => c.ownerId === human?.id).reduce((s, c) => s + (c.storage.gunsL2 ?? 0), 0);
   const humanCities = cities.filter(c => c.ownerId === human?.id);
   const totalPop = humanCities.reduce((s, c) => s + c.population, 0);
-  const livingTroops = units.filter(u => u.ownerId === human?.id && u.hp > 0).length;
-  const troopSlotsLeft = Math.max(0, totalPop - livingTroops);
+  const popUsed =
+    human?.id != null
+      ? computeEmpirePopUsedForPlayer(units, pendingRecruits, human.id)
+      : 0;
+  const popRemaining = Math.max(0, totalPop - popUsed);
   const canRecruitCommander = gold >= COMMANDER_RECRUIT_GOLD;
 
   const [quantities, setQuantities] = useState<Record<string, number>>({});
@@ -6588,7 +6821,9 @@ function BarracksPanel({ city, barracksQ, barracksR }: { city: import('@/types/g
           Upgrade barracks (L3) — {BARACKS_L3_UPGRADE_COST}g
         </button>
       )}
-      <p className="text-empire-parchment/50 text-[10px]">Troops: {livingTroops} / {totalPop} (1 per pop; pop lost when unit dies)</p>
+      <p className="text-empire-parchment/50 text-[10px]">
+        Battalion population: {popUsed} / {totalPop} (weighted by unit type; dead units return battalion-sized losses to cities)
+      </p>
 
       <div className="space-y-1.5">
         {[...MILITARY_RECRUIT_INFO, ...KINGDOM_MILITARY_ROWS].filter((row) => {
@@ -6597,10 +6832,56 @@ function BarracksPanel({ city, barracksQ, barracksR }: { city: import('@/types/g
           if (row.l3BarracksOnly && barracksLvl < 3) return false;
           return true;
         }).map(({ type, maintain, desc, fixedLevel }) => {
+          if (type === 'scout') {
+            const pc = getUnitPopCost('scout');
+            const goldCost = UNIT_COSTS.scout.gold;
+            const maxScout = Math.max(1, Math.min(20, Math.floor(popRemaining / pc), goldCost > 0 ? Math.floor(gold / goldCost) : 20));
+            const qty = getQty('scout');
+            const q = Math.min(qty, maxScout);
+            const canScout =
+              isUnitUnlockedByTech('scout', researchedTechs) && gold >= goldCost * q && popRemaining >= pc * q;
+            return (
+              <div
+                key="scout"
+                className={`px-2.5 py-2 rounded border border-emerald-700/40 bg-emerald-950/20 text-empire-parchment ${
+                  canScout ? '' : 'opacity-50'
+                }`}
+              >
+                <div className="flex justify-between items-center gap-2 mb-0.5">
+                  <span className="font-bold text-xs text-emerald-200">Scout</span>
+                  <span className="text-xs font-mono text-yellow-400/90">{goldCost}g · {pc} pop</span>
+                </div>
+                <p className="text-[10px] text-empire-parchment/50 mb-1">{desc}</p>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="range"
+                    min={1}
+                    max={maxScout}
+                    value={q}
+                    onChange={e => setQty('scout', Number(e.target.value))}
+                    className="flex-1 h-1 bg-empire-stone/30 rounded-lg appearance-none cursor-pointer accent-emerald-500"
+                  />
+                  <button
+                    type="button"
+                    disabled={!canScout}
+                    onClick={() => {
+                      for (let i = 0; i < q; i++) recruitUnit(city.id, 'scout', 1);
+                    }}
+                    className="px-2 py-1 text-[10px] font-bold rounded bg-emerald-900/50 text-emerald-100 hover:bg-emerald-800/55 disabled:opacity-40"
+                  >
+                    Recruit {q}
+                  </button>
+                </div>
+              </div>
+            );
+          }
           const liveCity = cities.find(c => c.id === city.id) ?? city;
           const lvl = (fixedLevel ?? getLevel(type)) as 1 | 2 | 3;
           const goldCost = lvl === 3 ? UNIT_L3_COSTS[type].gold : lvl === 2 ? UNIT_L2_COSTS[type].gold : UNIT_COSTS[type].gold;
-          const stoneCost = lvl === 2 ? (UNIT_L2_COSTS[type].stone ?? 0) : 0;
+          const stoneCost =
+            lvl === 3 ? (UNIT_L3_COSTS[type].stone ?? 0) : lvl === 2 ? (UNIT_L2_COSTS[type].stone ?? 0) : (UNIT_COSTS[type].stone ?? 0);
+          const woodCost =
+            lvl === 3 ? (UNIT_L3_COSTS[type].wood ?? 0) : lvl === 2 ? (UNIT_L2_COSTS[type].wood ?? 0) : (UNIT_COSTS[type].wood ?? 0);
           const ironCost = lvl === 3 ? (UNIT_L3_COSTS[type].iron ?? 0) : 0;
           const refinedWoodCost =
             lvl === 3 ? (UNIT_L3_COSTS[type].refinedWood ?? 0) : lvl === 2 ? (UNIT_L2_COSTS[type].refinedWood ?? 0) : (UNIT_COSTS[type].refinedWood ?? 0);
@@ -6618,21 +6899,25 @@ function BarracksPanel({ city, barracksQ, barracksR }: { city: import('@/types/g
           const displayName = getUnitDisplayName(type, lvl, type === 'ranged' && lvl === 3 ? rangedRv : undefined);
           const tierShort = ARMS_TIER_LABELS[lvl];
           const gunL2Upkeep = (stats as { gunL2Upkeep?: number }).gunL2Upkeep ?? 0;
-          const upkeepText = gunL2Upkeep > 0 ? `L2 arms. +${gunL2Upkeep} L2 arms/cycle` : maintain;
+          const upkeepText = gunL2Upkeep > 0 ? `Fine steel upkeep +${gunL2Upkeep}/cycle` : maintain;
           const qty = getQty(type);
+          const popCost = getUnitPopCost(type);
           const totalGold = goldCost * qty;
           const totalStone = stoneCost * qty;
+          const totalWood = woodCost * qty;
           const totalIron = ironCost * qty;
           const totalRefinedWood = refinedWoodCost * qty;
           const cityStone = city.storage.stone ?? 0;
+          const cityWood = city.storage.wood ?? 0;
           const cityIron = city.storage.iron ?? 0;
           const cityRefinedWood = city.storage.refinedWood ?? 0;
           const maxByGold = goldCost > 0 ? Math.floor(gold / goldCost) : 999;
           const maxByStone = stoneCost > 0 ? Math.floor(cityStone / stoneCost) : 999;
+          const maxByWood = woodCost > 0 ? Math.floor(cityWood / woodCost) : 999;
           const maxByIron = ironCost > 0 ? Math.floor(cityIron / ironCost) : 999;
           const maxByRefinedWood = refinedWoodCost > 0 ? Math.floor(cityRefinedWood / refinedWoodCost) : 999;
-          const maxQty = Math.max(1, Math.min(maxByGold, maxByStone, maxByIron, maxByRefinedWood, troopSlotsLeft, 20));
-          const canAffordL2Arms = gunL2Upkeep === 0 || totalGunsL2 >= gunL2Upkeep * qty;
+          const maxByPop = popCost > 0 ? Math.floor(popRemaining / popCost) : 999;
+          const maxQty = Math.max(1, Math.min(maxByGold, maxByStone, maxByWood, maxByIron, maxByRefinedWood, maxByPop, 20));
           const doctrineBlocked =
             type === 'ranged' &&
             lvl === 3 &&
@@ -6644,16 +6929,17 @@ function BarracksPanel({ city, barracksQ, barracksR }: { city: import('@/types/g
             unitResearched &&
             gold >= totalGold &&
             cityStone >= totalStone &&
+            cityWood >= totalWood &&
             cityIron >= totalIron &&
             cityRefinedWood >= totalRefinedWood &&
-            livingTroops + qty <= totalPop &&
-            canAffordL2Arms &&
+            popUsed + popCost * qty <= totalPop &&
             !doctrineBlocked;
           const isL2 = lvl === 2;
           const isL3 = lvl === 3;
           const costLabelParts: string[] = [];
           if (goldCost > 0) costLabelParts.push(`${goldCost}g`);
           if (stoneCost > 0) costLabelParts.push(`${stoneCost} stone`);
+          if (woodCost > 0) costLabelParts.push(`${woodCost} wood`);
           if (ironCost > 0) costLabelParts.push(`${ironCost} iron`);
           if (refinedWoodCost > 0) costLabelParts.push(`${refinedWoodCost} ref.`);
           const costLabel = costLabelParts.join(', ');
@@ -6714,9 +7000,10 @@ function BarracksPanel({ city, barracksQ, barracksR }: { city: import('@/types/g
                 <span className="text-[10px] text-empire-parchment/40">
                   Total: {totalGold > 0 && <span className={canAfford ? 'text-yellow-400' : 'text-red-400'}>{totalGold}g</span>}
                   {totalStone > 0 && <span className={canAfford ? 'text-empire-parchment' : 'text-red-400'}> {totalStone} stone</span>}
+                  {totalWood > 0 && <span className={canAfford ? 'text-empire-parchment' : 'text-red-400'}> {totalWood} wood</span>}
                   {totalIron > 0 && <span className={canAfford ? 'text-empire-parchment' : 'text-red-400'}> {totalIron} iron</span>}
                   {totalRefinedWood > 0 && <span className={canAfford ? 'text-teal-300' : 'text-red-400'}> {totalRefinedWood} ref.</span>}
-                  {' · '}{qty} pop
+                  {' · '}{qty * popCost} pop
                 </span>
                 <button
                   type="button"
@@ -6762,15 +7049,18 @@ function SiegeWorkshopPanel({ city, workshopQ, workshopR }: { city: import('@/ty
   const players = useGameStore(s => s.players);
   const units = useGameStore(s => s.units);
   const cities = useGameStore(s => s.cities);
+  const pendingRecruits = useGameStore(s => s.pendingRecruits);
   const human = players.find(p => p.isHuman);
   const gold = human?.gold ?? 0;
   const researchedTechs = human?.researchedTechs ?? STARTING_TECHS;
   const ws = city.buildings.find(b => b.type === 'siege_workshop' && b.q === workshopQ && b.r === workshopR);
-  const totalGunsL2 = cities.filter(c => c.ownerId === human?.id).reduce((s, c) => s + (c.storage.gunsL2 ?? 0), 0);
   const humanCities = cities.filter(c => c.ownerId === human?.id);
   const totalPop = humanCities.reduce((s, c) => s + c.population, 0);
-  const livingTroops = units.filter(u => u.ownerId === human?.id && u.hp > 0).length;
-  const troopSlotsLeft = Math.max(0, totalPop - livingTroops);
+  const popUsed =
+    human?.id != null
+      ? computeEmpirePopUsedForPlayer(units, pendingRecruits, human.id)
+      : 0;
+  const popRemaining = Math.max(0, totalPop - popUsed);
 
   const [quantities, setQuantities] = useState<Record<string, number>>({});
   const getQty = (type: string) => quantities[type] ?? 1;
@@ -6785,32 +7075,47 @@ function SiegeWorkshopPanel({ city, workshopQ, workshopR }: { city: import('@/ty
   return (
     <div className="space-y-1.5">
       <h3 className="text-amber-600 text-xs font-semibold uppercase tracking-wide">Siege workshop — {city.name}</h3>
-      <p className="text-empire-parchment/50 text-[10px]">Trebuchet and battering ram (L1). Troops: {livingTroops} / {totalPop}</p>
+      <p className="text-empire-parchment/50 text-[10px]">
+        Trebuchet and battering ram (L1). Each recruit costs balanced stone and wood from this city. Keep trebuchets and rams
+        within one of each other empire-wide (including units training). Pop: {popUsed} / {totalPop}
+      </p>
       <div className="space-y-1.5">
         {SIEGE_RECRUIT_INFO.map(({ type, maintain, desc }) => {
           const lvl = 1 as const;
           const goldCost = UNIT_COSTS[type].gold;
+          const stoneCost = UNIT_COSTS[type].stone ?? 0;
+          const woodCost = UNIT_COSTS[type].wood ?? 0;
           const refinedWoodCost = UNIT_COSTS[type].refinedWood ?? 0;
           const stats = getUnitStats({ type, armsLevel: lvl });
           const gunL2Upkeep = (stats as { gunL2Upkeep?: number }).gunL2Upkeep ?? 0;
-          const upkeepText = gunL2Upkeep > 0 ? `L2 arms. +${gunL2Upkeep} L2 arms/cycle` : maintain;
+          const upkeepText = gunL2Upkeep > 0 ? `Fine steel upkeep +${gunL2Upkeep}/cycle` : maintain;
           const qty = getQty(type);
+          const popCost = getUnitPopCost(type);
           const totalGold = goldCost * qty;
+          const totalStone = stoneCost * qty;
+          const totalWood = woodCost * qty;
           const totalRefinedWood = refinedWoodCost * qty;
+          const cityStone = city.storage.stone ?? 0;
+          const cityWood = city.storage.wood ?? 0;
           const cityRefinedWood = city.storage.refinedWood ?? 0;
           const maxByGold = goldCost > 0 ? Math.floor(gold / goldCost) : 999;
+          const maxByStone = stoneCost > 0 ? Math.floor(cityStone / stoneCost) : 999;
+          const maxByWood = woodCost > 0 ? Math.floor(cityWood / woodCost) : 999;
           const maxByRefinedWood = refinedWoodCost > 0 ? Math.floor(cityRefinedWood / refinedWoodCost) : 999;
-          const maxQty = Math.max(1, Math.min(maxByGold, maxByRefinedWood, troopSlotsLeft, 20));
-          const canAffordL2Arms = gunL2Upkeep === 0 || totalGunsL2 >= gunL2Upkeep * qty;
+          const maxByPop = popCost > 0 ? Math.floor(popRemaining / popCost) : 999;
+          const maxQty = Math.max(1, Math.min(maxByGold, maxByStone, maxByWood, maxByRefinedWood, maxByPop, 20));
           const unitResearched = isUnitUnlockedByTech(type, researchedTechs);
           const canAfford =
             unitResearched &&
             gold >= totalGold &&
+            cityStone >= totalStone &&
+            cityWood >= totalWood &&
             cityRefinedWood >= totalRefinedWood &&
-            livingTroops + qty <= totalPop &&
-            canAffordL2Arms;
+            popUsed + popCost * qty <= totalPop;
           const costLabelParts: string[] = [];
           if (goldCost > 0) costLabelParts.push(`${goldCost}g`);
+          if (stoneCost > 0) costLabelParts.push(`${stoneCost} stone`);
+          if (woodCost > 0) costLabelParts.push(`${woodCost} wood`);
           if (refinedWoodCost > 0) costLabelParts.push(`${refinedWoodCost} ref.`);
           const costLabel = costLabelParts.join(', ');
           return (
@@ -6847,12 +7152,18 @@ function SiegeWorkshopPanel({ city, workshopQ, workshopR }: { city: import('@/ty
               <div className="flex justify-between items-center mt-1">
                 <span className="text-[10px] text-empire-parchment/40">
                   Total: {totalGold > 0 && <span className={canAfford ? 'text-yellow-400' : 'text-red-400'}>{totalGold}g</span>}
+                  {totalStone > 0 && <span className={canAfford ? 'text-empire-parchment' : 'text-red-400'}> {totalStone} stone</span>}
+                  {totalWood > 0 && <span className={canAfford ? 'text-empire-parchment' : 'text-red-400'}> {totalWood} wood</span>}
                   {totalRefinedWood > 0 && <span className={canAfford ? 'text-teal-300' : 'text-red-400'}> {totalRefinedWood} ref.</span>}
-                  {' · '}{qty} pop
+                  {' · '}{qty * popCost} pop
                 </span>
                 <button
                   type="button"
-                  title={!unitResearched ? notResearchedMessageForUnit(type, researchedTechs) ?? 'Not researched yet' : undefined}
+                  title={
+                    !unitResearched
+                      ? notResearchedMessageForUnit(type, researchedTechs) ?? 'Not researched yet'
+                      : 'If blocked, alternate trebuchet and ram so counts stay within one.'
+                  }
                   onClick={() => handleBatchRecruit(type, qty)}
                   disabled={!canAfford}
                   className={`px-2.5 py-1 text-[10px] font-bold rounded transition-colors ${
@@ -7949,6 +8260,7 @@ function ArmyPanel({ units }: { units: import('@/types/game').Unit[] }) {
 
   const counts: Record<UnitType, number> = {
     infantry: 0, cavalry: 0, ranged: 0, horse_archer: 0, crusader_knight: 0, builder: 0, trebuchet: 0, battering_ram: 0, defender: 0,
+    scout: 0,
     scout_ship: 0, warship: 0, transport_ship: 0, fisher_transport: 0, capital_ship: 0,
   };
   let totalHp = 0, totalMaxHp = 0;
@@ -8353,6 +8665,8 @@ function BuildMenu({ q, r, inTerritory, buildersHere, tile, hasConstructionAt, h
   const human = useGameStore(s => s.getHumanPlayer)();
   const allCitiesState = useGameStore(s => s.cities);
   const territoryState = useGameStore(s => s.territory);
+  const unitsState = useGameStore(s => s.units);
+  const pendingRecruitsState = useGameStore(s => s.pendingRecruits);
   const humanCities = allCitiesState.filter(c => c.ownerId === human?.id);
   const researchedTechs = human?.researchedTechs ?? STARTING_TECHS;
   const hasBuilderHut = humanCities.some(c => c.buildings.some(b => b.type === 'academy'));
@@ -8416,7 +8730,7 @@ function BuildMenu({ q, r, inTerritory, buildersHere, tile, hasConstructionAt, h
       category: 'Recruitment' as BuildMenuCategory,
       type: 'siege_workshop' as BuildingType,
       label: 'Siege workshop',
-      desc: `Build trebuchets and battering rams (2 jobs) (${BUILDING_BP_COST.siege_workshop} BP)`,
+      desc: `Siege Engineering — assemble trebuchets and rams from stone and wood (2 jobs) (${BUILDING_BP_COST.siege_workshop} BP)`,
     },
     {
       category: 'Recruitment' as BuildMenuCategory,
@@ -8436,9 +8750,25 @@ function BuildMenu({ q, r, inTerritory, buildersHere, tile, hasConstructionAt, h
     items: buildings.filter(b => b.category === title),
   })).filter(g => g.items.length > 0);
 
+  const trebuchetMatCity =
+    human &&
+    findCityForSiegeFieldSpend(
+      q,
+      r,
+      human.id,
+      {
+        stone: TREBUCHET_SIEGE_STONE_COST,
+        wood: TREBUCHET_SIEGE_WOOD_COST,
+        refinedWood: TREBUCHET_REFINED_WOOD_COST,
+      },
+      allCitiesState,
+      territoryState,
+    );
+  const trebuchetCompositionOk =
+    human &&
+    siegeCompositionAllowsRecruit('trebuchet', countPlayerSiegePieces(unitsState, pendingRecruitsState, human.id));
   const trebuchetCanAfford =
-    (human?.gold ?? 0) >= TREBUCHET_FIELD_GOLD_COST &&
-    !!findCityForRefinedWoodSpend(q, r, human?.id ?? '', TREBUCHET_REFINED_WOOD_COST, allCitiesState, territoryState);
+    (human?.gold ?? 0) >= TREBUCHET_FIELD_GOLD_COST && !!trebuchetMatCity && !!trebuchetCompositionOk;
   const trebuchetResearched = isUnitUnlockedByTech('trebuchet', researchedTechs);
 
   const terrAtHex = territoryState.get(tileKey(q, r));
@@ -8559,7 +8889,11 @@ function BuildMenu({ q, r, inTerritory, buildersHere, tile, hasConstructionAt, h
               !trebuchetResearched
                 ? notResearchedMessageForUnit('trebuchet', researchedTechs) ?? 'Not researched yet'
                 : !trebuchetCanAfford
-                  ? 'Need gold and refined wood in range'
+                  ? !trebuchetMatCity
+                    ? `Need ${TREBUCHET_SIEGE_STONE_COST} stone, ${TREBUCHET_SIEGE_WOOD_COST} wood, ${TREBUCHET_REFINED_WOOD_COST} refined wood in range`
+                    : !trebuchetCompositionOk
+                      ? 'Alternate trebuchets and battering rams (within one on the map and in training)'
+                      : 'Need gold'
                   : undefined
             }
             onClick={() => buildTrebuchetInField(q, r)}
@@ -8573,7 +8907,7 @@ function BuildMenu({ q, r, inTerritory, buildersHere, tile, hasConstructionAt, h
             <div className="flex justify-between gap-2">
               <span className="font-medium">Build Trebuchet (field)</span>
               <span className={`text-right shrink-0 ${trebuchetCanAfford ? 'text-yellow-400' : 'text-red-400/50'}`}>
-                {TREBUCHET_FIELD_GOLD_COST}g · {TREBUCHET_REFINED_WOOD_COST} ref.
+                {TREBUCHET_FIELD_GOLD_COST}g · {TREBUCHET_SIEGE_STONE_COST} stone · {TREBUCHET_SIEGE_WOOD_COST} wood · {TREBUCHET_REFINED_WOOD_COST} ref.
               </span>
             </div>
             <div className="text-empire-parchment/40 text-[10px]">Siege. Nearest Builder&apos;s Hut supplies BP ({TREBUCHET_FIELD_BP_COST} BP)</div>

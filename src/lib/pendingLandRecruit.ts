@@ -22,9 +22,24 @@ export type PendingLandRecruit = {
   rangedVariant?: RangedVariant;
   spawnQ: number;
   spawnR: number;
+  /** Legacy single-cycle delay; battalion training uses `trainingCyclesTotal` instead. */
   completesAtCycle: number;
   stackId?: string;
   moveToRallyAfterSpawn?: { q: number; r: number };
+  /** When set, HoI-style training: arms + time; when unset, legacy `completesAtCycle` spawn only. */
+  trainingCyclesTotal?: number;
+  trainingCyclesElapsed?: number;
+  gunsRequired?: number;
+  gunsDelivered?: number;
+  gunsL2Required?: number;
+  gunsL2Delivered?: number;
+  /** Population reserved toward troop cap while training. */
+  popCost?: number;
+  goldPaid?: number;
+  stonePaid?: number;
+  woodPaid?: number;
+  ironPaid?: number;
+  refinedWoodPaid?: number;
 };
 
 /** Spawn a unit from a pending land recruit (matches useGameStore behavior). */

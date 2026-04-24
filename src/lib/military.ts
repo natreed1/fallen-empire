@@ -53,7 +53,39 @@ import {
 } from './combat';
 import { isUnitInSupplyVicinityOfPlayerCities } from '@/lib/empireEconomy';
 import { tryReGarrisonIdleUnit, isLandMilitaryUnit, marchHexDistanceAtOrder, applyDeployFlagsForMoveMutable } from '@/lib/garrison';
-import { getCityTerritory } from '@/lib/territory';
+import { getCityTerritory, getCityFrontierLandHexKeys, sortPatrolFrontierKeys } from '@/lib/territory';
+
+/** Economy cycles between rotating which frontier goal a city-border patrol stack prefers. */
+const PATROL_CITY_GOAL_ROTATE_CYCLES = 2;
+
+function greedyPatrolStepInAllowedSet(
+  fromQ: number,
+  fromR: number,
+  goalQ: number,
+  goalR: number,
+  allowedKeys: Set<string>,
+  tiles: Map<string, Tile>,
+  allUnits: Unit[],
+  ownerId: string,
+  wallByKey: Map<string, WallSection>,
+): [number, number] {
+  const neighbors = hexNeighbors(fromQ, fromR);
+  let best: [number, number] = [fromQ, fromR];
+  let bestD = Infinity;
+  for (const [nq, nr] of neighbors) {
+    const nk = tileKey(nq, nr);
+    if (!allowedKeys.has(nk)) continue;
+    if (!isLandNeighborStepAllowed(fromQ, fromR, nq, nr, goalQ, goalR, tiles, allUnits, ownerId, wallByKey)) {
+      continue;
+    }
+    const d = hexDistance(nq, nr, goalQ, goalR);
+    if (d < bestD) {
+      bestD = d;
+      best = [nq, nr];
+    }
+  }
+  return best;
+}
 
 const TOWER_DEFENSE_BONUS = 0.10;
 
@@ -508,6 +540,7 @@ export function landMilitaryContestsCityCapture(u: Unit, q: number, r: number): 
     u.hp > 0 &&
     !u.aboardShipId &&
     u.type !== 'builder' &&
+    u.type !== 'scout' &&
     !isNavalUnitType(u.type)
   );
 }
@@ -798,16 +831,41 @@ function cityDefenseAndPatrolTick(
     let ownerId = landFree[0]!.ownerId;
 
     if (patrolAnchor) {
-      const pq = patrolAnchor.patrolCenterQ!;
-      const pr = patrolAnchor.patrolCenterR!;
-      const rad = patrolAnchor.patrolRadius ?? PATROL_DEFAULT_RADIUS;
-      const painted = patrolAnchor.patrolHexKeys && patrolAnchor.patrolHexKeys.length > 0
-        ? new Set(patrolAnchor.patrolHexKeys)
-        : null;
-      const inPatrolZone = (q: number, r: number) => {
-        if (painted) return painted.has(tileKey(q, r));
-        return hexDistance(pq, pr, q, r) <= rad;
-      };
+      const wallByKey = wallSectionByHex(wallSections);
+      const pid = patrolAnchor.patrolCityId;
+      let inPatrolZone: (q: number, r: number) => boolean;
+      let terrLandKeys: Set<string> | null = null;
+      let frontierGoals: string[] = [];
+      let patrolCity: City | null = null;
+
+      if (pid && territory) {
+        patrolCity = cities.find(c => c.id === pid) ?? null;
+        if (!patrolCity) {
+          inPatrolZone = () => false;
+        } else {
+          terrLandKeys = new Set(
+            getCityTerritory(pid, territory).filter(k => tiles.get(k)?.biome !== 'water'),
+          );
+          inPatrolZone = (q, r) => terrLandKeys!.has(tileKey(q, r));
+          const rawFront = getCityFrontierLandHexKeys(pid, territory, tiles);
+          frontierGoals =
+            rawFront.length > 0
+              ? sortPatrolFrontierKeys(rawFront, patrolCity.q, patrolCity.r)
+              : sortPatrolFrontierKeys([...terrLandKeys], patrolCity.q, patrolCity.r);
+        }
+      } else {
+        const pq = patrolAnchor.patrolCenterQ!;
+        const pr = patrolAnchor.patrolCenterR!;
+        const rad = patrolAnchor.patrolRadius ?? PATROL_DEFAULT_RADIUS;
+        const painted = patrolAnchor.patrolHexKeys && patrolAnchor.patrolHexKeys.length > 0
+          ? new Set(patrolAnchor.patrolHexKeys)
+          : null;
+        inPatrolZone = (q: number, r: number) => {
+          if (painted) return painted.has(tileKey(q, r));
+          return hexDistance(pq, pr, q, r) <= rad;
+        };
+      }
+
       let best: Unit | null = null;
       let bestD = Infinity;
       for (const ou of units) {
@@ -823,6 +881,27 @@ function cityDefenseAndPatrolTick(
       if (best) {
         targetQ = best.q;
         targetR = best.r;
+      } else if (terrLandKeys && patrolCity && frontierGoals.length > 0) {
+        const F = frontierGoals.length;
+        const slot = patrolAnchor.patrolFrontSlot ?? 0;
+        const rot = Math.floor(cycle / PATROL_CITY_GOAL_ROTATE_CYCLES);
+        const goalKey = frontierGoals[((slot % F) + rot) % F]!;
+        const [gQ, gR] = parseTileKey(goalKey);
+        const step = greedyPatrolStepInAllowedSet(
+          patrolAnchor.q,
+          patrolAnchor.r,
+          gQ,
+          gR,
+          terrLandKeys,
+          tiles,
+          units,
+          ownerId,
+          wallByKey,
+        );
+        if (step[0] !== patrolAnchor.q || step[1] !== patrolAnchor.r) {
+          targetQ = step[0];
+          targetR = step[1];
+        }
       } else {
         const neigh = hexNeighbors(patrolAnchor.q, patrolAnchor.r);
         const candidates: [number, number][] = [];
@@ -950,6 +1029,7 @@ function tileIsWater(tiles: Map<string, Tile>, q: number, r: number): boolean {
 
 /** Naval may only fight naval on water; land only fights land. Shore damage uses {@link coastalBombardmentTick}. */
 export function canUnitsFight(attacker: Unit, target: Unit, tiles: Map<string, Tile>): boolean {
+  if (attacker.type === 'scout' || target.type === 'scout') return false;
   const aNav = isNavalUnitType(attacker.type);
   const tNav = isNavalUnitType(target.type);
   const aW = tileIsWater(tiles, attacker.q, attacker.r);
@@ -1740,6 +1820,10 @@ function resolveMeleeRound(
 
 export interface UpkeepResult {
   notifications: GameNotification[];
+  /** Owners who could not pay full L1 gun (sword) upkeep for supplied units this cycle. */
+  gunsL1ShortOwners: string[];
+  /** Owners who could not pay full L2 gun upkeep when demand > 0. */
+  gunsL2ShortOwners: string[];
 }
 
 /** Cache entry for unit supply: avoid recomputing when position unchanged. */
@@ -1755,6 +1839,8 @@ export function upkeepTick(
   supplyCache?: Map<string, SupplyCacheEntry>,
 ): UpkeepResult {
   const notifications: GameNotification[] = [];
+  const gunsL1ShortOwners: string[] = [];
+  const gunsL2ShortOwners: string[] = [];
 
   const byOwner: Record<string, Unit[]> = {};
   for (const u of units) {
@@ -1853,11 +1939,12 @@ export function upkeepTick(
     const gunsOk = totalGuns >= totalGunDemand;
     if (gunsOk) deductFromCities(playerCities, 'guns', totalGunDemand);
     else {
+      gunsL1ShortOwners.push(ownerId);
       deductFromCities(playerCities, 'guns', totalGuns);
       if (isHuman) {
         notifications.push({
           id: generateId('n'), turn: cycle,
-          message: 'Low on arms! Units fight at reduced strength. Build more factories!',
+          message: 'Short on swords! Could not meet full equipment upkeep — build more armories.',
           type: 'warning',
         });
       }
@@ -1866,18 +1953,19 @@ export function upkeepTick(
     const gunsL2Ok = totalGunsL2 >= totalGunL2Demand;
     if (gunsL2Ok) deductFromCities(playerCities, 'gunsL2', totalGunL2Demand);
     else {
+      if (totalGunL2Demand > 0) gunsL2ShortOwners.push(ownerId);
       deductFromCities(playerCities, 'gunsL2', totalGunsL2);
       if (isHuman && totalGunL2Demand > 0) {
         notifications.push({
           id: generateId('n'), turn: cycle,
-          message: 'Low on L2 arms! Upgraded units fight at reduced strength.',
+          message: 'Short on fine steel! Could not meet full upkeep for masterwork troops.',
           type: 'warning',
         });
       }
     }
   }
 
-  return { notifications };
+  return { notifications, gunsL1ShortOwners, gunsL2ShortOwners };
 }
 
 function deductFromCities(cities: City[], resource: 'food' | 'guns' | 'gunsL2', amount: number) {

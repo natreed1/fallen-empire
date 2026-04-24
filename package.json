@@ -15,6 +15,7 @@
     "generate-special-region-sprites": "python3 scripts/render_special_region_sprites.py",
     "sim-combat-length": "npx ts-node --transpile-only -r tsconfig-paths/register --project tsconfig.train.json scripts/sim-combat-length.ts",
     "train-ai": "npx ts-node -r tsconfig-paths/register --project tsconfig.train.json scripts/train-ai.ts",
+    "train-ai-naval": "TRAIN_NAVAL_EDUCATION=1 TRAIN_USE_SCENARIO_MIX=1 TRAIN_SCENARIO_MIX=naval-islands:1 TRAIN_NAVAL_POSTINIT=1 TRAIN_OUT_JSON=artifacts/ai-params-naval-education.json TRAIN_MAX_CYCLES=450 TRAIN_GENERATIONS=12 TRAIN_MATCHES_PER_PAIR=14 npx ts-node -r tsconfig-paths/register --project tsconfig.train.json scripts/train-ai.ts",
     "diag-sim-health": "npx ts-node -r tsconfig-paths/register --project tsconfig.train.json scripts/diag-sim-health.ts",
     "audit-strategy-flow": "npx ts-node -r tsconfig-paths/register --project tsconfig.train.json scripts/audit-strategy-flow.ts",
     "tournament-league": "npx ts-node -r tsconfig-paths/register --project tsconfig.train.json scripts/tournament-league.ts",

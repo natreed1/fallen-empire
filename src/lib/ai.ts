@@ -29,6 +29,20 @@ import {
 } from '@/lib/kingdomSpawn';
 import { countDefensesTaskSlots } from '@/lib/wallBuilding';
 import { strategicLandReachableKeys } from '@/lib/navalReachability';
+import {
+  computeArmyComposition,
+  virtualAddRecruit,
+  pickRecruitUnitType,
+  pickArmsLevelForLineUnit,
+  pickRangedVariantBalanced,
+  formationMoveForUnit,
+  normalizeLevelMix,
+  classifyLandCombatRole,
+  stableIndex,
+  type ArmyComposition,
+} from '@/lib/aiTactics';
+import { landPending } from '@/lib/battalionTraining';
+import { countPlayerSiegePieces, siegeCompositionAllowsRecruit } from '@/lib/siegeRecruitment';
 
 // ─── AI Action Types ───────────────────────────────────────────────
 
@@ -58,6 +72,14 @@ export interface AiMoveAction {
   unitId: string;
   toQ: number;
   toR: number;
+  stance?: import('@/types/game').ArmyStance;
+}
+
+/** Assign land unit to city defense (stagnant = stay on/near city; auto_engage = intercept). */
+export interface AiDefendAssignAction {
+  unitId: string;
+  cityId: string;
+  mode: 'auto_engage' | 'stagnant';
 }
 
 export interface AiScoutAction {
@@ -127,6 +149,13 @@ export interface AiActions {
   universityTasks: AiUniversityTaskAction[];
   stanceChanges: AiStanceAction[];
   retreats: AiRetreatAction[];
+  defendAssignments: AiDefendAssignAction[];
+}
+
+/** Optional headless/store context so recruitment matches battalion arms + training backlog. */
+export interface PlanAiTurnContext {
+  /** Current pending queue (same array shape as game store / sim); used to cap recruit spam. */
+  pendingRecruits?: readonly unknown[];
 }
 
 /** Empty plan for multiplayer / tests (no AI actions). */
@@ -145,6 +174,7 @@ export function emptyAiActions(): AiActions {
     universityTasks: [],
     stanceChanges: [],
     retreats: [],
+    defendAssignments: [],
   };
 }
 
@@ -301,8 +331,8 @@ const DEFAULT_MILITARY_LEVEL_MIX: MilitaryLevelMix = { L1: 0.6, L2: 0.3, L3: 0.1
 export const DEFAULT_AI_PARAMS: AiParams = {
   siegeChance: 0.22,
   recruitGoldThreshold: 400,
-  maxRecruitsWhenRich: 3,
-  maxRecruitsWhenPoor: 2,
+  maxRecruitsWhenRich: 2,
+  maxRecruitsWhenPoor: 1,
   targetDefenderWeight: 3,
   nearestTargetDistanceRatio: 0.85,
   builderRecruitChance: 0.2,
@@ -311,7 +341,7 @@ export const DEFAULT_AI_PARAMS: AiParams = {
   sustainableMilitaryMultiplier: 0.9,
   farmFirstBias: 0,
   farmPriorityThreshold: 15,
-  factoryUpgradePriority: 0.6,
+  factoryUpgradePriority: 0.65,
   scoutChance: 1,
   incorporateVillageChance: 1,
   targetPopWeight: 1,
@@ -449,11 +479,12 @@ export function planAiTurn(
   },
   /** When set, island/lake presets get a stronger passive nudge toward ports/shipyards. */
   mapTerrain?: MapTerrainPreset,
+  context?: PlanAiTurnContext,
 ): AiActions {
   const aiCities = cities.filter(c => c.ownerId === aiPlayerId);
   const aiPlayer = players.find(p => p.id === aiPlayerId);
   if (!aiPlayer || aiCities.length === 0) {
-    return { builds: [], upgrades: [], recruits: [], shipRecruits: [], moveTargets: [], scouts: [], incorporateVillages: [], buildWallRings: [], commanderAssignments: [], scrollAttachments: [], universityTasks: [], stanceChanges: [], retreats: [] };
+    return { builds: [], upgrades: [], recruits: [], shipRecruits: [], moveTargets: [], scouts: [], incorporateVillages: [], buildWallRings: [], commanderAssignments: [], scrollAttachments: [], universityTasks: [], stanceChanges: [], retreats: [], defendAssignments: [] };
   }
 
   const actions: AiActions = {
@@ -470,6 +501,7 @@ export function planAiTurn(
     universityTasks: [],
     stanceChanges: [],
     retreats: [],
+    defendAssignments: [],
   };
   const techs = aiPlayer.researchedTechs ?? STARTING_TECHS;
   let goldBudget = aiPlayer.gold;
@@ -486,6 +518,8 @@ export function planAiTurn(
   const foodStats = estimateAiFoodSurplus(aiPlayerId, cities, units, tiles, territory);
   const militaryUnits = aiUnits.filter(u => u.type !== 'builder');
   const militaryCount = militaryUnits.length;
+  let virtualComp: ArmyComposition = computeArmyComposition(aiUnits, aiPlayerId);
+  let virtualMilitaryCount = militaryCount;
 
   const minDistToCities = (q: number, r: number, cityList: City[]): number => {
     let min = Infinity;
@@ -495,6 +529,30 @@ export function planAiTurn(
     }
     return min;
   };
+
+  const empireGunsStock = aiCities.reduce((s, c) => s + Math.max(0, c.storage.guns ?? 0), 0);
+  const empireGunsL2Stock = aiCities.reduce((s, c) => s + Math.max(0, c.storage.gunsL2 ?? 0), 0);
+  const empireHasGunsL2 = empireGunsL2Stock >= 1;
+  const pendingList = context?.pendingRecruits;
+  const myLandTrainingCount =
+    pendingList == null
+      ? 0
+      : pendingList.filter(
+          pr =>
+            landPending(pr) &&
+            typeof pr === 'object' &&
+            pr !== null &&
+            (pr as { playerId?: string }).playerId === aiPlayerId,
+        ).length;
+  const myL2PlusTrainingCount =
+    pendingList == null
+      ? 0
+      : pendingList.filter(pr => {
+          if (!landPending(pr) || typeof pr !== 'object' || pr === null) return false;
+          const o = pr as { playerId?: string; effectiveArmsLevel?: number };
+          if (o.playerId !== aiPlayerId) return false;
+          return (o.effectiveArmsLevel ?? 1) >= 2;
+        }).length;
 
   for (const city of aiCities) {
     const farmCount = city.buildings.filter(b => b.type === 'farm').length;
@@ -572,6 +630,17 @@ export function planAiTurn(
         toBuild = 'academy';
       } else if (!hasMarket && goldBudget >= BUILDING_COSTS.market) {
         toBuild = 'market';
+      } else if (
+        !hasQuarry &&
+        !hasMine &&
+        quarrySpot &&
+        mineSpot &&
+        goldBudget >= BUILDING_COSTS.quarry &&
+        goldBudget >= BUILDING_COSTS.mine &&
+        city.population >= 10
+      ) {
+        const mineTh = params.minePriorityThreshold ?? 12;
+        toBuild = foodStats.surplus >= mineTh ? 'mine' : 'quarry';
       } else if (!hasQuarry && quarrySpot && goldBudget >= BUILDING_COSTS.quarry && city.population >= 10) {
         toBuild = 'quarry';
       } else if (!hasMine && mineSpot && goldBudget >= BUILDING_COSTS.mine && city.population >= 10) {
@@ -605,7 +674,6 @@ export function planAiTurn(
     // Recruit military: hard execution-level food control (maxSustainableMilitary cap, foodBufferThreshold hard gate)
     const barracks = city.buildings.find(b => b.type === 'barracks');
     const barracksLvl = barracks ? (barracks.level ?? 1) : 1;
-    const hasGunsL2 = (city.storage.gunsL2 ?? 0) >= 1;
     const foodThreshold = params.foodBufferThreshold ?? 10;
     // Hard cap: never exceed food-sustainable military; multiplier can only reduce cap (e.g. 0.8 = recruit up to 80%)
     const sustainableArmyCap = Math.max(0, Math.floor(foodStats.maxSustainableMilitary * Math.min(1, params.sustainableMilitaryMultiplier ?? 1)));
@@ -614,8 +682,17 @@ export function planAiTurn(
       let maxRecruits = goldBasedMax;
       if (foodStats.surplus < 0) maxRecruits = 0;
       else if (foodStats.surplus < foodThreshold) maxRecruits = 0; // hard: no recruits when surplus below threshold
-      else if (militaryCount >= sustainableArmyCap) maxRecruits = 0;
-      maxRecruits = Math.min(maxRecruits, Math.max(0, sustainableArmyCap - militaryCount));
+      else if (virtualMilitaryCount >= sustainableArmyCap) maxRecruits = 0;
+      maxRecruits = Math.min(maxRecruits, Math.max(0, sustainableArmyCap - virtualMilitaryCount));
+
+      if (maxRecruits > 0) {
+        let armsCap = maxRecruits;
+        if (myLandTrainingCount >= 18) armsCap = Math.min(armsCap, 1);
+        else if (myLandTrainingCount >= 10) armsCap = Math.min(armsCap, Math.max(1, goldBasedMax - 1));
+        if (empireGunsStock <= 3 && myLandTrainingCount >= 6) armsCap = Math.min(armsCap, 1);
+        if (myL2PlusTrainingCount >= 4 && empireGunsL2Stock < 3) armsCap = Math.min(armsCap, 1);
+        maxRecruits = Math.max(0, armsCap);
+      }
 
       const unitChoicesBase: UnitType[] = barracksLvl >= 2
         ? ['infantry', 'infantry', 'cavalry', 'ranged', 'defender']
@@ -625,21 +702,41 @@ export function planAiTurn(
         if (u === 'defender' && barracksLvl < 3) return false;
         return true;
       });
-      const siegeChoices = (['trebuchet', 'battering_ram'] as const).filter(u => isUnitUnlockedByTech(u, techs));
+      let siegeCounts = countPlayerSiegePieces(aiUnits, [...(pendingList ?? [])], aiPlayerId);
+      for (const r of actions.recruits) {
+        if (r.type === 'trebuchet') siegeCounts.trebuchets++;
+        else if (r.type === 'battering_ram') siegeCounts.batteringRams++;
+      }
       const allowSiege = foodStats.surplus >= foodThreshold; // hard: siege only when surplus >= threshold
       let stoneBudget = city.storage.stone ?? 0;
+      let woodBudget = city.storage.wood ?? 0;
       let ironBudget = city.storage.iron ?? 0;
       let refinedWoodBudget = city.storage.refinedWood ?? 0;
+      const mixTarget = normalizeLevelMix(params.militaryLevelMixTarget ?? DEFAULT_MILITARY_LEVEL_MIX);
+      const tgtSiegeShare = Math.max(0, Math.min(1, params.targetSiegeShare ?? 0.15));
+      const empireIron = aiCities.reduce((s, c) => s + (c.storage.iron ?? 0), 0);
+      const empireStone = aiCities.reduce((s, c) => s + (c.storage.stone ?? 0), 0);
       for (let i = 0; i < maxRecruits; i++) {
-        const useSiege =
-          allowSiege && hasSiegeWorkshop && siegeChoices.length > 0 && Math.random() < params.siegeChance;
+        const siegeChoicesBase = (['trebuchet', 'battering_ram'] as const).filter(u => isUnitUnlockedByTech(u, techs));
+        const siegeChoices = siegeChoicesBase.filter(u => siegeCompositionAllowsRecruit(u, siegeCounts));
+        const totalW = Math.max(1, virtualComp.totalCombat);
+        const curSiegeS = virtualComp.siege / totalW;
+        const preferSiege = curSiegeS + 1e-6 < tgtSiegeShare;
+        const { type: pick, useSiege } = pickRecruitUnitType({
+          comp: virtualComp,
+          unitChoices,
+          siegeChoices,
+          params,
+          allowSiege,
+          hasSiegeWorkshop,
+          preferSiege,
+        });
         if (!useSiege && unitChoices.length === 0) break;
         if (useSiege && siegeChoices.length === 0) continue;
-        const pick = useSiege
-          ? siegeChoices[Math.floor(Math.random() * siegeChoices.length)]
-          : unitChoices[Math.floor(Math.random() * unitChoices.length)];
+
         let goldCost: number;
         let stoneCost = 0;
+        let woodCost = 0;
         let ironCost = 0;
         let refinedWoodCost = 0;
         let armsLevel: 1 | 2 | 3 | undefined = undefined;
@@ -649,52 +746,66 @@ export function planAiTurn(
           ironCost = UNIT_L3_COSTS.defender.iron ?? 0;
         } else if (useSiege) {
           goldCost = UNIT_COSTS[pick].gold;
-          if (pick === 'trebuchet') refinedWoodCost = UNIT_COSTS.trebuchet.refinedWood ?? 0;
+          stoneCost = UNIT_COSTS[pick].stone ?? 0;
+          woodCost = UNIT_COSTS[pick].wood ?? 0;
+          refinedWoodCost = UNIT_COSTS[pick].refinedWood ?? 0;
         } else {
-          const rwL3 = UNIT_L3_COSTS[pick].refinedWood ?? 0;
-          const rwL2 = UNIT_L2_COSTS[pick].refinedWood ?? 0;
-          const rwL1 = UNIT_COSTS[pick].refinedWood ?? 0;
-          const canL3 =
-            barracksLvl >= 3 &&
-            hasGunsL2 &&
-            goldBudget >= UNIT_L3_COSTS[pick].gold &&
-            ironBudget >= (UNIT_L3_COSTS[pick].iron ?? 0) &&
-            refinedWoodBudget >= rwL3;
-          const canL2 = barracksLvl >= 2 && hasGunsL2 && goldBudget >= UNIT_L2_COSTS[pick].gold && stoneBudget >= (UNIT_L2_COSTS[pick].stone ?? 0) && refinedWoodBudget >= rwL2;
-          const canL1 = goldBudget >= UNIT_COSTS[pick].gold && refinedWoodBudget >= rwL1;
-          const l3TierBias = Math.min(1, Math.max(0, (params.l3AcquisitionWeight ?? 1) * 0.35));
-          if (canL3 && (Math.random() < l3TierBias || !canL2)) {
-            armsLevel = 3;
+          const tierPick = pickArmsLevelForLineUnit({
+            pick,
+            barracksLvl,
+            hasGunsL2: empireHasGunsL2,
+            goldBudget,
+            stoneBudget,
+            ironBudget,
+            refinedWoodBudget,
+            comp: virtualComp,
+            mix: mixTarget,
+            params,
+            empireIronPool: empireIron,
+            empireStonePool: empireStone,
+          });
+          if (tierPick == null) break;
+          armsLevel = tierPick;
+          if (armsLevel === 3) {
             goldCost = UNIT_L3_COSTS[pick].gold;
             ironCost = UNIT_L3_COSTS[pick].iron ?? 0;
-            refinedWoodCost = rwL3;
-          } else if (canL2) {
-            armsLevel = 2;
+            refinedWoodCost = UNIT_L3_COSTS[pick].refinedWood ?? 0;
+          } else if (armsLevel === 2) {
             goldCost = UNIT_L2_COSTS[pick].gold;
             stoneCost = UNIT_L2_COSTS[pick].stone ?? 0;
-            refinedWoodCost = rwL2;
-          } else if (canL1) {
-            goldCost = UNIT_COSTS[pick].gold;
-            refinedWoodCost = rwL1;
+            refinedWoodCost = UNIT_L2_COSTS[pick].refinedWood ?? 0;
           } else {
-            break;
+            goldCost = UNIT_COSTS[pick].gold;
+            refinedWoodCost = UNIT_COSTS[pick].refinedWood ?? 0;
           }
         }
-        if (goldBudget >= goldCost && stoneBudget >= stoneCost && ironBudget >= ironCost && refinedWoodBudget >= refinedWoodCost) {
+        if (
+          goldBudget >= goldCost &&
+          stoneBudget >= stoneCost &&
+          woodBudget >= woodCost &&
+          ironBudget >= ironCost &&
+          refinedWoodBudget >= refinedWoodCost
+        ) {
           let rangedVariant: RangedVariant | undefined;
           if (pick === 'ranged' && armsLevel === 3) {
             const doc = city.archerDoctrineL3;
-            if (doc === 'marksman' || doc === 'longbowman') {
-              rangedVariant = doc;
-            } else {
-              rangedVariant = Math.random() < (params.l2AdoptionRate ?? 0.5) ? 'marksman' : 'longbowman';
-            }
+            const docSafe = doc === 'marksman' || doc === 'longbowman' ? doc : undefined;
+            rangedVariant = pickRangedVariantBalanced(virtualComp, docSafe, params.l2AdoptionRate ?? 0.5);
           }
           actions.recruits.push({ cityId: city.id, type: pick, armsLevel, rangedVariant });
           goldBudget -= goldCost;
           stoneBudget -= stoneCost;
+          woodBudget -= woodCost;
           ironBudget -= ironCost;
           refinedWoodBudget -= refinedWoodCost;
+          const effArms: 1 | 2 | 3 =
+            pick === 'defender' ? 3 : useSiege ? 1 : (armsLevel as 1 | 2 | 3);
+          virtualComp = virtualAddRecruit(virtualComp, pick, effArms);
+          virtualMilitaryCount += 1;
+          if (useSiege) {
+            if (pick === 'trebuchet') siegeCounts.trebuchets++;
+            else if (pick === 'battering_ram') siegeCounts.batteringRams++;
+          }
         } else break;
       }
     }
@@ -833,7 +944,15 @@ export function planAiTurn(
     }
     const supplyGain = Math.max(0, (currentAvg - newAvg) * 0.1 * anchorDistW);
     const starvationRisk = (distToNearestCity / 24) * starvationW;
-    return 1 + supplyGain - starvationRisk + cityBias;
+    let enemyNear = 0;
+    for (const u of units) {
+      if (u.ownerId === aiPlayerId || u.hp <= 0) continue;
+      if (hexDistance(u.q, u.r, vq, vr) <= 5) enemyNear++;
+    }
+    const vDef = params.villageDefensePriority ?? 0.5;
+    const vRec = params.villageRecapturePriority ?? 0.6;
+    const threatBonus = enemyNear * 0.1 * (vDef * 0.6 + vRec * 0.4);
+    return 1 + supplyGain - starvationRisk + cityBias + threatBonus;
   };
 
   const villageTilesForIncorp: { q: number; r: number; score: number }[] = [];
@@ -888,7 +1007,56 @@ export function planAiTurn(
     }
   }
 
-  // Move units toward best enemy target (units not already sent to villages). Tie-breaker: prefer targets that become anchors (supplyCityAcquisitionBias).
+  // City defense assignments (stagnant): cover ring hexes when enemies are close — uses defenderCityHexCoverageTarget / defenderAssignmentPriority.
+  const assignedToDefense = new Set<string>();
+  const nearestEnemyDistToOurCity = (city: City): number => {
+    let m = Infinity;
+    for (const ec of enemyCities) m = Math.min(m, hexDistance(city.q, city.r, ec.q, ec.r));
+    for (const u of units) {
+      if (u.ownerId === aiPlayerId || u.hp <= 0 || isNavalUnitType(u.type)) continue;
+      m = Math.min(m, hexDistance(city.q, city.r, u.q, u.r));
+    }
+    return m;
+  };
+  for (const city of aiCities) {
+    const defPri = Math.max(0, Math.min(1, params.defenderAssignmentPriority ?? 0.6));
+    if (nearestEnemyDistToOurCity(city) > 14 + Math.floor((1 - defPri) * 10)) continue;
+    const ring1 = getHexRing(city.q, city.r, 1);
+    let valid = 0;
+    let covered = 0;
+    for (const h of ring1) {
+      const t = tiles.get(tileKey(h.q, h.r));
+      if (!t || t.biome === 'water') continue;
+      valid++;
+      if (aiUnits.some(u => u.ownerId === aiPlayerId && u.hp > 0 && u.q === h.q && u.r === h.r && u.type !== 'builder')) {
+        covered++;
+      }
+    }
+    const covTarget = Math.max(0.1, Math.min(1, params.defenderCityHexCoverageTarget ?? 0.5));
+    const frac = valid > 0 ? covered / valid : 1;
+    if (frac >= covTarget * (0.72 + 0.28 * defPri)) continue;
+    const need = Math.min(4, Math.max(1, Math.ceil((covTarget - frac) * valid)));
+    const pool = aiUnits.filter(
+      u =>
+        u.hp > 0 &&
+        u.type !== 'builder' &&
+        u.status !== 'fighting' &&
+        !assignedToVillage.has(u.id) &&
+        !reservedForIncorporation.has(u.id) &&
+        !actions.moveTargets.some(m => m.unitId === u.id),
+    );
+    pool.sort((a, b) => hexDistance(a.q, a.r, city.q, city.r) - hexDistance(b.q, b.r, city.q, city.r));
+    let placed = 0;
+    for (const u of pool) {
+      if (placed >= need) break;
+      if (assignedToDefense.has(u.id)) continue;
+      actions.defendAssignments.push({ unitId: u.id, cityId: city.id, mode: 'stagnant' });
+      assignedToDefense.add(u.id);
+      placed++;
+    }
+  }
+
+  // Move units toward best enemy target (formation offsets + stance). Respects city defense assignments.
   if (enemyCities.length > 0) {
     const movableUnits = aiUnits.filter(
       u =>
@@ -896,7 +1064,8 @@ export function planAiTurn(
         u.type !== 'builder' &&
         u.status !== 'fighting' &&
         !assignedToVillage.has(u.id) &&
-        !reservedForIncorporation.has(u.id),
+        !reservedForIncorporation.has(u.id) &&
+        !assignedToDefense.has(u.id),
     );
     const enemyUnitCount = (eq: number, er: number): number =>
       units.filter(u => u.ownerId !== aiPlayerId && u.hp > 0 && hexDistance(u.q, u.r, eq, er) <= 2).length;
@@ -905,25 +1074,37 @@ export function planAiTurn(
     const baseScore = (ec: City): number => popW * ec.population + enemyUnitCount(ec.q, ec.r) * defW;
     const distToOurs = (ec: City): number =>
       aiCities.length === 0 ? 999 : minDistToCities(ec.q, ec.r, aiCities);
-    const score = (ec: City): number => baseScore(ec);
-    // Primary: weakest first; tie-breaker: prefer closer (becomes anchor, supplyCityAcquisitionBias)
     const sortedEnemies = [...enemyCities].sort(
-      (a, b) => (score(a) - score(b)) || (cityBias > 0 ? distToOurs(a) - distToOurs(b) : 0)
+      (a, b) => (baseScore(a) - baseScore(b)) || (cityBias > 0 ? distToOurs(a) - distToOurs(b) : 0),
     );
-    const primaryTarget = sortedEnemies[0];
+    const primaryTarget = sortedEnemies[0]!;
     const ratio = Math.max(0.1, Math.min(1, params.nearestTargetDistanceRatio));
     const unitIdsTargeted = new Set(actions.moveTargets.map(mt => mt.unitId));
+    let assaultN = 0;
+    let screenN = 0;
     for (const unit of movableUnits) {
       if (unitIdsTargeted.has(unit.id)) continue;
       let target = primaryTarget;
       let bestDist = hexDistance(unit.q, unit.r, target.q, target.r);
       for (const ec of sortedEnemies.slice(1, 4)) {
         const d = hexDistance(unit.q, unit.r, ec.q, ec.r);
-        if (d < bestDist * ratio) { target = ec; bestDist = d; }
+        if (d < bestDist * ratio) {
+          target = ec;
+          bestDist = d;
+        }
       }
-      if (bestDist > 1) {
-        actions.moveTargets.push({ unitId: unit.id, toQ: target.q, toR: target.r });
-      }
+      if (bestDist <= 1) continue;
+      const role = classifyLandCombatRole(unit.type);
+      if (role === 'melee' || role === 'cavalry') assaultN++;
+      else screenN++;
+      const fm = formationMoveForUnit(unit, target, tiles, params, assaultN, screenN);
+      if (hexDistance(unit.q, unit.r, fm.toQ, fm.toR) <= 1) continue;
+      actions.moveTargets.push({
+        unitId: unit.id,
+        toQ: fm.toQ,
+        toR: fm.toR,
+        stance: fm.stance,
+      });
     }
   }
 
@@ -957,7 +1138,24 @@ export function planAiTurn(
       if (!buildRing && ring1.isClosed && ringTarget >= 2 && !ring2.isClosed && ring2.missingCount > 0 && wantClosure) {
         if (stoneAvailable >= minStonePerCycle) buildRing = 2;
       }
-      if (buildRing && Math.random() < wallPriority + (buildRing === 1 && !ring1.isClosed ? closurePriority : 0) * 0.5) {
+      let wallSegNear = 0;
+      for (const w of wallSections) {
+        if (w.ownerId !== aiPlayerId) continue;
+        if (hexDistance(w.q, w.r, city.q, city.r) <= 4) wallSegNear++;
+      }
+      const wallPerTarget = Math.max(0, Math.round(params.wallBuildPerCityTarget ?? 2));
+      const wallDeficit =
+        wallPerTarget > 0 ? Math.max(0, 1 - Math.min(1, wallSegNear / Math.max(1, wallPerTarget * 3))) : 0;
+      const wallSyn =
+        (params.wallToDefenderSynergyWeight ?? 0.5) * (assignedToDefense.size > 0 ? 0.12 : 0);
+      const uptimeBonus = (params.wallClosureUptimeWeight ?? 0.3) * (ring1.isClosed ? 0.08 : 0);
+      const wallRoll =
+        wallPriority +
+        (buildRing === 1 && !ring1.isClosed ? closurePriority : 0) * 0.5 +
+        wallDeficit * 0.2 +
+        wallSyn +
+        uptimeBonus;
+      if (buildRing && wallRoll > 0.28) {
         actions.buildWallRings.push({ cityId: city.id, ring: buildRing });
       }
     }
@@ -975,7 +1173,8 @@ export function planAiTurn(
         !isNavalUnitType(u.type) &&
         !unitIdsAlreadyTargeted.has(u.id) &&
         u.status !== 'fighting' &&
-        !reservedForIncorporation.has(u.id),
+        !reservedForIncorporation.has(u.id) &&
+        !assignedToDefense.has(u.id),
     );
     const numToCommit = Math.max(0, Math.min(
       Math.floor(idleForContest.length * commitShare),
@@ -1049,15 +1248,18 @@ export function planAiTurn(
       });
       if (emptyNeighbors.length === 0) continue;
 
+      const maxCh = Math.max(2, Math.min(20, Math.round(params.maxChaseDistance ?? 8)));
       const nearbyIdle = aiUnits.filter(u =>
         u.hp > 0 && u.type !== 'builder' && !isNavalUnitType(u.type) &&
         u.status !== 'fighting' && !unitIdsAlreadyTargeted.has(u.id) &&
         !reservedForIncorporation.has(u.id) &&
-        hexDistance(u.q, u.r, hq, hr) <= 4 && hexDistance(u.q, u.r, hq, hr) > 1
+        !assignedToDefense.has(u.id) &&
+        hexDistance(u.q, u.r, hq, hr) <= maxCh && hexDistance(u.q, u.r, hq, hr) > 1
       );
-      const [flankQ, flankR] = emptyNeighbors[Math.floor(Math.random() * emptyNeighbors.length)];
+      const fn = stableIndex(emptyNeighbors.length, `flank-${hexK}-${hq}-${hr}`);
+      const [flankQ, flankR] = emptyNeighbors[fn]!;
       for (const u of nearbyIdle.slice(0, 3)) {
-        actions.moveTargets.push({ unitId: u.id, toQ: flankQ, toR: flankR });
+        actions.moveTargets.push({ unitId: u.id, toQ: flankQ, toR: flankR, stance: 'aggressive' });
         unitIdsAlreadyTargeted.add(u.id);
       }
     }
@@ -1161,7 +1363,8 @@ export function planAiTurn(
             (needShip ? isNavalUnitType(u.type) : !isNavalUnitType(u.type)) &&
             !unitIdsAlreadyTargeted.has(u.id) &&
             u.status !== 'fighting' &&
-            !reservedForIncorporation.has(u.id),
+            !reservedForIncorporation.has(u.id) &&
+            !assignedToDefense.has(u.id),
         );
         const nearest = divertable
           .sort((a, b) => hexDistance(a.q, a.r, dest.q, dest.r) - hexDistance(b.q, b.r, dest.q, dest.r))[0];
@@ -1182,15 +1385,20 @@ export function planAiTurn(
     const hasQuarry = city.buildings.some(b => b.type === 'quarry');
     const ironPref = params.universityIronMinePref ?? 0.5;
     const defThreshold = params.universityCityDefenseThreshold ?? 0.3;
+    const bch = params.builderRecruitChance ?? 0.2;
+    const bms = params.builderRecruitForMinesAndSiege ?? 0.5;
+    const siegeB = city.buildings.some(b => b.type === 'siege_workshop');
+    const mineBoost = 1 + (siegeB || (!hasMine && hasQuarry) ? bms : 0);
 
     let task: BuilderTask = 'expand_quarries';
-    if (enemyCities.length > 0 && Math.random() < defThreshold) {
+    const defPick = stableIndex(100, `${city.id}-udef`);
+    if (enemyCities.length > 0 && defPick < defThreshold * 100 * mineBoost) {
       task = 'city_defenses';
     } else if (hasMine && !hasQuarry) {
       task = 'expand_quarries';
     } else if (hasQuarry && !hasMine) {
       task = 'expand_iron_mines';
-    } else if (Math.random() < ironPref) {
+    } else if (stableIndex(100, `${city.id}-iron`) < ironPref * 100 * (1 + bch * 0.35)) {
       task = 'expand_iron_mines';
     } else {
       task = 'expand_quarries';

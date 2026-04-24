@@ -51,8 +51,10 @@ function canStartResourceBuild(args: {
   territory: Map<string, { cityId: string; playerId: string }>;
   constructions: ConstructionSite[];
   cities: City[];
+  /** When set, field builds must be on a hex the player has explored (fog of war). */
+  exploredHexKeys?: Set<string> | null;
 }): boolean {
-  const { type, q, r, city, player, tiles, territory, constructions, cities } = args;
+  const { type, q, r, city, player, tiles, territory, constructions, cities, exploredHexKeys } = args;
   if (player.gold < BUILDING_COSTS[type]) return false;
   const ironCost = BUILDING_IRON_COSTS[type] ?? 0;
   if (ironCost > 0 && (city.storage.iron ?? 0) < ironCost) return false;
@@ -72,6 +74,7 @@ function canStartResourceBuild(args: {
   if (type === 'fishery' || type === 'port' || type === 'shipyard') {
     if (!hexTouchesBiome(tiles, q, r, 'water')) return false;
   }
+  if (exploredHexKeys && !exploredHexKeys.has(hexKey)) return false;
   return true;
 }
 
@@ -88,8 +91,9 @@ function canStartRemoteResourceBuild(args: {
   territory: Map<string, { cityId: string; playerId: string }>;
   constructions: ConstructionSite[];
   cities: City[];
+  exploredHexKeys?: Set<string> | null;
 }): boolean {
-  const { type, q, r, city, player, tiles, territory, constructions, cities } = args;
+  const { type, q, r, city, player, tiles, territory, constructions, cities, exploredHexKeys } = args;
   if (player.gold < BUILDING_COSTS[type]) return false;
   const ironCost = BUILDING_IRON_COSTS[type] ?? 0;
   if (ironCost > 0 && (city.storage.iron ?? 0) < ironCost) return false;
@@ -109,6 +113,7 @@ function canStartRemoteResourceBuild(args: {
   if (type === 'fishery' || type === 'port' || type === 'shipyard') {
     if (!hexTouchesBiome(tiles, q, r, 'water')) return false;
   }
+  if (exploredHexKeys && !exploredHexKeys.has(hexKey)) return false;
   return true;
 }
 
@@ -120,6 +125,7 @@ function findNearestRemoteResourceHex(
   territory: Map<string, { cityId: string; playerId: string }>,
   constructions: ConstructionSite[],
   cities: City[],
+  exploredHexKeys: Set<string> | null | undefined,
 ): { q: number; r: number } | null {
   for (let ring = 0; ring <= MAX_REMOTE_RESOURCE_RING; ring++) {
     const hexes = ring === 0 ? [{ q: city.q, r: city.r }] : getHexRing(city.q, city.r, ring);
@@ -135,6 +141,7 @@ function findNearestRemoteResourceHex(
           territory,
           constructions,
           cities,
+          exploredHexKeys,
         })
       ) {
         return { q: h.q, r: h.r };
@@ -160,6 +167,11 @@ export function planBuilderAutomation(input: {
   generateId: (prefix: string) => string;
   /** If false, omit the optional HUD notification (e.g. for AI). Defaults to true. */
   notify?: boolean;
+  /**
+   * When set (typical: human client fog-of-war), automation only starts builds on explored hexes.
+   * Omit or pass null for headless AI / full-map sims.
+   */
+  exploredHexKeys?: Set<string> | null;
 }): {
   newConstructions: ConstructionSite[];
   nextGold: number;
@@ -177,6 +189,7 @@ export function planBuilderAutomation(input: {
     playerId,
     generateId,
     notify = true,
+    exploredHexKeys = null,
   } = input;
 
   const player = players.find(p => p.id === playerId);
@@ -225,6 +238,7 @@ export function planBuilderAutomation(input: {
               territory,
               constructions,
               cities,
+              exploredHexKeys,
             })
           ) {
             bt = 'quarry';
@@ -233,7 +247,7 @@ export function planBuilderAutomation(input: {
           }
         }
         if (!bt) {
-          const rh = findNearestRemoteResourceHex('quarry', city, player, tiles, territory, constructions, cities);
+          const rh = findNearestRemoteResourceHex('quarry', city, player, tiles, territory, constructions, cities, exploredHexKeys);
           if (rh) {
             bt = 'quarry';
             th = rh;
@@ -252,6 +266,7 @@ export function planBuilderAutomation(input: {
               territory,
               constructions,
               cities,
+              exploredHexKeys,
             })
           ) {
             bt = 'mine';
@@ -260,7 +275,7 @@ export function planBuilderAutomation(input: {
           }
         }
         if (!bt) {
-          const rm = findNearestRemoteResourceHex('mine', city, player, tiles, territory, constructions, cities);
+          const rm = findNearestRemoteResourceHex('mine', city, player, tiles, territory, constructions, cities, exploredHexKeys);
           if (rm) {
             bt = 'mine';
             th = rm;
@@ -279,6 +294,7 @@ export function planBuilderAutomation(input: {
                 territory,
                 constructions,
                 cities,
+                exploredHexKeys,
               })
             ) {
               bt = 'gold_mine';
@@ -288,7 +304,7 @@ export function planBuilderAutomation(input: {
           }
         }
         if (!bt) {
-          const rg = findNearestRemoteResourceHex('gold_mine', city, player, tiles, territory, constructions, cities);
+          const rg = findNearestRemoteResourceHex('gold_mine', city, player, tiles, territory, constructions, cities, exploredHexKeys);
           if (rg) {
             bt = 'gold_mine';
             th = rg;
@@ -307,6 +323,7 @@ export function planBuilderAutomation(input: {
               territory,
               constructions,
               cities,
+              exploredHexKeys,
             })
           ) {
             bt = 'logging_hut';
@@ -315,7 +332,7 @@ export function planBuilderAutomation(input: {
           }
         }
         if (!bt) {
-          const rl = findNearestRemoteResourceHex('logging_hut', city, player, tiles, territory, constructions, cities);
+          const rl = findNearestRemoteResourceHex('logging_hut', city, player, tiles, territory, constructions, cities, exploredHexKeys);
           if (rl) {
             bt = 'logging_hut';
             th = rl;
@@ -336,6 +353,7 @@ export function planBuilderAutomation(input: {
                   territory,
                   constructions,
                   cities,
+                  exploredHexKeys,
                 })
               ) {
                 bt = 'sawmill';
@@ -348,7 +366,7 @@ export function planBuilderAutomation(input: {
         if (!bt) {
           const hasSawmill = city.buildings.some(b => b.type === 'sawmill');
           if (!hasSawmill) {
-            const rs = findNearestRemoteResourceHex('sawmill', city, player, tiles, territory, constructions, cities);
+            const rs = findNearestRemoteResourceHex('sawmill', city, player, tiles, territory, constructions, cities, exploredHexKeys);
             if (rs) {
               bt = 'sawmill';
               th = rs;

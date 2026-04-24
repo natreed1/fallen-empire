@@ -1,0 +1,24 @@
+npm warn Unknown env config "devdir". This will stop working in the next major version of npm.
+
+> fallen-empire@0.1.0 validate-robustness
+> npx ts-node -r tsconfig-paths/register --project tsconfig.train.json scripts/validate-robustness.ts
+
+npm warn Unknown env config "devdir". This will stop working in the next major version of npm.
+npm warn exec The following package was not found and will be installed: ts-node@10.9.2
+Validate robustness
+  Matches: 100  Map: 38x38  MaxCycles: 500  DomainRandomization: false
+
+Results
+  decisiveness (candidate=ai1, default=ai2):
+    candidateWins: 6 (6.0%)  defaultWins: 6 (6.0%)  draws: 88 (88.0%)
+    decisiveRate: 12.0%  timeoutsAtMaxCycles: 88 (88.0%)
+    avgCycle(all): 457.3  avgCycle(decisive only): 143.9  avgKillsPerGame: 22.90
+  gamesWithAnyDeaths: 52
+  drawRate: 0.880
+  ownerFlipRate: 0.420
+  noCombatRate: 0.480
+  totalStarvationRate: 0.000
+  candidateRobustScore: -25.80
+  baselineRobustScore: -17.33
+
+All regression thresholds passed.

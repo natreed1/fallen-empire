@@ -19,12 +19,14 @@ import {
   PLAYER_COLORS, CITY_NAMES,
   BUILDING_COSTS, UNIT_COSTS, UNIT_L2_COSTS, UNIT_L3_COSTS, UNIT_BASE_STATS, UNIT_L2_STATS, UNIT_DISPLAY_NAMES,
   getUnitDisplayName,
+  getUnitPopCost,
   migrateLegacyArcherDoctrine,
   cityHasL3Barracks,
   ARMS_TIER_LABELS,
   type RangedVariant,
   BUILDING_BP_COST, BUILDING_JOBS, getBuildingJobs, getUnitStats, BP_RATE_BASE,
   TREBUCHET_FIELD_BP_COST, TREBUCHET_FIELD_GOLD_COST, TREBUCHET_REFINED_WOOD_COST,
+  TREBUCHET_SIEGE_STONE_COST, TREBUCHET_SIEGE_WOOD_COST,
   DEFENDER_IRON_COST,
   SCOUT_TOWER_BP_COST, SCOUT_TOWER_GOLD_COST,
   SCOUT_MISSION_COST,
@@ -117,9 +119,17 @@ import {
   isCapitalStartHex,
   clearVillageForCapitalTile,
 } from '@/lib/kingdomSpawn';
-import { getCityTerritory } from '@/lib/territory';
 import { computeContestedZoneHexKeys, applyContestedZonePayout } from '@/lib/contestedZone';
-import { calculateTerritory, findCityForRefinedWoodSpend, maxMoveOrderDistanceForDestination, isWithinPlayerMoveOrderRange } from '@/lib/territory';
+import {
+  calculateTerritory,
+  findCityForSiegeFieldSpend,
+  maxMoveOrderDistanceForDestination,
+  isWithinPlayerMoveOrderRange,
+  getCityTerritory,
+  getCityFrontierLandHexKeys,
+  sortPatrolFrontierKeys,
+} from '@/lib/territory';
+import { countPlayerSiegePieces, siegeCompositionAllowsRecruit } from '@/lib/siegeRecruitment';
 import { processEconomyTurn, computeEmpireIncomeStatement } from '@/lib/gameLoop';
 import {
   planAiTurn,
@@ -129,6 +139,12 @@ import {
   placeManyAiCapitalsApart,
 } from '@/lib/ai';
 import { spawnUnitFromPendingLand, type PendingLandRecruit } from '@/lib/pendingLandRecruit';
+import {
+  advanceBattalionTrainingOrders,
+  buildBattalionTrainingFields,
+  computeEmpirePopUsedForPlayer,
+  landPending,
+} from '@/lib/battalionTraining';
 import { spawnUnitFromPendingShip } from '@/lib/pendingShipRecruit';
 import { applyAiInstantBuilds, applyAiUpgrades, applyAiRecruitsAsPending, applyAiShipRecruitsAsPending } from '@/lib/applyAiPlan';
 import { getAiParams } from '@/lib/aiParams';
@@ -334,6 +350,8 @@ interface GameState {
   stackMoveUnitId: string | null;
   uiMode: UIMode;
   pendingMove: { toQ: number; toR: number } | null;
+  /** Move-click on your city territory: offer border patrol instead of marching. */
+  pendingCityPatrol: { cityId: string; toQ: number; toR: number } | null;
   pendingDefenseBuild: { towerType: DefenseTowerType; level: DefenseTowerLevel; cityId: string } | null;
   wallSections: WallSection[];
   roadPathSelection: { q: number; r: number }[];  // hexes selected for road drag
@@ -557,6 +575,12 @@ interface GameState {
   setPendingMove: (toQ: number, toR: number) => void;
   confirmMove: () => void;
   cancelMove: () => void;
+  /** If eligible, sets {@link pendingCityPatrol} and returns true (caller skips normal move pending). */
+  queueCityPatrolOfferIfEligible: (toQ: number, toR: number) => boolean;
+  confirmCityBorderPatrol: () => void;
+  cancelCityPatrolOffer: () => void;
+  /** Dismiss patrol offer and open the normal move confirmation for the same hex. */
+  marchFromCityPatrolOffer: () => void;
   moveSelectedUnits: (toQ: number, toR: number) => void;
   setStance: (stance: ArmyStance) => void;
   startDefendMode: () => void;
@@ -1245,7 +1269,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   setSelectedKingdom: (k) => set({ selectedKingdom: k }),
   setTacticalCityDefenseMode: (mode) => set({ tacticalCityDefenseMode: mode }),
   visibleHexes: new Set(), exploredHexes: new Set(), pendingCityHex: null,
-  selectedHex: null, stackMoveUnitId: null, uiMode: 'normal', pendingMove: null, pendingDefenseBuild: null, wallSections: [], roadPathSelection: [],
+  selectedHex: null, stackMoveUnitId: null, uiMode: 'normal', pendingMove: null, pendingCityPatrol: null, pendingDefenseBuild: null, wallSections: [], roadPathSelection: [],
   supplyViewTab: 'normal',
   territoryDisplayStyle: 'fill',
   setTerritoryDisplayStyle: (style) => set({ territoryDisplayStyle: style }),
@@ -1547,6 +1571,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       lastWeatherEndCycle: -10,
       uiMode: 'normal',
       pendingMove: null,
+      pendingCityPatrol: null,
       cityLogisticsOpen: false,
     });
     get().recomputeVision();
@@ -2386,7 +2411,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       const popDeductByCityId: Record<string, number> = {};
       for (const u of s.units) {
         if (killedIds.has(u.id) && u.originCityId) {
-          popDeductByCityId[u.originCityId] = (popDeductByCityId[u.originCityId] ?? 0) + 1;
+          popDeductByCityId[u.originCityId] = (popDeductByCityId[u.originCityId] ?? 0) + getUnitPopCost(u.type);
         }
       }
       const updatedCities =
@@ -3042,9 +3067,18 @@ export const useGameStore = create<GameState>((set, get) => ({
     if (s.phase !== 'playing') return;
     const newCycle = s.cycle + 1;
 
-    let pendingRecruitsAcc = s.pendingRecruits.filter(pr => pr.completesAtCycle !== newCycle);
+    let flushCities = s.cities.map(c => ({
+      ...c,
+      storage: { ...c.storage },
+      storageCap: { ...c.storageCap },
+    }));
+    const nonLandPending = s.pendingRecruits.filter(pr => !landPending(pr));
+    const landListUnadvanced = s.pendingRecruits.filter(landPending) as PendingLandRecruit[];
+    let pendingRecruitsAcc = [...nonLandPending, ...landListUnadvanced].filter(pr => {
+      if (landPending(pr)) return true;
+      return pr.completesAtCycle !== newCycle;
+    });
     let pendingIncorporationsAcc = s.pendingIncorporations.filter(p => p.completesAtCycle !== newCycle);
-    let flushCities = s.cities;
     let flushPlayers = s.players;
     let flushTiles = s.tiles;
     let flushUnits = s.units;
@@ -3055,7 +3089,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     let flushCommanders = s.commanders;
     const flushNotifs: GameNotification[] = [];
 
-    for (const pr of s.pendingRecruits.filter(p => p.completesAtCycle === newCycle)) {
+    for (const pr of s.pendingRecruits.filter(p => !landPending(p) && p.completesAtCycle === newCycle)) {
       if ('shipType' in pr) {
         const u = spawnUnitFromPendingShip(pr, flushCities);
         if (u) {
@@ -3109,38 +3143,6 @@ export const useGameStore = create<GameState>((set, get) => ({
             message: 'Commander training cancelled; gold refunded.',
             type: 'warning',
           });
-        }
-      } else {
-        const u = spawnUnitFromPendingLand(pr, flushCities);
-        if (u) {
-          flushUnits = [...flushUnits, u];
-          if (pr.playerId === HUMAN_ID) {
-            const tier =
-              pr.effectiveArmsLevel === 3 || pr.type === 'defender'
-                ? 'L3 '
-                : pr.effectiveArmsLevel === 2
-                  ? 'L2 '
-                  : '';
-            flushNotifs.push({
-              id: generateId('n'),
-              turn: newCycle,
-              message: `${tier}${UNIT_DISPLAY_NAMES[pr.type]} training complete.`,
-              type: 'success',
-            });
-          }
-        } else if (pr.type === 'builder') {
-          const refund = UNIT_COSTS.builder.gold;
-          flushPlayers = flushPlayers.map(p =>
-            p.id === pr.playerId ? { ...p, gold: p.gold + refund } : p,
-          );
-          if (pr.playerId === HUMAN_ID) {
-            flushNotifs.push({
-              id: generateId('n'),
-              turn: newCycle,
-              message: 'Builder recruits are obsolete; gold refunded.',
-              type: 'info',
-            });
-          }
         }
       }
     }
@@ -3260,6 +3262,54 @@ export const useGameStore = create<GameState>((set, get) => ({
     let players = econ.players;
     let notifs = [...flushNotifs, ...weatherNotifs, ...econ.notifications];
 
+    // Battalion training: after economy so new swords / fine steel this cycle count toward orders (before upkeep drains stock).
+    const landForTraining = pendingRecruitsAcc.filter(landPending) as PendingLandRecruit[];
+    const { nextPending: nextLandTrained, readyToSpawn } = advanceBattalionTrainingOrders(landForTraining, cities);
+    const legacyLandSpawns = nextLandTrained.filter(
+      pr => pr.trainingCyclesTotal == null && pr.completesAtCycle === newCycle,
+    );
+    const allLandSpawns = [...readyToSpawn, ...legacyLandSpawns];
+    const spawnedLandIds = new Set(allLandSpawns.map(p => p.id));
+    const nonLandAfterTraining = pendingRecruitsAcc.filter(pr => !landPending(pr));
+    pendingRecruitsAcc = [
+      ...nonLandAfterTraining,
+      ...nextLandTrained.filter(pr => !spawnedLandIds.has(pr.id)),
+    ];
+
+    for (const pr of allLandSpawns) {
+      const u = spawnUnitFromPendingLand(pr, cities);
+      if (u) {
+        units = [...units, u];
+        if (pr.playerId === HUMAN_ID) {
+          const tier =
+            pr.effectiveArmsLevel === 3 || pr.type === 'defender'
+              ? 'L3 '
+              : pr.effectiveArmsLevel === 2
+                ? 'L2 '
+                : '';
+          notifs.push({
+            id: generateId('n'),
+            turn: newCycle,
+            message: `${tier}${UNIT_DISPLAY_NAMES[pr.type]} training complete.`,
+            type: 'success',
+          });
+        }
+      } else if (pr.type === 'builder') {
+        const refund = UNIT_COSTS.builder.gold;
+        players = players.map(p =>
+          p.id === pr.playerId ? { ...p, gold: p.gold + refund } : p,
+        );
+        if (pr.playerId === HUMAN_ID) {
+          notifs.push({
+            id: generateId('n'),
+            turn: newCycle,
+            message: 'Builder recruits are obsolete; gold refunded.',
+            type: 'info',
+          });
+        }
+      }
+    }
+
     // Military upkeep (food + guns consumption, per cluster); reuse clusters from economy
     const upkeepResult = upkeepTick(units, cities, flushHeroes, newCycle, flushTiles, flushTerritory);
     notifs.push(...upkeepResult.notifications);
@@ -3280,6 +3330,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         playerId: builderOwnerId,
         generateId,
         notify: builderOwnerId === HUMAN_ID,
+        exploredHexKeys: builderOwnerId === HUMAN_ID ? flushExplored : null,
       });
       if (autoBuild) {
         cities = autoBuild.nextCities;
@@ -3312,6 +3363,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         s.contestedZoneHexKeys ?? [], s.commanders ?? [], s.scrollInventory ?? {}, s.scrollAttachments ?? [],
         s.scrollRelics ?? [], s.scrollRegionClaimed ?? emptyScrollRegionClaimed(),
         s.config.mapTerrain,
+        { pendingRecruits: pendingRecruitsAcc },
       );
       const aiPlayer = players.find(p => p.id === aiPlayerId);
       if (!aiPlayer) continue;
@@ -3405,6 +3457,22 @@ export const useGameStore = create<GameState>((set, get) => ({
         }
       }
 
+      for (const da of aiPlan.defendAssignments ?? []) {
+        const unit = units.find(u => u.id === da.unitId && u.ownerId === aiPlayerId);
+        const city = cities.find(c => c.id === da.cityId && c.ownerId === aiPlayerId);
+        if (!unit || !city || unit.hp <= 0 || unit.status === 'fighting') continue;
+        unit.defendCityId = city.id;
+        unit.cityDefenseMode = da.mode;
+        applyDeployFlagsForMoveMutable(unit, city.q, city.r, cities);
+        clearPatrolFieldsMutable(unit);
+        unit.targetQ = city.q;
+        unit.targetR = city.r;
+        unit.status = 'moving';
+        unit.stance = da.mode === 'auto_engage' ? 'aggressive' : 'defensive';
+        unit.nextMoveAt = 0;
+        unit.marchInitialHexDistance = marchHexDistanceAtOrder(unit, city.q, city.r);
+      }
+
       for (const mt of aiPlan.moveTargets) {
         const unit = units.find(u => u.id === mt.unitId);
         if (unit && unit.hp > 0 && unit.status !== 'fighting') {
@@ -3413,7 +3481,7 @@ export const useGameStore = create<GameState>((set, get) => ({
           unit.targetQ = mt.toQ;
           unit.targetR = mt.toR;
           unit.status = 'moving';
-          unit.stance = 'aggressive';
+          unit.stance = mt.stance ?? 'aggressive';
           unit.nextMoveAt = 0;
           unit.marchInitialHexDistance = marchHexDistanceAtOrder(unit, mt.toQ, mt.toR);
         }
@@ -3431,7 +3499,7 @@ export const useGameStore = create<GameState>((set, get) => ({
             .filter(c => c.ownerId === aiPlayerId && c.type === 'wall_section')
             .map(c => tileKey(c.q, c.r)),
         );
-        const next = getNextWallBuildHex(city, tilesMut, ownerWallKeys, queuedWallKeys);
+        const next = getNextWallBuildHex(city, tilesMut, ownerWallKeys, queuedWallKeys, null);
         if (!next) continue;
         if (wr.ring === 2 && next.ring === 1) continue;
         const cityIdx = cities.indexOf(city);
@@ -3802,6 +3870,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     if (Date.now() < s.mapClickSuppressionUntilMs) return;
     const switchingHex = !s.selectedHex || s.selectedHex.q !== q || s.selectedHex.r !== r;
     if (switchingHex && s.cityLogisticsOpen) set({ cityLogisticsOpen: false });
+    if (switchingHex && s.pendingCityPatrol) set({ pendingCityPatrol: null });
     // Tactical: assigning destination for selected stacks (bottom-bar flow)
     if (s.assigningTacticalForSelectedStacks !== null) {
       const { orderType } = s.assigningTacticalForSelectedStacks;
@@ -3886,9 +3955,17 @@ export const useGameStore = create<GameState>((set, get) => ({
     if (s.uiMode === 'move') {
       // Re-clicking the same hex (where units are) cancels move mode
       if (s.selectedHex && s.selectedHex.q === q && s.selectedHex.r === r) {
-        set({ selectedHex: null, stackMoveUnitId: null, uiMode: 'normal', pendingMove: null, cityLogisticsOpen: false });
+        set({
+          selectedHex: null,
+          stackMoveUnitId: null,
+          uiMode: 'normal',
+          pendingMove: null,
+          pendingCityPatrol: null,
+          cityLogisticsOpen: false,
+        });
         return;
       }
+      if (get().queueCityPatrolOfferIfEligible(q, r)) return;
       get().setPendingMove(q, r);
       return;
     }
@@ -3900,9 +3977,17 @@ export const useGameStore = create<GameState>((set, get) => ({
     }
     if (s.uiMode === 'intercept') {
       if (s.selectedHex && s.selectedHex.q === q && s.selectedHex.r === r) {
-        set({ selectedHex: null, stackMoveUnitId: null, uiMode: 'normal', pendingMove: null, cityLogisticsOpen: false });
+        set({
+          selectedHex: null,
+          stackMoveUnitId: null,
+          uiMode: 'normal',
+          pendingMove: null,
+          pendingCityPatrol: null,
+          cityLogisticsOpen: false,
+        });
         return;
       }
+      if (get().queueCityPatrolOfferIfEligible(q, r)) return;
       get().setPendingMove(q, r);
       return;
     }
@@ -3926,6 +4011,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         stackMoveUnitId: null,
         uiMode: 'normal',
         pendingMove: null,
+        pendingCityPatrol: null,
         selectedClusterKey: s.supplyViewTab === 'supply' ? null : s.selectedClusterKey,
         cityLogisticsOpen: false,
       });
@@ -3948,6 +4034,7 @@ export const useGameStore = create<GameState>((set, get) => ({
               canLandStackEmbarkFriendlyScoutAt(s.tiles, s.units, q, r, stack, HUMAN_ID));
         const maxLeg = maxMoveOrderDistanceForDestination(q, r, s.territory, HUMAN_ID);
         if (dist >= 1 && dist <= maxLeg && okDest) {
+          if (get().queueCityPatrolOfferIfEligible(q, r)) return;
           get().setPendingMove(q, r);
           return;
         }
@@ -3957,7 +4044,14 @@ export const useGameStore = create<GameState>((set, get) => ({
     // In supply view: resolve cluster from road or city hex, show cluster panel
     if (s.supplyViewTab === 'supply') {
       const clusterKey = s.getClusterForHex(q, r);
-      set({ selectedHex: { q, r }, stackMoveUnitId: null, uiMode: 'normal', pendingMove: null, selectedClusterKey: clusterKey });
+      set({
+        selectedHex: { q, r },
+        stackMoveUnitId: null,
+        uiMode: 'normal',
+        pendingMove: null,
+        pendingCityPatrol: null,
+        selectedClusterKey: clusterKey,
+      });
       return;
     }
 
@@ -3977,15 +4071,28 @@ export const useGameStore = create<GameState>((set, get) => ({
         stackMoveUnitId: nextNavalFocus,
         uiMode: isDoubleClick ? 'move' : 'normal',
         pendingMove: null,
+        pendingCityPatrol: null,
       });
       return;
     }
     set({ lastClickHex: { q, r }, lastClickTime: now });
     if (myUnits.length > 0) {
-      set({ selectedHex: { q, r }, stackMoveUnitId: nextNavalFocus, uiMode: 'move', pendingMove: null });
+      set({
+        selectedHex: { q, r },
+        stackMoveUnitId: nextNavalFocus,
+        uiMode: 'move',
+        pendingMove: null,
+        pendingCityPatrol: null,
+      });
       return;
     }
-    set({ selectedHex: { q, r }, stackMoveUnitId: nextNavalFocus, uiMode: 'normal', pendingMove: null });
+    set({
+      selectedHex: { q, r },
+      stackMoveUnitId: nextNavalFocus,
+      uiMode: 'normal',
+      pendingMove: null,
+      pendingCityPatrol: null,
+    });
   },
 
   rightClickHex: (q, r) => {
@@ -4015,15 +4122,17 @@ export const useGameStore = create<GameState>((set, get) => ({
           stackMoveUnitId: null,
           uiMode: 'normal',
           pendingMove: null,
+          pendingCityPatrol: null,
           cityLogisticsOpen: false,
         });
         return;
       }
+      if (get().queueCityPatrolOfferIfEligible(q, r)) return;
       get().setPendingMove(q, r);
       const after = get();
       if (after.pendingMove) {
         get().moveSelectedUnits(after.pendingMove.toQ, after.pendingMove.toR);
-        set({ pendingMove: null });
+        set({ pendingMove: null, pendingCityPatrol: null });
       }
       return;
     }
@@ -4055,11 +4164,12 @@ export const useGameStore = create<GameState>((set, get) => ({
     const maxLeg = maxMoveOrderDistanceForDestination(q, r, s.territory, HUMAN_ID);
     if (dist < 1 || dist > maxLeg || !okDest) return;
 
+    if (get().queueCityPatrolOfferIfEligible(q, r)) return;
     get().setPendingMove(q, r);
     const after = get();
     if (after.pendingMove) {
       get().moveSelectedUnits(after.pendingMove.toQ, after.pendingMove.toR);
-      set({ pendingMove: null });
+      set({ pendingMove: null, pendingCityPatrol: null });
     }
   },
 
@@ -4089,6 +4199,10 @@ export const useGameStore = create<GameState>((set, get) => ({
     // City modal uses selected hex — close it before pending move / builder flows so Escape works reliably
     if (get().cityLogisticsOpen) {
       get().closeCityModal();
+      return;
+    }
+    if (s.pendingCityPatrol !== null) {
+      set({ pendingCityPatrol: null });
       return;
     }
     if (s.pendingMove !== null) {
@@ -4123,13 +4237,45 @@ export const useGameStore = create<GameState>((set, get) => ({
       set({ splitStackPending: null });
     }
     if (s.uiMode === 'build_mine' || s.uiMode === 'build_quarry' || s.uiMode === 'build_gold_mine' || s.uiMode === 'build_logging_hut' || s.uiMode === 'build_road') {
-      set({ selectedHex: null, stackMoveUnitId: null, uiMode: 'normal', pendingMove: null, roadPathSelection: [], selectedClusterKey: null, cityLogisticsOpen: false });
+      set({
+        selectedHex: null,
+        stackMoveUnitId: null,
+        uiMode: 'normal',
+        pendingMove: null,
+        pendingCityPatrol: null,
+        roadPathSelection: [],
+        selectedClusterKey: null,
+        cityLogisticsOpen: false,
+      });
     } else if (s.uiMode === 'build_defense') {
-      set({ selectedHex: null, stackMoveUnitId: null, uiMode: 'normal', pendingMove: null, pendingDefenseBuild: null, cityLogisticsOpen: false });
+      set({
+        selectedHex: null,
+        stackMoveUnitId: null,
+        uiMode: 'normal',
+        pendingMove: null,
+        pendingCityPatrol: null,
+        pendingDefenseBuild: null,
+        cityLogisticsOpen: false,
+      });
     } else if (s.uiMode === 'defend' || s.uiMode === 'intercept') {
-      set({ selectedHex: null, stackMoveUnitId: null, uiMode: 'normal', pendingMove: null, cityLogisticsOpen: false });
+      set({
+        selectedHex: null,
+        stackMoveUnitId: null,
+        uiMode: 'normal',
+        pendingMove: null,
+        pendingCityPatrol: null,
+        cityLogisticsOpen: false,
+      });
     } else {
-      set({ selectedHex: null, stackMoveUnitId: null, uiMode: 'normal', pendingMove: null, selectedClusterKey: null, cityLogisticsOpen: false });
+      set({
+        selectedHex: null,
+        stackMoveUnitId: null,
+        uiMode: 'normal',
+        pendingMove: null,
+        pendingCityPatrol: null,
+        selectedClusterKey: null,
+        cityLogisticsOpen: false,
+      });
     }
   },
 
@@ -4184,6 +4330,10 @@ export const useGameStore = create<GameState>((set, get) => ({
 
     // Check if hex already has a building
     const hexKey = tileKey(q, r);
+    if (!s.exploredHexes.has(hexKey)) {
+      get().addNotification('That hex is not explored yet — expand vision before building here.', 'warning');
+      return;
+    }
     if (s.cities.some(c => c.buildings.some(b => tileKey(b.q, b.r) === hexKey))) return;
     if (s.defenseInstallations.some(d => d.q === q && d.r === r)) {
       get().addNotification('A city defense occupies this hex.', 'warning');
@@ -4266,6 +4416,10 @@ export const useGameStore = create<GameState>((set, get) => ({
     }
     const tile = s.tiles.get(tileKey(q, r));
     if (!tile || tile.biome === 'water' || tile.biome === 'mountain') return;
+    if (!s.exploredHexes.has(tileKey(q, r))) {
+      get().addNotification('That hex is not explored yet — expand vision before building here.', 'warning');
+      return;
+    }
     if (s.cities.some(c => c.q === q && c.r === r)) {
       get().addNotification('Cannot build trebuchet on a city!', 'warning');
       return;
@@ -4278,9 +4432,31 @@ export const useGameStore = create<GameState>((set, get) => ({
       get().addNotification('A city defense occupies this hex.', 'warning');
       return;
     }
-    const rwCity = findCityForRefinedWoodSpend(q, r, HUMAN_ID, TREBUCHET_REFINED_WOOD_COST, s.cities, s.territory);
-    if (!rwCity) {
-      get().addNotification(`Need ${TREBUCHET_REFINED_WOOD_COST} refined wood (sawmill) to build trebuchet!`, 'warning');
+    const matCity = findCityForSiegeFieldSpend(
+      q,
+      r,
+      HUMAN_ID,
+      {
+        stone: TREBUCHET_SIEGE_STONE_COST,
+        wood: TREBUCHET_SIEGE_WOOD_COST,
+        refinedWood: TREBUCHET_REFINED_WOOD_COST,
+      },
+      s.cities,
+      s.territory,
+    );
+    if (!matCity) {
+      get().addNotification(
+        `Need ${TREBUCHET_SIEGE_STONE_COST} stone, ${TREBUCHET_SIEGE_WOOD_COST} wood, and ${TREBUCHET_REFINED_WOOD_COST} refined wood in a nearby city to build a field trebuchet.`,
+        'warning',
+      );
+      return;
+    }
+    const siegeCounts = countPlayerSiegePieces(s.units, s.pendingRecruits, HUMAN_ID);
+    if (!siegeCompositionAllowsRecruit('trebuchet', siegeCounts)) {
+      get().addNotification(
+        'Siege trains need trebuchets and battering rams within one of each other (including units training). Build a ram first, or vice versa.',
+        'warning',
+      );
       return;
     }
     const site: ConstructionSite = {
@@ -4296,11 +4472,13 @@ export const useGameStore = create<GameState>((set, get) => ({
     set({
       players: s.players.map(p => p.id === HUMAN_ID ? { ...p, gold: p.gold - TREBUCHET_FIELD_GOLD_COST } : p),
       cities: s.cities.map(c =>
-        c.id === rwCity.id
+        c.id === matCity.id
           ? {
               ...c,
               storage: {
                 ...c.storage,
+                stone: Math.max(0, (c.storage.stone ?? 0) - TREBUCHET_SIEGE_STONE_COST),
+                wood: Math.max(0, (c.storage.wood ?? 0) - TREBUCHET_SIEGE_WOOD_COST),
                 refinedWood: Math.max(0, (c.storage.refinedWood ?? 0) - TREBUCHET_REFINED_WOOD_COST),
               },
             }
@@ -4309,7 +4487,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       constructions: [...s.constructions, site],
     });
     get().addNotification(
-      `Trebuchet construction started (${TREBUCHET_FIELD_GOLD_COST}g, ${TREBUCHET_REFINED_WOOD_COST} ref., ${TREBUCHET_FIELD_BP_COST} BP). Nearest University provides BP.`,
+      `Trebuchet construction started (${TREBUCHET_FIELD_GOLD_COST}g, ${TREBUCHET_SIEGE_STONE_COST} stone, ${TREBUCHET_SIEGE_WOOD_COST} wood, ${TREBUCHET_REFINED_WOOD_COST} ref., ${TREBUCHET_FIELD_BP_COST} BP). Nearest University provides BP.`,
       'info',
     );
   },
@@ -4323,6 +4501,10 @@ export const useGameStore = create<GameState>((set, get) => ({
     }
     const tile = s.tiles.get(tileKey(q, r));
     if (!tile || tile.biome === 'water' || tile.biome === 'mountain') return;
+    if (!s.exploredHexes.has(tileKey(q, r))) {
+      get().addNotification('That hex is not explored yet — expand vision before building here.', 'warning');
+      return;
+    }
     if (s.cities.some(c => c.q === q && c.r === r)) {
       get().addNotification('Cannot build scout tower on a city!', 'warning');
       return;
@@ -4370,6 +4552,11 @@ export const useGameStore = create<GameState>((set, get) => ({
       get().addNotification('Defenses can only be built on valid land hexes (not water or mountain).', 'warning');
       return;
     }
+    const hexKey = tileKey(siteQ, siteR);
+    if (!s.exploredHexes.has(hexKey)) {
+      get().addNotification('That hex is not explored yet — expand vision before building defenses here.', 'warning');
+      return;
+    }
     if (s.cities.some(c => c.q === siteQ && c.r === siteR)) {
       get().addNotification('Cannot build defenses on the city center hex.', 'warning');
       return;
@@ -4378,7 +4565,6 @@ export const useGameStore = create<GameState>((set, get) => ({
       get().addNotification('Already under construction here!', 'warning');
       return;
     }
-    const hexKey = tileKey(siteQ, siteR);
     const terr = s.territory.get(hexKey);
     if (!terr || terr.playerId !== HUMAN_ID) {
       get().addNotification('City defenses must be built inside your territory.', 'warning');
@@ -4478,11 +4664,16 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   buildRoad: (q, r) => {
     const s = get();
-    const tile = s.tiles.get(tileKey(q, r));
+    const hk = tileKey(q, r);
+    if (!s.exploredHexes.has(hk)) {
+      get().addNotification('That hex is not explored yet — roads must be in explored territory.', 'warning');
+      return;
+    }
+    const tile = s.tiles.get(hk);
     if (!tile || tile.biome === 'water') return;  // allow roads on mountains for mine connectivity
     if (tile.hasRoad) { get().addNotification('Road already here!', 'info'); return; }
     if (s.roadConstructions.some(rc => rc.q === q && rc.r === r)) return;
-    const terr = s.territory.get(tileKey(q, r));
+    const terr = s.territory.get(hk);
     if (!terr || terr.playerId !== HUMAN_ID) {
       get().addNotification('Roads must be in your territory (University workforce builds them).', 'warning');
       return;
@@ -5026,10 +5217,58 @@ export const useGameStore = create<GameState>((set, get) => ({
     if (isBuilder) {
       get().addNotification('Builders are tied to your University level — open the University to set workforce tasks.', 'info');
       return;
-    } else if (type === 'trebuchet' || type === 'battering_ram') {
+    }
+
+    const popCost = getUnitPopCost(type);
+    const playerCitiesPop = s.cities.filter(c => c.ownerId === player.id);
+    const totalPop = playerCitiesPop.reduce((sum, c) => sum + c.population, 0);
+    const popUsed = computeEmpirePopUsedForPlayer(s.units, s.pendingRecruits, player.id);
+    if (popUsed + popCost > totalPop) {
+      get().addNotification('Troop limit: not enough population for this battalion.', 'warning');
+      return;
+    }
+
+    if (type === 'scout') {
+      if (!barracks) {
+        get().addNotification('Build a Barracks to recruit scouts!', 'warning'); return;
+      }
+      const goldCostScout = UNIT_COSTS.scout.gold;
+      if (player.gold < goldCostScout) {
+        get().addNotification(`Need ${goldCostScout} gold!`, 'warning'); return;
+      }
+      const prSynth: PendingLandRecruit = {
+        id: generateId('pr'),
+        playerId: HUMAN_ID,
+        cityId,
+        type: 'scout',
+        effectiveArmsLevel: 1,
+        spawnQ: city.q,
+        spawnR: city.r,
+        completesAtCycle: s.cycle,
+      };
+      const u = spawnUnitFromPendingLand(prSynth, [city]);
+      if (!u) return;
+      set({
+        players: s.players.map(p => (p.id === player.id ? { ...p, gold: p.gold - goldCostScout } : p)),
+        units: [...s.units, u],
+      });
+      get().addNotification(`Scout ready at ${city.name}.`, 'success');
+      get().recomputeVision();
+      return;
+    }
+
+    if (type === 'trebuchet' || type === 'battering_ram') {
       const siegeWs = city.buildings.find(b => b.type === 'siege_workshop');
       if (!siegeWs) {
         get().addNotification('Build a Siege workshop to recruit trebuchets and battering rams!', 'warning'); return;
+      }
+      const siegeCounts = countPlayerSiegePieces(s.units, s.pendingRecruits, player.id);
+      if (!siegeCompositionAllowsRecruit(type, siegeCounts)) {
+        get().addNotification(
+          'Siege trains need trebuchets and battering rams within one of each other (including units already training). Alternate recruits.',
+          'warning',
+        );
+        return;
       }
     } else {
       if (!barracks) {
@@ -5062,9 +5301,18 @@ export const useGameStore = create<GameState>((set, get) => ({
       }
     }
 
-    // Resolve cost by tier: L1 = UNIT_COSTS, L2 = UNIT_L2_COSTS (gold+stone), L3/defender = UNIT_L3_COSTS (gold+iron; defender iron only)
+    // Resolve cost by tier: L1 = UNIT_COSTS, L2 = UNIT_L2_COSTS (gold+stone+L2 wood if any), L3/defender = UNIT_L3_COSTS
     const goldCost = wantL3 ? UNIT_L3_COSTS[type].gold : wantL2 ? UNIT_L2_COSTS[type].gold : UNIT_COSTS[type].gold;
-    const stoneCost = wantL2 ? (UNIT_L2_COSTS[type].stone ?? 0) : 0;
+    const stoneCost = wantL3
+      ? (UNIT_L3_COSTS[type].stone ?? 0)
+      : wantL2
+        ? (UNIT_L2_COSTS[type].stone ?? 0)
+        : (UNIT_COSTS[type].stone ?? 0);
+    const woodCost = wantL3
+      ? (UNIT_L3_COSTS[type].wood ?? 0)
+      : wantL2
+        ? (UNIT_L2_COSTS[type].wood ?? 0)
+        : (UNIT_COSTS[type].wood ?? 0);
     const ironCost = wantL3 ? (UNIT_L3_COSTS[type].iron ?? 0) : 0;
     const refinedWoodCost = wantL3
       ? (UNIT_L3_COSTS[type].refinedWood ?? 0)
@@ -5078,7 +5326,23 @@ export const useGameStore = create<GameState>((set, get) => ({
     if (stoneCost > 0) {
       const cityStone = city.storage.stone ?? 0;
       if (cityStone < stoneCost) {
-        get().addNotification(`Need ${stoneCost} stone to recruit L2 ${UNIT_DISPLAY_NAMES[type]}! (Build a quarry.)`, 'warning'); return;
+        get().addNotification(
+          wantL2 && type !== 'trebuchet' && type !== 'battering_ram'
+            ? `Need ${stoneCost} stone to recruit L2 ${UNIT_DISPLAY_NAMES[type]}! (Build a quarry.)`
+            : `Need ${stoneCost} stone to recruit ${UNIT_DISPLAY_NAMES[type]}! (Build a quarry.)`,
+          'warning',
+        );
+        return;
+      }
+    }
+    if (woodCost > 0) {
+      const cityWood = city.storage.wood ?? 0;
+      if (cityWood < woodCost) {
+        get().addNotification(
+          `Need ${woodCost} wood to recruit ${UNIT_DISPLAY_NAMES[type]}! (Build a logging hut.)`,
+          'warning',
+        );
+        return;
       }
     }
     if (ironCost > 0) {
@@ -5094,42 +5358,20 @@ export const useGameStore = create<GameState>((set, get) => ({
       }
     }
 
-    const playerCities = s.cities.filter(c => c.ownerId === player.id);
-    const totalPop = playerCities.reduce((sum, c) => sum + c.population, 0);
-    const livingTroops = s.units.filter(u => u.ownerId === player.id && u.hp > 0).length;
-    const pendingLand = s.pendingRecruits.filter(
-      pr => 'effectiveArmsLevel' in pr && pr.playerId === player.id,
-    ).length;
-    if (livingTroops + pendingLand >= totalPop) {
-      get().addNotification('Troop limit: need more population to recruit (1 troop per population).', 'warning'); return;
-    }
-
-    const stats = getUnitStats({
-      type,
-      armsLevel: effectiveLevel as 1 | 2 | 3,
-      rangedVariant: resolvedRangedVariant,
-    });
-    const gunL2Upkeep = (stats as { gunL2Upkeep?: number }).gunL2Upkeep ?? 0;
-    if (gunL2Upkeep > 0) {
-      const totalGunsL2 = s.cities.filter(c => c.ownerId === HUMAN_ID).reduce((sum, c) => sum + (c.storage.gunsL2 ?? 0), 0);
-      if (totalGunsL2 < gunL2Upkeep) {
-        get().addNotification('Need L2 arms to recruit this unit! Build upgraded factory.', 'warning'); return;
-      }
-    }
-
     const spawnQ = city.q;
     const spawnR = city.r;
     const effArms: 1 | 2 | 3 =
       type === 'defender' || type === 'crusader_knight' ? 3 : wantL3 ? 3 : wantL2 ? 2 : 1;
 
     let updatedCities = s.cities;
-    if (stoneCost > 0 || ironCost > 0 || refinedWoodCost > 0) {
+    if (stoneCost > 0 || woodCost > 0 || ironCost > 0 || refinedWoodCost > 0) {
       updatedCities = s.cities.map(c => {
         if (c.id !== cityId) return c;
         const stone = Math.max(0, (c.storage.stone ?? 0) - stoneCost);
+        const wood = Math.max(0, (c.storage.wood ?? 0) - woodCost);
         const iron = Math.max(0, (c.storage.iron ?? 0) - ironCost);
         const refinedWood = Math.max(0, (c.storage.refinedWood ?? 0) - refinedWoodCost);
-        return { ...c, storage: { ...c.storage, stone, iron, refinedWood } };
+        return { ...c, storage: { ...c.storage, stone, wood, iron, refinedWood } };
       });
     }
 
@@ -5181,6 +5423,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       targetStackId = ar.id;
     }
 
+    const battalion = buildBattalionTrainingFields(type, effArms, popCost);
     const prItem: PendingLandRecruit = {
       id: generateId('pr'),
       playerId: HUMAN_ID,
@@ -5192,27 +5435,16 @@ export const useGameStore = create<GameState>((set, get) => ({
         : {}),
       spawnQ,
       spawnR,
-      completesAtCycle: s.cycle + 1,
+      ...battalion,
+      goldPaid: goldCost,
+      stonePaid: stoneCost,
+      woodPaid: woodCost,
+      ironPaid: ironCost,
+      refinedWoodPaid: refinedWoodCost,
       ...(targetStackId ? { stackId: targetStackId } : {}),
     };
 
     const nextPlayers = s.players.map(p => p.id === player.id ? { ...p, gold: p.gold - goldCost } : p);
-    if (gunL2Upkeep > 0) {
-      updatedCities = updatedCities.slice();
-      for (let i = 0; i < updatedCities.length; i++) {
-        if (updatedCities[i].ownerId !== HUMAN_ID) continue;
-        if ((updatedCities[i].storage.gunsL2 ?? 0) >= gunL2Upkeep) {
-          updatedCities[i] = {
-            ...updatedCities[i],
-            storage: {
-              ...updatedCities[i].storage,
-              gunsL2: (updatedCities[i].storage.gunsL2 ?? 0) - gunL2Upkeep,
-            },
-          };
-          break;
-        }
-      }
-    }
 
     set({
       players: nextPlayers,
@@ -5222,16 +5454,23 @@ export const useGameStore = create<GameState>((set, get) => ({
     });
     const tierLabel = wantL3 ? `${ARMS_TIER_LABELS[3]} ` : wantL2 ? `${ARMS_TIER_LABELS[2]} ` : `${ARMS_TIER_LABELS[1]} `;
     const rwPart = refinedWoodCost > 0 ? `, ${refinedWoodCost} ref.` : '';
+    const woodPart = woodCost > 0 ? `, ${woodCost} wood` : '';
     const costStr =
       ironCost > 0
         ? (goldCost > 0 ? `${goldCost}g, ${ironCost} iron${rwPart}` : `${ironCost} iron${rwPart}`)
         : stoneCost > 0
-          ? `${goldCost}g, ${stoneCost} stone${rwPart}`
-          : refinedWoodCost > 0
-            ? `${goldCost}g${rwPart}`
-            : `${goldCost}g`;
+          ? `${goldCost}g, ${stoneCost} stone${woodPart}${rwPart}`
+          : woodCost > 0
+            ? `${goldCost}g${woodPart}${rwPart}`
+            : refinedWoodCost > 0
+              ? `${goldCost}g${rwPart}`
+              : `${goldCost}g`;
     const displayName = getUnitDisplayName(type, effectiveLevel, resolvedRangedVariant);
-    get().addNotification(`Training ${tierLabel}${displayName} — ready next cycle. (${costStr})`, 'info');
+    const cycles = battalion.trainingCyclesTotal ?? 0;
+    get().addNotification(
+      `Training ${tierLabel}${displayName} — ${cycles} cycles; swords and fine steel issue from armories. (${costStr})`,
+      'info',
+    );
   },
 
   setCityArcherDoctrineL3: (cityId, doctrine) => {
@@ -5699,6 +5938,13 @@ export const useGameStore = create<GameState>((set, get) => ({
     if (!spawn) {
       get().addNotification('No free water hex next to the shipyard.', 'warning'); return;
     }
+    const playerCitiesPop = s.cities.filter(c => c.ownerId === player.id);
+    const totalPop = playerCitiesPop.reduce((sum, c) => sum + c.population, 0);
+    const popUsed = computeEmpirePopUsedForPlayer(s.units, s.pendingRecruits, player.id);
+    if (popUsed + getUnitPopCost(shipType) > totalPop) {
+      get().addNotification('Troop limit: not enough population for this ship.', 'warning');
+      return;
+    }
     const woodCost = costs.wood ?? 0;
     const rwCost = costs.refinedWood ?? 0;
     const shipItem: PendingShipRecruit = {
@@ -6006,7 +6252,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         .filter(c => c.cityId === cityId && c.type === 'wall_section')
         .map(c => tileKey(c.q, c.r)),
     );
-    const next = getNextWallBuildHex(city, s.tiles, built, queued);
+    const next = getNextWallBuildHex(city, s.tiles, built, queued, city.ownerId === HUMAN_ID ? s.exploredHexes : null);
     if (!next) {
       if (city.ownerId === HUMAN_ID && !opts?.silent) {
         get().addNotification(`No wall gaps left to build around ${city.name}.`, 'info');
@@ -6059,6 +6305,10 @@ export const useGameStore = create<GameState>((set, get) => ({
       get().addNotification(msg, 'warning'); return;
     }
     const hexKey = tileKey(q, r);
+    if (!s.exploredHexes.has(hexKey)) {
+      get().addNotification('That hex is not explored yet — expand vision before building here.', 'warning');
+      return;
+    }
     if (s.cities.some(c => c.buildings.some(b => tileKey(b.q, b.r) === hexKey))) {
       get().addNotification('Already a building there!', 'warning'); return;
     }
@@ -6107,11 +6357,16 @@ export const useGameStore = create<GameState>((set, get) => ({
   addRoadPathHex: (q, r) => {
     const s = get();
     if (s.uiMode !== 'build_road') return;
-    const tile = s.tiles.get(tileKey(q, r));
+    const rk = tileKey(q, r);
+    if (!s.exploredHexes.has(rk)) {
+      get().addNotification('Road path must stay in explored territory.', 'warning');
+      return;
+    }
+    const tile = s.tiles.get(rk);
     if (!tile || tile.biome === 'water') return;  // allow roads on mountains for mine connectivity
     if (tile.hasRoad) return;
     if (s.roadConstructions.some(rc => rc.q === q && rc.r === r)) return;
-    const key = tileKey(q, r);
+    const key = rk;
     const idx = s.roadPathSelection.findIndex(h => tileKey(h.q, h.r) === key);
     if (idx >= 0) {
       const sel = [...s.roadPathSelection];
@@ -6129,11 +6384,13 @@ export const useGameStore = create<GameState>((set, get) => ({
     }
     const newSites: RoadConstructionSite[] = [];
     for (const { q, r } of s.roadPathSelection) {
-      const tile = s.tiles.get(tileKey(q, r));
+      const pk = tileKey(q, r);
+      if (!s.exploredHexes.has(pk)) continue;
+      const tile = s.tiles.get(pk);
       if (!tile || tile.biome === 'water') continue;  // allow roads on mountains for mine connectivity
       if (tile.hasRoad) continue;
       if (s.roadConstructions.some(rc => rc.q === q && rc.r === r)) continue;
-      const terr = s.territory.get(tileKey(q, r));
+      const terr = s.territory.get(pk);
       if (!terr || terr.playerId !== HUMAN_ID) continue;
       const rcity = s.cities.find(c => c.id === terr.cityId);
       if (!rcity?.buildings.some(b => b.type === 'academy')) continue;
@@ -6234,6 +6491,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         stackMoveUnitId: null,
         uiMode: 'normal',
         pendingMove: null,
+        pendingCityPatrol: null,
       });
       get().addNotification('Raiding enemy building — units march to destroy it.', 'info');
       return;
@@ -6288,11 +6546,162 @@ export const useGameStore = create<GameState>((set, get) => ({
     const s = get();
     if (!s.pendingMove) return;
     get().moveSelectedUnits(s.pendingMove.toQ, s.pendingMove.toR);
-    set({ pendingMove: null });
+    set({ pendingMove: null, pendingCityPatrol: null });
   },
 
   cancelMove: () => {
-    set({ pendingMove: null });
+    set({ pendingMove: null, pendingCityPatrol: null });
+  },
+
+  queueCityPatrolOfferIfEligible: (toQ, toR) => {
+    const s = get();
+    if (s.gameMode === 'multiplayer') return false;
+    if (!['human_vs_ai', 'human_solo', 'battle_test'].includes(s.gameMode)) return false;
+    if (s.phase !== 'playing' && s.phase !== 'starting_game') return false;
+    if (!s.selectedHex) return false;
+    if (s.uiMode !== 'move' && s.uiMode !== 'intercept' && s.uiMode !== 'normal') return false;
+
+    const enemyLandHere = s.units.some(
+      u => u.q === toQ && u.r === toR && u.hp > 0 && u.ownerId !== HUMAN_ID && isLandMilitaryUnit(u),
+    );
+    if (enemyLandHere) return false;
+
+    const terr = s.territory.get(tileKey(toQ, toR));
+    if (!terr || terr.playerId !== HUMAN_ID) return false;
+    const city = s.cities.find(c => c.id === terr.cityId);
+    if (!city || city.ownerId !== HUMAN_ID) return false;
+
+    const { q: fromQ, r: fromR } = s.selectedHex;
+    const stack = s.units.filter(
+      u => u.q === fromQ && u.r === fromR && u.ownerId === HUMAN_ID && u.hp > 0 && !u.aboardShipId,
+    );
+    const stackKey = tileKey(fromQ, fromR);
+    const pids =
+      s.pendingTacticalOrders !== null
+        ? resolveParticipatingUnitIdsForTactical(
+            stack,
+            stackKey,
+            s.tacticalIncludedUnitTypes,
+            s.tacticalStackUnitTypeFocus,
+          )
+        : resolveParticipatingUnitIds(stack, s.tacticalIncludedUnitTypes);
+    if (pids !== undefined && pids.length === 0) return false;
+    let marching = pids ? stack.filter(u => pids.includes(u.id)) : stack;
+    if (s.stackMoveUnitId) {
+      const focused = marching.find(u => u.id === s.stackMoveUnitId && isNavalUnitType(u.type));
+      if (focused) marching = [focused];
+    }
+    marching = marching.filter(u => isLandMilitaryUnit(u));
+    if (marching.length === 0 || marching.some(u => isNavalUnitType(u.type))) return false;
+
+    set({ pendingCityPatrol: { cityId: terr.cityId, toQ, toR }, pendingMove: null });
+    return true;
+  },
+
+  confirmCityBorderPatrol: () => {
+    const s = get();
+    const pc = s.pendingCityPatrol;
+    if (!pc || !s.selectedHex) return;
+    const city = s.cities.find(c => c.id === pc.cityId);
+    if (!city || city.ownerId !== HUMAN_ID) {
+      set({ pendingCityPatrol: null });
+      return;
+    }
+    const { q: fromQ, r: fromR } = s.selectedHex;
+    const { cityId } = pc;
+    const stack = s.units.filter(
+      u => u.q === fromQ && u.r === fromR && u.ownerId === HUMAN_ID && u.hp > 0 && !u.aboardShipId,
+    );
+    const stackKey = tileKey(fromQ, fromR);
+    const pids =
+      s.pendingTacticalOrders !== null
+        ? resolveParticipatingUnitIdsForTactical(
+            stack,
+            stackKey,
+            s.tacticalIncludedUnitTypes,
+            s.tacticalStackUnitTypeFocus,
+          )
+        : resolveParticipatingUnitIds(stack, s.tacticalIncludedUnitTypes);
+    if (pids !== undefined && pids.length === 0) {
+      get().addNotification('No units match the current type filter on this stack.', 'warning');
+      set({ pendingCityPatrol: null });
+      return;
+    }
+    let marching = pids ? stack.filter(u => pids.includes(u.id)) : stack;
+    if (s.stackMoveUnitId) {
+      const focused = marching.find(u => u.id === s.stackMoveUnitId && isNavalUnitType(u.type));
+      if (focused) marching = [focused];
+    }
+    marching = marching.filter(u => isLandMilitaryUnit(u));
+    if (marching.length === 0) {
+      get().addNotification('Need land armies to patrol the border.', 'warning');
+      set({ pendingCityPatrol: null });
+      return;
+    }
+
+    const frontierRaw = getCityFrontierLandHexKeys(cityId, s.territory, s.tiles);
+    const terrLand = new Set(
+      getCityTerritory(cityId, s.territory).filter(k => s.tiles.get(k)?.biome !== 'water'),
+    );
+    let goals =
+      frontierRaw.length > 0
+        ? sortPatrolFrontierKeys(frontierRaw, city.q, city.r)
+        : sortPatrolFrontierKeys([...terrLand], city.q, city.r);
+    const F = Math.max(1, goals.length);
+    const N = marching.length;
+    const marchIds = new Set(marching.map(u => u.id));
+
+    const newUnits = s.units.map(u => {
+      if (!marchIds.has(u.id)) return u;
+      const idx = marching.findIndex(x => x.id === u.id);
+      const slot = N <= F ? Math.floor((idx * F) / N) % F : idx % F;
+      const next: Unit = { ...u };
+      clearPatrolFieldsMutable(next);
+      delete next.targetQ;
+      delete next.targetR;
+      next.status = 'idle';
+      next.nextMoveAt = 0;
+      delete next.marchInitialHexDistance;
+      delete next.moveLegMs;
+      delete next.retaliateUnitId;
+      delete next.retaliateDefenseId;
+      delete next.attackBuildingTarget;
+      delete next.incorporateVillageAt;
+      delete next.defendCityId;
+      delete next.cityDefenseMode;
+      delete next.siegingCityId;
+      delete next.assaulting;
+      delete next.attackWaveHold;
+      delete next.marchEchelonHold;
+      next.patrolCenterQ = city.q;
+      next.patrolCenterR = city.r;
+      delete next.patrolRadius;
+      delete next.patrolHexKeys;
+      next.patrolCityId = cityId;
+      next.patrolFrontSlot = slot;
+      return next;
+    });
+
+    set({
+      units: newUnits,
+      pendingCityPatrol: null,
+      pendingMove: null,
+      uiMode: 'normal',
+      selectedHex: s.selectedHex,
+    });
+    get().addNotification(`${city.name}: armies patrolling the city border.`, 'info');
+  },
+
+  cancelCityPatrolOffer: () => {
+    set({ pendingCityPatrol: null });
+  },
+
+  marchFromCityPatrolOffer: () => {
+    const s = get();
+    if (!s.pendingCityPatrol || !s.selectedHex) return;
+    const { toQ, toR } = s.pendingCityPatrol;
+    set({ pendingCityPatrol: null });
+    get().setPendingMove(toQ, toR);
   },
 
   moveSelectedUnits: (toQ, toR) => {
@@ -6587,6 +6996,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       stackMoveUnitId: null,
       uiMode: 'move',
       pendingMove: null,
+      pendingCityPatrol: null,
       cityLogisticsOpen: false,
     });
   },
@@ -7534,7 +7944,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     if (toRemove.length === 0) return;
     const popByCity: Record<string, number> = {};
     for (const u of toRemove) {
-      if (u.originCityId) popByCity[u.originCityId] = (popByCity[u.originCityId] ?? 0) + 1;
+      if (u.originCityId) popByCity[u.originCityId] = (popByCity[u.originCityId] ?? 0) + getUnitPopCost(u.type);
     }
     const ids = new Set(toRemove.map(u => u.id));
     const newUnits = s.units.filter(u => !ids.has(u.id));

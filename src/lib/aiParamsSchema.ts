@@ -152,37 +152,10 @@ export const MUTATION_RANGES: Record<Exclude<EvolvableParamKey, 'militaryLevelMi
 };
 
 /**
- * Params not yet consumed by planAiTurn (or fixed by design); excluded so train-ai does not waste mutation budget.
- * Wired params (l3AcquisitionWeight, l2AdoptionRate, etc.) stay in the mutable set.
+ * Params excluded from evolution (fixed by design or experimental). All former “unwired” keys are now
+ * consumed by planAiTurn — keep this list small so train-ai searches live behavior.
  */
-export const MUTATION_EXCLUDED_KEYS: EvolvableParamKey[] = [
-  'builderRecruitChance',
-  'builderRecruitForMinesAndSiege',
-  'minePriorityThreshold',
-  'targetRangedShare',
-  'targetSiegeShare',
-  'compositionCorrectionStrength',
-  'militaryLevelMixTarget',
-  'militaryLevelMixCorrectionStrength',
-  'l3IronPerUnitTarget',
-  'l2StonePerUnitTarget',
-  'assaultWingShare',
-  'screenWingShare',
-  'maxChaseDistance',
-  'targetDispersion',
-  'villageDefensePriority',
-  'villageRecapturePriority',
-  'frontlineMeleeShare',
-  'backlineRangedDistance',
-  'siegeBacklineDistance',
-  'flankCavalryShare',
-  'formationCohesion',
-  'defenderCityHexCoverageTarget',
-  'defenderAssignmentPriority',
-  'wallBuildPerCityTarget',
-  'wallToDefenderSynergyWeight',
-  'wallClosureUptimeWeight',
-];
+export const MUTATION_EXCLUDED_KEYS: EvolvableParamKey[] = [];
 
 /** Normalize L1+L2+L3 to sum to 1; clamp each to [0,1]. */
 export function normalizeMilitaryLevelMix(m: MilitaryLevelMix): MilitaryLevelMix {
@@ -242,6 +215,18 @@ export interface TrendParamOverride {
 /** Overrides keyed by param name. When present, use these bounds and scale strength. */
 export type TrendMutationOverrides = Partial<Record<Exclude<EvolvableParamKey, 'militaryLevelMixTarget'>, TrendParamOverride>>;
 
+/** Params tuned in naval-only education runs (`train-ai-naval`); land/economy stay fixed from seed. */
+export const NAVAL_EDUCATION_PARAM_KEYS = [
+  'navalRecruitBias',
+  'transportPriority',
+  'minShipsBeforeInvade',
+] as const satisfies readonly EvolvableParamKey[];
+
+export type MutateParamsOptions = {
+  /** If set, only these keys (intersected with non-excluded scalars) are mutated; others keep parent values. */
+  onlyKeys?: readonly EvolvableParamKey[];
+};
+
 function mutateScalar(
   parent: AiParams,
   key: Exclude<EvolvableParamKey, 'militaryLevelMixTarget'>,
@@ -263,17 +248,22 @@ function mutateScalar(
 /**
  * Mutate all evolvable params with safe min/max clamps. Structured param (militaryLevelMixTarget) is normalized.
  * If trendOverrides provided (from artifacts/trend-report.json), uses recommendedMutationRange and classification-based strength.
+ * If options.onlyKeys is set, only those keys are mutated (for naval education or ablations).
  */
 export function mutateParams(
   parent: AiParams,
   strength: number,
   trendOverrides?: TrendMutationOverrides,
+  options?: MutateParamsOptions,
 ): AiParams {
   const base = { ...DEFAULT_AI_PARAMS, ...parent };
   const out: AiParams = { ...base };
+  const only = options?.onlyKeys;
+  const allowKey = (key: EvolvableParamKey) => !only || (only as readonly EvolvableParamKey[]).includes(key);
 
   for (const key of SCALAR_PARAM_KEYS) {
     if (MUTATION_EXCLUDED_KEYS.includes(key)) continue;
+    if (!allowKey(key)) continue;
     (out as unknown as Record<string, number>)[key] = mutateScalar(
       out,
       key,
@@ -282,7 +272,7 @@ export function mutateParams(
     );
   }
 
-  if (!MUTATION_EXCLUDED_KEYS.includes('militaryLevelMixTarget')) {
+  if (!MUTATION_EXCLUDED_KEYS.includes('militaryLevelMixTarget') && allowKey('militaryLevelMixTarget')) {
     const mix = base.militaryLevelMixTarget ?? { L1: 0.6, L2: 0.3, L3: 0.1 };
     const L1 = Math.max(0, Math.min(1, mix.L1 + (Math.random() - 0.5) * 2 * strength * 0.3));
     const L2 = Math.max(0, Math.min(1, mix.L2 + (Math.random() - 0.5) * 2 * strength * 0.3));

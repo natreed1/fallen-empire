@@ -18,6 +18,7 @@ import {
   isNavalUnitType, MOVE_ORDER_MAX_IN_TERRITORY_BAND,
   ensureCityBuildingHp, isCityBuildingOperational,
   SPECIAL_REGION_OVERLAY_COLORS,
+  getUnitDisplayName,
   type SpecialRegionKind,
   type ScrollRelicSite,
   type Player,
@@ -96,6 +97,128 @@ function rgbaFromHex(hex: string, alpha: number): string {
   const g = Math.round(c.g * 255);
   const b = Math.round(c.b * 255);
   return `rgba(${r},${g},${b},${alpha})`;
+}
+
+const MAP_ARMY_NAMEPLATE_MAX = 13;
+
+function truncateMapArmyLabel(s: string, max = MAP_ARMY_NAMEPLATE_MAX): string {
+  const t = s.trim();
+  if (t.length <= max) return t;
+  return `${t.slice(0, Math.max(1, max - 1))}…`;
+}
+
+/**
+ * One map counter = one field force: land military is labeled an army (named field army when assigned).
+ * Naval counters stay “ship”; builders stay “Builder”.
+ */
+function mapCounterArmyNameplate(
+  u: Unit,
+  operationalArmies: { id: string; name: string }[],
+  ownerColor: string,
+): { line1: string; line2?: string; title: string; borderColor: string } {
+  const borderColor = rgbaFromHex(ownerColor, u.ownerId === PLAYER_HUMAN_ID ? 0.55 : 0.48);
+  if (u.type === 'builder') {
+    return {
+      line1: 'Builder',
+      title: 'Builder — workers and construction',
+      borderColor,
+    };
+  }
+  if (isNavalUnitType(u.type)) {
+    const n = getUnitDisplayName(u.type, u.armsLevel, u.rangedVariant);
+    return {
+      line1: truncateMapArmyLabel(n),
+      title: `${n} — ship · hull ${u.hp}/${u.maxHp}`,
+      borderColor,
+    };
+  }
+  if (u.type === 'scout') {
+    return {
+      line1: 'Scout',
+      line2: 'detachment',
+      title: `Scout detachment · ${u.hp}/${u.maxHp} HP`,
+      borderColor,
+    };
+  }
+  const role = getUnitDisplayName(u.type, u.armsLevel, u.rangedVariant);
+  const oa = u.armyId ? operationalArmies.find(a => a.id === u.armyId) : undefined;
+  if (oa) {
+    return {
+      line1: truncateMapArmyLabel(oa.name),
+      line2: role,
+      title: `${oa.name} — ${role} army · ${u.hp}/${u.maxHp} HP`,
+      borderColor,
+    };
+  }
+  return {
+    line1: truncateMapArmyLabel(`${role} army`),
+    title: `${role} army · ${u.hp}/${u.maxHp} HP`,
+    borderColor,
+  };
+}
+
+function UnitMapArmyNameplate({
+  x, y, z, line1, line2, title, borderColor,
+}: {
+  x: number;
+  y: number;
+  z: number;
+  line1: string;
+  line2?: string;
+  title: string;
+  borderColor: string;
+}) {
+  return (
+    <Html
+      position={[x, y, z]}
+      transform
+      sprite
+      center
+      scale={0.35}
+      zIndexRange={[18, 36]}
+      pointerEvents="none"
+      style={{ pointerEvents: 'none', userSelect: 'none' }}
+    >
+      <div
+        title={title}
+        style={{
+          maxWidth: '92px',
+          textAlign: 'center',
+          padding: '1px 4px 2px',
+          borderRadius: '4px',
+          background: 'rgba(6,10,16,0.88)',
+          border: `1px solid ${borderColor}`,
+          boxShadow: '0 1px 4px rgba(0,0,0,0.65)',
+        }}
+      >
+        <div
+          style={{
+            fontSize: '8px',
+            fontWeight: 800,
+            fontFamily: 'system-ui,sans-serif',
+            color: '#f5e6c8',
+            textShadow: '0 1px 2px #000',
+            lineHeight: 1.15,
+          }}
+        >
+          {line1}
+        </div>
+        {line2 ? (
+          <div
+            style={{
+              fontSize: '7px',
+              fontWeight: 600,
+              fontFamily: 'system-ui,sans-serif',
+              color: 'rgba(245,230,200,0.78)',
+              lineHeight: 1.1,
+            }}
+          >
+            {line2}
+          </div>
+        ) : null}
+      </div>
+    </Html>
+  );
 }
 
 const HEX_SEGMENTS = 6;
@@ -608,7 +731,8 @@ function SpecialTerrainPropLayer({ tiles, cities }: { tiles: Map<string, Tile>; 
         else if (kind === 'isle_lost') tex = texIsle;
         const [cx, cz] = axialToWorld(tile.q, tile.r, HEX_RADIUS);
         const baseHash = ((tile.q * 62837111) ^ (tile.r * 489287499)) >>> 0;
-        const nProps = 2 + (baseHash % 2);
+        /** Mexca uses full hex-cap ruin art; skip stacked billboards so props do not clutter the tiles. */
+        const nProps = kind === 'mexca' ? 0 : 2 + (baseHash % 2);
         const key = tileKey(tile.q, tile.r);
         const sprites: JSX.Element[] = [];
         for (let i = 0; i < nProps; i++) {
@@ -1722,8 +1846,11 @@ function UnitHpBars({ units, tiles, cities, players }: { units: Unit[]; tiles: M
       const ownerId = lead.ownerId;
       const isHuman = ownerId === PLAYER_HUMAN_ID;
       const factionColor = playerColorOrDefault(players, ownerId);
+      const navalN = stackUnits.filter(u => isNavalUnitType(u.type)).length;
+      const stackKindLabel =
+        navalN === stackUnits.length ? 'naval' : navalN === 0 ? 'land' : 'mixed';
       return {
-        key, q, r, totalHp, totalMaxHp, count: stackUnits.length, isHuman, factionColor,
+        key, q, r, totalHp, totalMaxHp, count: stackUnits.length, isHuman, factionColor, stackKindLabel,
       };
     });
   }, [units, cities, players]);
@@ -1739,6 +1866,10 @@ function UnitHpBars({ units, tiles, cities, players }: { units: Unit[]; tiles: M
         const ratio = stack.totalMaxHp > 0 ? stack.totalHp / stack.totalMaxHp : 0;
         const barColor = ratio > 0.6 ? '#22c55e' : ratio > 0.3 ? '#eab308' : '#ef4444';
         const accent = stack.isHuman ? 'rgba(100,180,255,0.65)' : rgbaFromHex(stack.factionColor, 0.85);
+        const stackKind =
+          stack.stackKindLabel === 'naval' ? 'ship' : stack.stackKindLabel === 'land' ? 'army' : 'force';
+        const stackKindPlural =
+          stack.stackKindLabel === 'naval' ? 'ships' : stack.stackKindLabel === 'land' ? 'armies' : 'forces';
 
         return (
           <group key={stack.key} position={[x, h + 1.15, z]}>
@@ -1756,6 +1887,12 @@ function UnitHpBars({ units, tiles, cities, players }: { units: Unit[]; tiles: M
                 borderBottom: `2px solid ${accent}`,
                 paddingBottom: '2px',
               }}>
+                <span style={{
+                  fontSize: '9px', fontWeight: 700, fontFamily: 'system-ui,sans-serif',
+                  color: '#e8dcc8', textShadow: '0 0 3px #000', lineHeight: 1,
+                }}>
+                  {stack.count} {stack.count === 1 ? stackKind : stackKindPlural}
+                </span>
                 <span style={{
                   fontSize: '11px', fontWeight: 800, fontFamily: 'monospace',
                   color: barColor, textShadow: '0 0 4px #000, 0 0 4px #000, 0 0 2px #000',
@@ -1916,6 +2053,7 @@ const UNIT_SPRITE_KEY: Record<string, string> = {
   trebuchet: 'trebuchet',
   battering_ram: 'infantry', // placeholder until siege sprite exists
   defender: 'infantry', // reuse infantry sprite until defender.png exists
+  scout: 'cavalry',
   scout_ship: 'scout_ship',
   warship: 'warship',
   transport_ship: 'transport_ship',
@@ -2557,6 +2695,7 @@ const UNIT_SPRITE_SCALE: Record<string, [number, number]> = {
 };
 
 function UnitMarkers({ units, tiles, cities, players }: { units: Unit[]; tiles: Map<string, Tile>; cities: City[]; players: Player[] }) {
+  const operationalArmies = useGameStore(s => s.operationalArmies ?? []);
   const textures = useGameTextures([
     'infantry', 'cavalry', 'archer', 'marksman', 'longbowman', 'paladin', 'knight',
     'horse_archer', 'crusader_knight', 'builder', 'trebuchet', 'defender',
@@ -2589,6 +2728,7 @@ function UnitMarkers({ units, tiles, cities, players }: { units: Unit[]; tiles: 
 
       const tintColor = blendArmsTierTint(unitSpriteTint(players, u.ownerId, u.status), u);
       const ownerColor = playerColorOrDefault(players, u.ownerId);
+      const nameplate = mapCounterArmyNameplate(u, operationalArmies, ownerColor);
 
       return {
         id: u.id,
@@ -2603,9 +2743,10 @@ function UnitMarkers({ units, tiles, cities, players }: { units: Unit[]; tiles: 
         moving: u.status === 'moving',
         ownerId: u.ownerId,
         ownerColor,
+        nameplate,
       };
     });
-  }, [units, tiles, cities, players]);
+  }, [units, tiles, cities, players, operationalArmies]);
 
   const ownerRingTex = useMemo(getOwnerRingTexture, []);
   if (positioned.length === 0) return null;
@@ -2643,6 +2784,15 @@ function UnitMarkers({ units, tiles, cities, players }: { units: Unit[]; tiles: 
                 sy={sy}
                 tex={tex}
               />
+              <UnitMapArmyNameplate
+                x={u.x}
+                y={u.y - 0.52}
+                z={u.z}
+                line1={u.nameplate.line1}
+                line2={u.nameplate.line2}
+                title={u.nameplate.title}
+                borderColor={u.nameplate.borderColor}
+              />
             </Fragment>
           );
         }
@@ -2664,6 +2814,15 @@ function UnitMarkers({ units, tiles, cities, players }: { units: Unit[]; tiles: 
                 moving={u.moving}
                 ownerId={u.ownerId}
               />
+              <UnitMapArmyNameplate
+                x={u.x}
+                y={u.y - 0.52}
+                z={u.z}
+                line1={u.nameplate.line1}
+                line2={u.nameplate.line2}
+                title={u.nameplate.title}
+                borderColor={u.nameplate.borderColor}
+              />
             </Fragment>
           );
         }
@@ -2673,6 +2832,15 @@ function UnitMarkers({ units, tiles, cities, players }: { units: Unit[]; tiles: 
             <sprite position={[u.x, u.y, u.z]} scale={[sx, sy, 1]} raycast={() => null} renderOrder={MAP_ENTITY_RENDER_ORDER}>
               <spriteMaterial map={tex} {...MAP_ENTITY_SPRITE_MAT} color={u.tint} />
             </sprite>
+            <UnitMapArmyNameplate
+              x={u.x}
+              y={u.y - 0.52}
+              z={u.z}
+              line1={u.nameplate.line1}
+              line2={u.nameplate.line2}
+              title={u.nameplate.title}
+              borderColor={u.nameplate.borderColor}
+            />
           </Fragment>
         );
       })}
@@ -2753,7 +2921,7 @@ function GarrisonBadges({ cities, units, tiles, players }: { cities: City[]; uni
                   fontSize: '11px', fontWeight: 800, fontFamily: 'system-ui,sans-serif',
                   color: '#f5e6c8', textShadow: '0 1px 2px #000',
                 }}>
-                  {b.defenseLabel} {b.count}
+                  {b.defenseLabel} · {b.count} {b.count === 1 ? 'army' : 'armies'}
                 </span>
                 <span style={{ fontSize: '9px', fontWeight: 700, color: barColor, fontFamily: 'monospace' }}>
                   {b.totalHp} HP
@@ -3137,11 +3305,12 @@ function SelectedDefenseTowerRangeOverlay({
 
 // ─── Deposit Highlight (Mine/Quarry build mode) ─────────────────────
 
-function DepositHighlightOverlay({ tiles, cities, constructions, depositType }: {
+function DepositHighlightOverlay({ tiles, cities, constructions, depositType, exploredHexKeys }: {
   tiles: Map<string, Tile>;
   cities: City[];
   constructions: ConstructionSite[];
   depositType: 'mine' | 'quarry' | 'gold_mine' | 'logging_hut';
+  exploredHexKeys: Set<string>;
 }) {
   const hexes = useMemo(() => {
     const result: Tile[] = [];
@@ -3150,6 +3319,7 @@ function DepositHighlightOverlay({ tiles, cities, constructions, depositType }: 
     const hasConstruction = (q: number, r: number) =>
       constructions.some(cs => cs.q === q && cs.r === r);
     tiles.forEach(tile => {
+      if (!exploredHexKeys.has(tileKey(tile.q, tile.r))) return;
       if (tile.biome === 'water') return;
       if (depositType !== 'gold_mine' && depositType !== 'logging_hut' && tile.biome === 'mountain') return;
       const match = depositType === 'mine' ? tile.hasMineDeposit : depositType === 'quarry' ? tile.hasQuarryDeposit : depositType === 'logging_hut' ? tile.biome === 'forest' : tile.hasGoldMineDeposit;
@@ -3157,7 +3327,7 @@ function DepositHighlightOverlay({ tiles, cities, constructions, depositType }: 
       result.push(tile);
     });
     return result;
-  }, [tiles, cities, constructions, depositType]);
+  }, [tiles, cities, constructions, depositType, exploredHexKeys]);
 
   const highlightColor = depositType === 'mine' ? '#b45309' : depositType === 'quarry' ? QUARRY_DEPOSIT_COLOR : depositType === 'logging_hut' ? WOOD_DEPOSIT_COLOR : GOLD_MINE_DEPOSIT_COLOR;
   const geometry = useMemo(() => makeHexGeo(HEX_RADIUS * HEX_INNER_RATIO * 0.92, 0.08), []);
@@ -3625,6 +3795,12 @@ export default function HexGrid() {
     return { coastalWater, deepWater, beachLand };
   }, [discoveredTilesMap]);
 
+  /** Scroll wilds — Mexca: authored desert-ruin hex caps (`sr_mexca_*`) over base biome paint. */
+  const mexcaHexBuckets = useMemo(() => {
+    const mexcaTiles = Array.from(discoveredTilesMap.values()).filter(t => t.specialTerrainKind === 'mexca');
+    return bucketTilesByVariant(mexcaTiles);
+  }, [discoveredTilesMap]);
+
   // Territory by player
   const territoryByPlayer = useMemo(() => {
     const byPlayer: Record<string, string[]> = {};
@@ -3801,6 +3977,17 @@ export default function HexGrid() {
       <LandBiomeVariantLayers tiles={biomeGroups.groups.mountain} biome="mountain" />
       <LandBiomeVariantLayers tiles={biomeGroups.groups.desert} biome="desert" />
       <BeachSandLayer tiles={mapShoreline.beachLand} />
+      {[0, 1, 2, 3].map(v => (
+        <BiomeTextureLayer
+          key={`sr_mexca_${v}`}
+          tiles={mexcaHexBuckets[v]!}
+          textureKey={`sr_mexca_${v}`}
+          transparentMap
+          alphaTest={0.04}
+          renderOrder={4}
+          surfaceYOffset={0.022}
+        />
+      ))}
       <MedievalHexOutlineLayer tiles={Array.from(discoveredTilesMap.values())} />
       <MapEdgeOutlineLayer tiles={mapEdgeOutlineTiles} />
       <MountainSnowLayer tiles={biomeGroups.groups.mountain} tilesMap={discoveredTilesMap} />
@@ -3945,17 +4132,17 @@ export default function HexGrid() {
 
       {/* Mine deposit highlights (builder build mode) */}
       {uiMode === 'build_mine' && (
-        <DepositHighlightOverlay tiles={tiles} cities={cities} constructions={constructions} depositType="mine" />
+        <DepositHighlightOverlay tiles={tiles} cities={cities} constructions={constructions} depositType="mine" exploredHexKeys={exploredHexes} />
       )}
       {/* Quarry deposit highlights (builder build mode) */}
       {uiMode === 'build_quarry' && (
-        <DepositHighlightOverlay tiles={tiles} cities={cities} constructions={constructions} depositType="quarry" />
+        <DepositHighlightOverlay tiles={tiles} cities={cities} constructions={constructions} depositType="quarry" exploredHexKeys={exploredHexes} />
       )}
       {uiMode === 'build_gold_mine' && (
-        <DepositHighlightOverlay tiles={tiles} cities={cities} constructions={constructions} depositType="gold_mine" />
+        <DepositHighlightOverlay tiles={tiles} cities={cities} constructions={constructions} depositType="gold_mine" exploredHexKeys={exploredHexes} />
       )}
       {uiMode === 'build_logging_hut' && (
-        <DepositHighlightOverlay tiles={tiles} cities={cities} constructions={constructions} depositType="logging_hut" />
+        <DepositHighlightOverlay tiles={tiles} cities={cities} constructions={constructions} depositType="logging_hut" exploredHexKeys={exploredHexes} />
       )}
       {/* Road path preview (builder build mode) */}
       {uiMode === 'build_road' && roadPathSelection.length > 0 && (

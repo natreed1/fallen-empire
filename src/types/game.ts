@@ -349,7 +349,7 @@ export type BuildingType =
 /** Construction site type: buildings (in city) or field-built siege/scout/defense (builder on hex). */
 export type ConstructionSiteType = BuildingType | 'trebuchet' | 'scout_tower' | 'city_defense' | 'wall_section';
 export type UnitType =
-  | 'infantry' | 'cavalry' | 'ranged' | 'horse_archer' | 'crusader_knight' | 'builder' | 'trebuchet' | 'battering_ram' | 'defender'
+  | 'infantry' | 'cavalry' | 'ranged' | 'horse_archer' | 'crusader_knight' | 'builder' | 'trebuchet' | 'battering_ram' | 'defender' | 'scout'
   | 'scout_ship' | 'warship' | 'transport_ship' | 'fisher_transport' | 'capital_ship';
 
 /** L3 iron archer specialization (chosen once per city with L3 barracks). */
@@ -362,6 +362,45 @@ export const NAVAL_UNIT_TYPES: ReadonlySet<UnitType> = new Set([
 
 export function isNavalUnitType(type: UnitType): boolean {
   return NAVAL_UNIT_TYPES.has(type);
+}
+
+/** Population consumed by one unit (battalion / crew). Troop cap uses weighted sum. */
+export const UNIT_POP_COST: Record<UnitType, number> = {
+  infantry: 10,
+  cavalry: 12,
+  ranged: 8,
+  horse_archer: 12,
+  crusader_knight: 15,
+  builder: 2,
+  trebuchet: 15,
+  battering_ram: 12,
+  defender: 10,
+  scout: 1,
+  scout_ship: 3,
+  warship: 8,
+  transport_ship: 6,
+  fisher_transport: 2,
+  capital_ship: 10,
+};
+
+export function getUnitPopCost(type: UnitType): number {
+  return UNIT_POP_COST[type] ?? 1;
+}
+
+/** Training cycles before a battalion can finish (HoI-style; arms deliver in parallel). */
+export const BATTALION_TRAINING_CYCLES_L1 = 3;
+export const BATTALION_TRAINING_CYCLES_L2 = 4;
+export const BATTALION_TRAINING_CYCLES_L3 = 6;
+
+/** Tier-1 arms (stored as `guns`; UI: swords) required over training. */
+export function trainingQuotaGuns(popCost: number): number {
+  // Cap so a cohort can arm without outrunning early factory + barracks output (see gameLoop production).
+  return Math.max(1, Math.min(3, Math.ceil(popCost * 0.5)));
+}
+
+/** Tier-2 arms (stored as `gunsL2`; UI: fine steel) required over training for L2+. */
+export function trainingQuotaGunsL2(popCost: number): number {
+  return Math.max(1, Math.min(3, Math.ceil(popCost * 0.5)));
 }
 export type UnitStatus = 'idle' | 'moving' | 'fighting' | 'starving';
 export type ArmyStance = 'aggressive' | 'defensive' | 'passive' | 'skirmish' | 'hold_the_line';
@@ -696,6 +735,13 @@ export interface Unit {
   patrolRadius?: number;
   /** When set, patrol is limited to these hexes (from tactical paint); overrides disk wander. */
   patrolHexKeys?: string[];
+  /**
+   * City border patrol (move-click on your territory): roam that city's land tiles, preferring its
+   * territorial frontier; {@link patrolFrontSlot} picks a rotating goal along the sorted ring.
+   */
+  patrolCityId?: string;
+  /** Index for spreading units along the frontier ring (see {@link patrolCityId}). */
+  patrolFrontSlot?: number;
   /** When set, land military will auto-incorporate this neutral village on arrival (tactical order). */
   incorporateVillageAt?: { q: number; r: number };
   /** Auto-chase this enemy land unit (retaliation / close into range). Cleared when target dies. */
@@ -1062,10 +1108,10 @@ export const TECH_TREE: Record<TechId, TechDefinition> = {
   advanced_construction: {
     id: 'advanced_construction',
     label: 'Advanced Construction',
-    desc: 'Enables siege workshops.',
+    desc: 'Heavy timber and masonry techniques. Required before Siege Engineering.',
     researchCost: 60,
     prerequisites: ['masonry_1', 'forestry_1'],
-    unlocksBuildings: ['siege_workshop'],
+    unlocksBuildings: [],
     unlocksUnits: [],
   },
   military_tactics_1: {
@@ -1075,7 +1121,7 @@ export const TECH_TREE: Record<TechId, TechDefinition> = {
     researchCost: 0,
     prerequisites: [],
     unlocksBuildings: ['barracks'],
-    unlocksUnits: ['infantry', 'ranged', 'builder'],
+    unlocksUnits: ['infantry', 'ranged', 'builder', 'scout'],
   },
   military_tactics_2: {
     id: 'military_tactics_2',
@@ -1090,10 +1136,10 @@ export const TECH_TREE: Record<TechId, TechDefinition> = {
   siege_engineering: {
     id: 'siege_engineering',
     label: 'Siege Engineering',
-    desc: 'Enables trebuchets and battering rams.',
+    desc: 'Siege workshop — assembles trebuchets and battering rams from stone and timber (keep both types in balance).',
     researchCost: 55,
     prerequisites: ['military_tactics_2', 'advanced_construction'],
-    unlocksBuildings: [],
+    unlocksBuildings: ['siege_workshop'],
     unlocksUnits: ['trebuchet', 'battering_ram'],
   },
   naval_technology: {
@@ -1379,8 +1425,15 @@ export const BUILDING_BP_COST: Record<BuildingType, number> = {
 export const TREBUCHET_FIELD_BP_COST = 90;
 /** Gold cost to start field trebuchet construction (same as barracks recruit). */
 export const TREBUCHET_FIELD_GOLD_COST = 8;
-/** Refined wood from city storage (sawmill) for trebuchet — siege workshop recruit and field build. */
-export const TREBUCHET_REFINED_WOOD_COST = 4;
+/** Stone from city storage for siege workshop recruit and field trebuchet (balanced with {@link TREBUCHET_SIEGE_WOOD_COST}). */
+export const TREBUCHET_SIEGE_STONE_COST = 4;
+/** Raw wood from city storage for siege trebuchet (balanced with stone). */
+export const TREBUCHET_SIEGE_WOOD_COST = 4;
+/** Stone for battering ram recruit (balanced with {@link BATTERING_RAM_SIEGE_WOOD_COST}). */
+export const BATTERING_RAM_SIEGE_STONE_COST = 4;
+export const BATTERING_RAM_SIEGE_WOOD_COST = 4;
+/** Refined wood (sawmill) for trebuchet — workshop recruit and field build. */
+export const TREBUCHET_REFINED_WOOD_COST = 2;
 
 export const CITY_BUILDING_POWER = 65;
 export const BUILDER_POWER = 10;
@@ -1420,7 +1473,7 @@ export const MOVEMENT_HEXES_PER_CYCLE_ESTIMATE = 9;
 /** Units/builders get supply when within this hex distance of any friendly city. No roads required.
  *  >= MOVEMENT_HEXES_PER_CYCLE_ESTIMATE so one cycle of movement doesn't leave supply. */
 export const SUPPLY_VICINITY_RADIUS = 24;
-export const STARTING_GOLD = 100;
+export const STARTING_GOLD = 65;
 
 export const STARTING_CITY_TEMPLATE: Omit<City, 'id' | 'name' | 'q' | 'r' | 'ownerId'> = {
   population: 150,
@@ -1523,8 +1576,9 @@ export const BUILDING_PRODUCTION: Record<BuildingType, BuildingProduction> = {
   farm:        { food: 27, goods: 0, guns: 0 },
   banana_farm: { food: 27, goods: 0, guns: 0 },
   factory:     { food: 0, goods: 0, guns: 1 },
-  barracks:    { food: 0, goods: 0, guns: 0 },
+  barracks:    { food: 0, goods: 0, guns: 1 },
   academy:     { food: 0, goods: 0, guns: 0 },
+  /** Engines are assembled when recruited (stone + wood); staffed jobs still assign workforce / morale like other sites. */
   siege_workshop: { food: 0, goods: 0, guns: 0 },
   market:      { food: 0, goods: 0, guns: 0 },
   quarry:      { food: 0, goods: 0, guns: 0, stone: 3 },
@@ -1593,16 +1647,22 @@ export function getShipMaxCargo(type: UnitType): number {
 }
 
 /** L1 recruit costs (gold only for combat; defender not recruitable at L1). */
-export const UNIT_COSTS: Record<UnitType, { gold: number; iron?: number; refinedWood?: number }> = {
+export const UNIT_COSTS: Record<UnitType, { gold: number; iron?: number; refinedWood?: number; stone?: number; wood?: number }> = {
   infantry:        { gold: 1 },
   cavalry:         { gold: 3 },
   ranged:          { gold: 2 },
   horse_archer:    { gold: 3 },
   crusader_knight: { gold: 0 },
   builder:         { gold: 2 },
-  trebuchet:       { gold: 8, refinedWood: TREBUCHET_REFINED_WOOD_COST },
-  battering_ram:   { gold: 6 },
+  trebuchet:       {
+    gold: 8,
+    stone: TREBUCHET_SIEGE_STONE_COST,
+    wood: TREBUCHET_SIEGE_WOOD_COST,
+    refinedWood: TREBUCHET_REFINED_WOOD_COST,
+  },
+  battering_ram:   { gold: 6, stone: BATTERING_RAM_SIEGE_STONE_COST, wood: BATTERING_RAM_SIEGE_WOOD_COST },
   defender:        { gold: 0, iron: 2 },  // L3 only; cost comes from UNIT_L3_COSTS
+  scout:           { gold: 1 },
   scout_ship:      { gold: 0 },
   warship:         { gold: 0 },
   transport_ship:  { gold: 0 },
@@ -1610,16 +1670,22 @@ export const UNIT_COSTS: Record<UnitType, { gold: number; iron?: number; refined
   capital_ship:    { gold: 0 },
 };
 /** L2 recruit costs (gold + stone); siege/builder/defender have no L2. */
-export const UNIT_L2_COSTS: Record<UnitType, { gold: number; stone?: number; refinedWood?: number }> = {
+export const UNIT_L2_COSTS: Record<UnitType, { gold: number; stone?: number; refinedWood?: number; wood?: number }> = {
   infantry:        { gold: 1, stone: 2 },
   cavalry:         { gold: 3, stone: 3 },
   ranged:          { gold: 2, stone: 2 },
   horse_archer:    { gold: 3, stone: 2 },
   crusader_knight: { gold: 0 },
   builder:         { gold: 2 },
-  trebuchet:       { gold: 8, refinedWood: TREBUCHET_REFINED_WOOD_COST },
-  battering_ram:   { gold: 6 },
+  trebuchet:       {
+    gold: 8,
+    stone: TREBUCHET_SIEGE_STONE_COST,
+    wood: TREBUCHET_SIEGE_WOOD_COST,
+    refinedWood: TREBUCHET_REFINED_WOOD_COST,
+  },
+  battering_ram:   { gold: 6, stone: BATTERING_RAM_SIEGE_STONE_COST, wood: BATTERING_RAM_SIEGE_WOOD_COST },
   defender:        { gold: 0 },  // defender has no L2; L3 only
+  scout:           { gold: 1 },
   scout_ship:      { gold: 0 },
   warship:         { gold: 0 },
   transport_ship:  { gold: 0 },
@@ -1627,7 +1693,7 @@ export const UNIT_L2_COSTS: Record<UnitType, { gold: number; stone?: number; ref
   capital_ship:    { gold: 0 },
 };
 /** L3 recruit costs (gold + iron); defender is iron only. */
-export const UNIT_L3_COSTS: Record<UnitType, { gold: number; iron?: number; refinedWood?: number }> = {
+export const UNIT_L3_COSTS: Record<UnitType, { gold: number; iron?: number; refinedWood?: number; stone?: number; wood?: number }> = {
   infantry:        { gold: 2, iron: 1 },
   cavalry:         { gold: 5, iron: 2 },
   ranged:          { gold: 3, iron: 1 },
@@ -1635,9 +1701,15 @@ export const UNIT_L3_COSTS: Record<UnitType, { gold: number; iron?: number; refi
   /** Best infantry; Crusaders only; requires L3 barracks; higher iron than standard L3 infantry. */
   crusader_knight: { gold: 4, iron: 3 },
   builder:         { gold: 2 },
-  trebuchet:       { gold: 8, refinedWood: TREBUCHET_REFINED_WOOD_COST },
-  battering_ram:   { gold: 6 },
+  trebuchet:       {
+    gold: 8,
+    stone: TREBUCHET_SIEGE_STONE_COST,
+    wood: TREBUCHET_SIEGE_WOOD_COST,
+    refinedWood: TREBUCHET_REFINED_WOOD_COST,
+  },
+  battering_ram:   { gold: 6, stone: BATTERING_RAM_SIEGE_STONE_COST, wood: BATTERING_RAM_SIEGE_WOOD_COST },
   defender:        { gold: 0, iron: 2 },  // L3 only, iron only
+  scout:           { gold: 1 },
   scout_ship:      { gold: 0 },
   warship:         { gold: 0 },
   transport_ship:  { gold: 0 },
@@ -1657,6 +1729,7 @@ export const UNIT_DISPLAY_NAMES: Record<UnitType, string> = {
   trebuchet:        'Trebuchet',
   battering_ram:    'Battering Ram',
   defender:         'Defender',
+  scout:            'Scout',
   scout_ship:       'Scout Ship',
   warship:          'Warship',
   transport_ship:   'Transport',
@@ -1669,7 +1742,7 @@ export const BUILDING_DISPLAY_NAMES: Record<BuildingType, string> = {
   city_center: 'City center',
   farm: 'Farm',
   banana_farm: 'Banana farm',
-  factory: 'Factory',
+  factory: 'Armory',
   barracks: 'Barracks',
   academy: "Builder's Hut",
   siege_workshop: 'Siege workshop',
@@ -1758,6 +1831,7 @@ export function notResearchedMessageForBuildingLevel(
   return `Not researched yet — research: ${labels.join(' or ')}.`;
 }
 
+/** L1 (arms tier 1): `gunUpkeep` is always 0 so battalions do not drain swords per cycle. L2+ use `gunL2Upkeep` in {@link UNIT_L2_STATS} / {@link UNIT_L3_STATS}. */
 export const UNIT_BASE_STATS: Record<UnitType, {
   maxHp: number; attack: number; range: number;
   speed: number; foodUpkeep: number; gunUpkeep: number; gunL2Upkeep?: number;
@@ -1777,6 +1851,7 @@ export const UNIT_BASE_STATS: Record<UnitType, {
   trebuchet:      { maxHp: 60,  attack: 5,  range: 3, speed: 0.6, foodUpkeep: 2, gunUpkeep: 0, siegeAttack: 25 },
   battering_ram:  { maxHp: 120, attack: 10, range: 1, speed: 0.5, foodUpkeep: 2, gunUpkeep: 0, siegeAttack: 40 },
   defender:       { maxHp: 130, attack: 8,  range: 1, speed: 0.9, foodUpkeep: 1, gunUpkeep: 0, damageResist: 0.25, damageResistOnCityHex: 0.4 },
+  scout:          { maxHp: 25,  attack: 0,  range: 0, speed: 1.4, foodUpkeep: 0, gunUpkeep: 0 },
   scout_ship:     { maxHp: 70,  attack: 6,  range: 1, speed: 1.2, foodUpkeep: 1, gunUpkeep: 0 },
   warship:        { maxHp: 110, attack: 18, range: 2, speed: 1.0, foodUpkeep: 2, gunUpkeep: 0 },
   transport_ship: { maxHp: 140, attack: 0,  range: 0, speed: 0.75, foodUpkeep: 2, gunUpkeep: 0 },
@@ -1801,6 +1876,7 @@ export const UNIT_L2_STATS: Record<UnitType, {
   trebuchet:      { maxHp: 60,  attack: 5,  range: 3, speed: 0.6, foodUpkeep: 2, gunUpkeep: 0, gunL2Upkeep: 0, siegeAttack: 25 },
   battering_ram:  { maxHp: 120, attack: 10, range: 1, speed: 0.5, foodUpkeep: 2, gunUpkeep: 0, gunL2Upkeep: 0, siegeAttack: 40 },
   defender:       { maxHp: 130, attack: 8,  range: 1, speed: 0.9, foodUpkeep: 1, gunUpkeep: 0, gunL2Upkeep: 0, damageResist: 0.25, damageResistOnCityHex: 0.4 },
+  scout:          { maxHp: 25,  attack: 0,  range: 0, speed: 1.4, foodUpkeep: 0, gunUpkeep: 0, gunL2Upkeep: 0 },
   scout_ship:     { maxHp: 70,  attack: 6,  range: 1, speed: 1.2, foodUpkeep: 1, gunUpkeep: 0, gunL2Upkeep: 0 },
   warship:        { maxHp: 110, attack: 18, range: 2, speed: 1.0, foodUpkeep: 2, gunUpkeep: 0, gunL2Upkeep: 0 },
   transport_ship: { maxHp: 140, attack: 0,  range: 0, speed: 0.75, foodUpkeep: 2, gunUpkeep: 0, gunL2Upkeep: 0 },
@@ -1829,6 +1905,7 @@ export const UNIT_L3_STATS: Record<UnitType, {
   trebuchet:      { maxHp: 60,  attack: 5,  range: 3, speed: 0.6, foodUpkeep: 2, gunUpkeep: 0, gunL2Upkeep: 0, siegeAttack: 25 },
   battering_ram:  { maxHp: 120, attack: 10, range: 1, speed: 0.5, foodUpkeep: 2, gunUpkeep: 0, gunL2Upkeep: 0, siegeAttack: 40 },
   defender:       { maxHp: 130, attack: 8,  range: 1, speed: 0.9, foodUpkeep: 1, gunUpkeep: 0, gunL2Upkeep: 0, damageResist: 0.25, damageResistOnCityHex: 0.4 },
+  scout:          { maxHp: 25,  attack: 0,  range: 0, speed: 1.4, foodUpkeep: 0, gunUpkeep: 0, gunL2Upkeep: 0 },
   scout_ship:     { maxHp: 70,  attack: 6,  range: 1, speed: 1.2, foodUpkeep: 1, gunUpkeep: 0, gunL2Upkeep: 0 },
   warship:        { maxHp: 110, attack: 18, range: 2, speed: 1.0, foodUpkeep: 2, gunUpkeep: 0, gunL2Upkeep: 0 },
   transport_ship: { maxHp: 140, attack: 0,  range: 0, speed: 0.75, foodUpkeep: 2, gunUpkeep: 0, gunL2Upkeep: 0 },
@@ -1873,6 +1950,7 @@ export function getUnitDisplayName(
   rangedVariant?: RangedVariant,
 ): string {
   if (isNavalUnitType(type)) return UNIT_DISPLAY_NAMES[type];
+  if (type === 'scout') return UNIT_DISPLAY_NAMES.scout;
   const al = armsLevel ?? 1;
   if (type === 'ranged' && al === 3) {
     if (rangedVariant === 'longbowman') return 'Longbowman';
@@ -1903,6 +1981,7 @@ export function cityHasL3Barracks(city: City): boolean {
 /** Resolve unit stats by arms level (L1/L2/L3). Defender uses L3. Ships ignore arms tiers. */
 export function getUnitStats(u: { type: UnitType; armsLevel?: 1 | 2 | 3; rangedVariant?: RangedVariant }) {
   if (isNavalUnitType(u.type)) return UNIT_BASE_STATS[u.type];
+  if (u.type === 'scout') return UNIT_BASE_STATS.scout;
   /** Crusader knight is always treated as L3-tier stats (recruit requires L3 barracks). */
   if (u.type === 'crusader_knight') return UNIT_L3_STATS.crusader_knight;
   const level = u.armsLevel ?? 1;
@@ -2162,6 +2241,8 @@ export const CITY_CAPTURE_HOLD_MS = 5000;
 /** Assault: attacker damage multiplier when scaling walls (design §13). */
 export const ASSAULT_ATTACK_DEBUFF = 0.4;
 export const VISION_RANGE = 5;                // units reveal 5-hex radius
+/** Land scout — recon-only unit; wider reveal than standard troops. */
+export const LAND_SCOUT_VISION_RANGE = 7;
 export const CITY_VISION_RANGE = 4;           // cities reveal 4-hex radius
 export const BUILDING_VISION_RANGE = 2;       // buildings reveal 2-hex radius
 export const SCOUT_VISION_RANGE = 5;          // scout towers reveal 5-hex radius

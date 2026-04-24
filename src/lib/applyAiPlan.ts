@@ -18,6 +18,7 @@ import {
   FACTORY_UPGRADE_COST,
   FARM_UPGRADE_COST,
   getUnitStats,
+  getUnitPopCost,
   isNavalUnitType,
   type RangedVariant,
   isBuildingUnlockedByTech,
@@ -31,6 +32,8 @@ import {
 import { computeUniversityBuildingLevelFromPopulation } from '@/lib/universityPopulation';
 import type { AiActions } from '@/lib/ai';
 import type { PendingLandRecruit } from '@/lib/pendingLandRecruit';
+import { buildBattalionTrainingFields, computeEmpirePopUsedForPlayer } from '@/lib/battalionTraining';
+import { countPlayerSiegePieces, siegeCompositionAllowsRecruit } from '@/lib/siegeRecruitment';
 import type { PendingShipRecruit, SimPendingRecruit } from '@/lib/pendingShipRecruit';
 import type { Tile } from '@/types/game';
 import type { AiShipRecruitAction } from '@/lib/ai';
@@ -147,7 +150,8 @@ export function applyAiRecruitsAsPending(
 ): void {
   const aiRecruitCities = ctx.cities.filter(c => c.ownerId === ctx.aiPlayerId);
   const aiTotalPopForRecruit = aiRecruitCities.reduce((s, c) => s + c.population, 0);
-  let aiTroopCount = ctx.units.filter(u => u.ownerId === ctx.aiPlayerId && u.hp > 0).length;
+  const pendingSink = ctx.pendingRecruitsOut as unknown;
+  const pendingForSiegeCount: unknown[] = Array.isArray(pendingSink) ? [...pendingSink] : [];
 
   for (const rec of recruits) {
     const aiPlayer = ctx.getPlayer();
@@ -155,11 +159,16 @@ export function applyAiRecruitsAsPending(
     const techs = aiPlayer.researchedTechs ?? STARTING_TECHS;
     if (!isUnitUnlockedByTech(rec.type, techs)) continue;
     const city = ctx.cities.find(c => c.id === rec.cityId);
-    if (!city || city.ownerId !== ctx.aiPlayerId || city.population <= 0 || aiTroopCount >= aiTotalPopForRecruit) {
+    const popCost = getUnitPopCost(rec.type);
+    const popUsed = computeEmpirePopUsedForPlayer(ctx.units, Array.isArray(pendingSink) ? pendingSink : [], ctx.aiPlayerId);
+    if (!city || city.ownerId !== ctx.aiPlayerId || city.population <= 0 || popUsed + popCost > aiTotalPopForRecruit) {
       continue;
     }
-    if (rec.type === 'trebuchet' || rec.type === 'battering_ram') {
+    const isSiege = rec.type === 'trebuchet' || rec.type === 'battering_ram';
+    if (isSiege) {
       if (!city.buildings.some(b => b.type === 'siege_workshop')) continue;
+      const sc = countPlayerSiegePieces(ctx.units, pendingForSiegeCount, ctx.aiPlayerId);
+      if (!siegeCompositionAllowsRecruit(rec.type as 'trebuchet' | 'battering_ram', sc)) continue;
     }
     const effectiveLevel = rec.type === 'defender' ? 3 : (rec.armsLevel ?? 1);
     const wantL2 = effectiveLevel === 2;
@@ -169,7 +178,16 @@ export function applyAiRecruitsAsPending(
       : wantL2
         ? UNIT_L2_COSTS[rec.type].gold
         : UNIT_COSTS[rec.type].gold;
-    const stoneCost = wantL2 ? (UNIT_L2_COSTS[rec.type].stone ?? 0) : 0;
+    const stoneCost = wantL3
+      ? (UNIT_L3_COSTS[rec.type].stone ?? 0)
+      : wantL2
+        ? (UNIT_L2_COSTS[rec.type].stone ?? 0)
+        : (UNIT_COSTS[rec.type].stone ?? 0);
+    const woodCost = wantL3
+      ? (UNIT_L3_COSTS[rec.type].wood ?? 0)
+      : wantL2
+        ? (UNIT_L2_COSTS[rec.type].wood ?? 0)
+        : (UNIT_COSTS[rec.type].wood ?? 0);
     const ironCost = wantL3 ? (UNIT_L3_COSTS[rec.type].iron ?? 0) : 0;
     const refinedWoodCost = wantL3
       ? (UNIT_L3_COSTS[rec.type].refinedWood ?? 0)
@@ -178,20 +196,17 @@ export function applyAiRecruitsAsPending(
         : (UNIT_COSTS[rec.type].refinedWood ?? 0);
     if (aiPlayer.gold < goldCost) continue;
     if (stoneCost > 0 && (city.storage.stone ?? 0) < stoneCost) continue;
+    if (woodCost > 0 && (city.storage.wood ?? 0) < woodCost) continue;
     if (ironCost > 0 && (city.storage.iron ?? 0) < ironCost) continue;
     if (refinedWoodCost > 0 && (city.storage.refinedWood ?? 0) < refinedWoodCost) continue;
-    const stats = getUnitStats({ type: rec.type, armsLevel: effectiveLevel as 1 | 2 | 3 });
-    const gunL2Upkeep = (stats as { gunL2Upkeep?: number }).gunL2Upkeep ?? 0;
-    if (gunL2Upkeep > 0) {
-      const totalGunsL2 = ctx.cities.filter(c => c.ownerId === ctx.aiPlayerId).reduce((sum, c) => sum + (c.storage.gunsL2 ?? 0), 0);
-      if (totalGunsL2 < gunL2Upkeep) continue;
-    }
     if (rec.type === 'builder') continue;
-    const barracks = city.buildings.find(b => b.type === 'barracks');
-    const bl = barracks?.level ?? 1;
-    const needBarracks =
-      rec.type === 'defender' ? 3 : wantL3 ? 3 : wantL2 ? 2 : 1;
-    if (bl < needBarracks) continue;
+    if (!isSiege) {
+      const barracks = city.buildings.find(b => b.type === 'barracks');
+      const bl = barracks?.level ?? 1;
+      const needBarracks =
+        rec.type === 'defender' ? 3 : wantL3 ? 3 : wantL2 ? 2 : 1;
+      if (bl < needBarracks) continue;
+    }
     const sq = city.q;
     const sr = city.r;
     const effArms: 1 | 2 | 3 = rec.type === 'defender' ? 3 : wantL3 ? 3 : wantL2 ? 2 : 1;
@@ -208,16 +223,8 @@ export function applyAiRecruitsAsPending(
       }
     }
 
-    if (gunL2Upkeep > 0) {
-      for (const oc of ctx.cities.filter(c => c.ownerId === ctx.aiPlayerId)) {
-        if ((oc.storage.gunsL2 ?? 0) >= gunL2Upkeep) {
-          oc.storage.gunsL2 = (oc.storage.gunsL2 ?? 0) - gunL2Upkeep;
-          break;
-        }
-      }
-    }
     ctx.onSpendGold(goldCost);
-    if (stoneCost > 0 || ironCost > 0 || refinedWoodCost > 0) {
+    if (stoneCost > 0 || woodCost > 0 || ironCost > 0 || refinedWoodCost > 0) {
       const idx = ctx.cities.indexOf(city);
       if (idx >= 0) {
         const c = ctx.cities[idx];
@@ -226,13 +233,15 @@ export function applyAiRecruitsAsPending(
           storage: {
             ...c.storage,
             stone: Math.max(0, (c.storage.stone ?? 0) - stoneCost),
+            wood: Math.max(0, (c.storage.wood ?? 0) - woodCost),
             iron: Math.max(0, (c.storage.iron ?? 0) - ironCost),
             refinedWood: Math.max(0, (c.storage.refinedWood ?? 0) - refinedWoodCost),
           },
         };
       }
     }
-    ctx.pendingRecruitsOut.push({
+    const battalion = buildBattalionTrainingFields(rec.type, effArms, popCost);
+    const pr: PendingLandRecruit = {
       id: ctx.generateId('pr'),
       playerId: ctx.aiPlayerId,
       cityId: city.id,
@@ -241,9 +250,15 @@ export function applyAiRecruitsAsPending(
       rangedVariant: rec.type === 'ranged' && effArms === 3 ? (rangedRv ?? rec.rangedVariant) : undefined,
       spawnQ: sq,
       spawnR: sr,
-      completesAtCycle: ctx.newCycle + 1,
-    });
-    aiTroopCount += 1;
+      ...battalion,
+      goldPaid: goldCost,
+      stonePaid: stoneCost,
+      woodPaid: woodCost,
+      ironPaid: ironCost,
+      refinedWoodPaid: refinedWoodCost,
+    };
+    ctx.pendingRecruitsOut.push(pr);
+    if (isSiege) pendingForSiegeCount.push(pr);
   }
 }
 
@@ -264,6 +279,12 @@ export function applyAiShipRecruitsAsPending(
     generateId: (prefix: string) => string;
   },
 ): void {
+  const aiRecruitCities = ctx.cities.filter(c => c.ownerId === ctx.aiPlayerId);
+  const aiTotalPop = aiRecruitCities.reduce((s, c) => s + c.population, 0);
+  const pendingMixed = Array.isArray(ctx.pendingShipsOut as unknown)
+    ? (ctx.pendingShipsOut as unknown[])
+    : [];
+
   for (const rec of shipRecruits) {
     const aiPlayer = ctx.getPlayer();
     if (!aiPlayer) continue;
@@ -293,6 +314,9 @@ export function applyAiShipRecruitsAsPending(
       }
     }
     if (!spawn) continue;
+
+    const popUsed = computeEmpirePopUsedForPlayer(ctx.units, pendingMixed, ctx.aiPlayerId);
+    if (popUsed + getUnitPopCost(rec.shipType) > aiTotalPop) continue;
 
     const woodCost = costs.wood ?? 0;
     const rwCost = costs.refinedWood ?? 0;

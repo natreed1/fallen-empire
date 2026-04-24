@@ -9,23 +9,15 @@ import {
   UNIT_L2_COSTS,
   UNIT_L3_COSTS,
   getUnitStats,
+  getUnitPopCost,
   isNavalUnitType,
   generateId,
 } from '@/types/game';
+import type { PendingLandRecruit } from '@/lib/pendingLandRecruit';
+import { buildBattalionTrainingFields, computeEmpirePopUsedForPlayer, landPending } from '@/lib/battalionTraining';
+import { countPlayerSiegePieces, siegeCompositionAllowsRecruit } from '@/lib/siegeRecruitment';
 
-export type ReplenishPendingLand = {
-  id: string;
-  playerId: string;
-  cityId: string;
-  type: UnitType;
-  effectiveArmsLevel: 1 | 2 | 3;
-  rangedVariant?: RangedVariant;
-  spawnQ: number;
-  spawnR: number;
-  completesAtCycle: number;
-  stackId?: string;
-  moveToRallyAfterSpawn?: { q: number; r: number };
-};
+export type ReplenishPendingLand = PendingLandRecruit;
 
 function effectiveArmsForUnit(u: Unit): 1 | 2 | 3 {
   if (u.type === 'defender' || u.type === 'crusader_knight') return 3;
@@ -138,10 +130,6 @@ export function computeArmyReplenishment(input: ReplenishInput): ReplenishResult
 
     const playerCities = cities.filter(c => c.ownerId === army.ownerId);
     const totalPop = playerCities.reduce((s, c) => s + c.population, 0);
-    const livingTroops = input.units.filter(u => u.ownerId === army.ownerId && u.hp > 0).length;
-    const pendingLand = input.pendingRecruits.filter(
-      pr => 'effectiveArmsLevel' in pr && pr.playerId === army.ownerId,
-    ).length;
 
     const barracks = home.buildings.find(b => b.type === 'barracks');
     const barracksLvl = barracks ? (barracks.level ?? 1) : 1;
@@ -157,7 +145,6 @@ export function computeArmyReplenishment(input: ReplenishInput): ReplenishResult
         entryRv,
       );
       if (have >= entry.count) continue;
-      if (livingTroops + pendingLand >= totalPop) break;
 
       const t = entry.unitType;
       if (t === 'builder' || isNavalUnitType(t)) continue;
@@ -199,8 +186,26 @@ export function computeArmyReplenishment(input: ReplenishInput): ReplenishResult
       const pk = pendingKey(army.ownerId, army.id, t, effArms, effRangedVariant);
       if (pendingSet.has(pk)) continue;
 
+      const popCost = getUnitPopCost(t);
+      const popUsed = computeEmpirePopUsedForPlayer(input.units, input.pendingRecruits as unknown[], army.ownerId);
+      if (popUsed + popCost > totalPop) break;
+
+      if (isSiege) {
+        const sc = countPlayerSiegePieces(input.units, [...(input.pendingRecruits as unknown[]), ...newPending], army.ownerId);
+        if (!siegeCompositionAllowsRecruit(t, sc)) continue;
+      }
+
       const goldCost = wantL3 ? UNIT_L3_COSTS[t].gold : wantL2 ? UNIT_L2_COSTS[t].gold : UNIT_COSTS[t].gold;
-      const stoneCost = wantL2 ? (UNIT_L2_COSTS[t].stone ?? 0) : 0;
+      const stoneCost = wantL3
+        ? (UNIT_L3_COSTS[t].stone ?? 0)
+        : wantL2
+          ? (UNIT_L2_COSTS[t].stone ?? 0)
+          : (UNIT_COSTS[t].stone ?? 0);
+      const woodCost = wantL3
+        ? (UNIT_L3_COSTS[t].wood ?? 0)
+        : wantL2
+          ? (UNIT_L2_COSTS[t].wood ?? 0)
+          : (UNIT_COSTS[t].wood ?? 0);
       const ironCost = wantL3 ? (UNIT_L3_COSTS[t].iron ?? 0) : 0;
       const refinedWoodCost = wantL3
         ? (UNIT_L3_COSTS[t].refinedWood ?? 0)
@@ -210,54 +215,31 @@ export function computeArmyReplenishment(input: ReplenishInput): ReplenishResult
 
       if (player.gold < goldCost) continue;
       if (stoneCost > 0 && (home.storage.stone ?? 0) < stoneCost) continue;
+      if (woodCost > 0 && (home.storage.wood ?? 0) < woodCost) continue;
       if (ironCost > 0 && (home.storage.iron ?? 0) < ironCost) continue;
       if (refinedWoodCost > 0 && (home.storage.refinedWood ?? 0) < refinedWoodCost) continue;
-
-      const stats = getUnitStats({
-        type: t,
-        armsLevel: effArms,
-        rangedVariant: effRangedVariant,
-      });
-      const gunL2Upkeep = (stats as { gunL2Upkeep?: number }).gunL2Upkeep ?? 0;
-      if (gunL2Upkeep > 0) {
-        const totalGunsL2 = playerCities.reduce((sum, c) => sum + (c.storage.gunsL2 ?? 0), 0);
-        if (totalGunsL2 < gunL2Upkeep) continue;
-      }
 
       player = { ...player, gold: player.gold - goldCost };
       players = players.slice();
       players[pIdx] = player;
 
       let nextHome = { ...home };
-      if (stoneCost > 0 || ironCost > 0 || refinedWoodCost > 0) {
+      if (stoneCost > 0 || woodCost > 0 || ironCost > 0 || refinedWoodCost > 0) {
         nextHome = {
           ...nextHome,
           storage: {
             ...nextHome.storage,
             stone: Math.max(0, (nextHome.storage.stone ?? 0) - stoneCost),
+            wood: Math.max(0, (nextHome.storage.wood ?? 0) - woodCost),
             iron: Math.max(0, (nextHome.storage.iron ?? 0) - ironCost),
             refinedWood: Math.max(0, (nextHome.storage.refinedWood ?? 0) - refinedWoodCost),
           },
         };
       }
       cities = cities.slice();
-      if (gunL2Upkeep > 0) {
-        for (let i = 0; i < cities.length; i++) {
-          if (cities[i].ownerId !== army.ownerId) continue;
-          if ((cities[i].storage.gunsL2 ?? 0) >= gunL2Upkeep) {
-            cities[i] = {
-              ...cities[i],
-              storage: {
-                ...cities[i].storage,
-                gunsL2: (cities[i].storage.gunsL2 ?? 0) - gunL2Upkeep,
-              },
-            };
-            break;
-          }
-        }
-      }
       cities[homeIdx] = nextHome;
 
+      const battalion = buildBattalionTrainingFields(t, effArms, popCost);
       newPending.push({
         id: generateId('pr'),
         playerId: army.ownerId,
@@ -267,9 +249,14 @@ export function computeArmyReplenishment(input: ReplenishInput): ReplenishResult
         ...(effRangedVariant ? { rangedVariant: effRangedVariant } : {}),
         spawnQ: home.q,
         spawnR: home.r,
-        completesAtCycle: input.cycle + 1,
         stackId: army.id,
         moveToRallyAfterSpawn: { q: army.rallyQ, r: army.rallyR },
+        ...battalion,
+        goldPaid: goldCost,
+        stonePaid: stoneCost,
+        woodPaid: woodCost,
+        ironPaid: ironCost,
+        refinedWoodPaid: refinedWoodCost,
       });
       pendingSet.add(pk);
       break;

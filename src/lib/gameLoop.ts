@@ -313,7 +313,8 @@ function productionPhase(
     let sawmillRefined = 0;
     let sawmillWoodUsed = 0;
     for (const b of city.buildings) {
-      if (b.type === 'city_center' || b.type === 'barracks' || b.type === 'academy' || b.type === 'siege_workshop' || b.type === 'port' || b.type === 'shipyard') continue;
+      // Barracks runs here for small arms output (staffed); other non-economic sites stay out of this loop.
+      if (b.type === 'city_center' || b.type === 'academy' || b.type === 'siege_workshop' || b.type === 'port' || b.type === 'shipyard') continue;
       if (!isCityBuildingOperational(b)) continue;
       const prod = BUILDING_PRODUCTION[b.type];
       const lvl = (b as CityBuilding).level ?? 1;

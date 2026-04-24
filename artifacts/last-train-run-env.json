@@ -1,0 +1,28 @@
+{
+  "startedAt": "2026-04-23T14:19:52.539Z",
+  "cwd": "/Users/natreed/fallen-empire",
+  "env": {
+    "TRAIN_DRAW_PENALTY": "20",
+    "TRAIN_ELITE_COUNT": "4",
+    "TRAIN_GENERATIONS": "6",
+    "TRAIN_MAP_SIZE": "38",
+    "TRAIN_MATCHES_PER_PAIR": "5",
+    "TRAIN_MAX_CYCLES": "520",
+    "TRAIN_MUTATION_STRENGTH": "0.14",
+    "TRAIN_OUT_JSON": "artifacts/04-order_2026-04-23T14-19-49Z_train-pass_ai-params.json",
+    "TRAIN_POPULATION_SIZE": "8",
+    "TRAIN_SELFPLAY_WEIGHT": "0.7",
+    "TRAIN_SHOW_BATTLES": "0",
+    "TRAIN_VARIANCE_PENALTY": "0.45",
+    "TRAIN_VS_DEFAULT_MATCHES": "4",
+    "TRAIN_VS_DEFAULT_WEIGHT": "0.3"
+  },
+  "computed": {
+    "MAX_CYCLES": 520,
+    "MAP_SIZE": 38,
+    "VS_DEFAULT_MATCHES": 4,
+    "EVAL_SELFPLAY_W": 0.7,
+    "EVAL_VS_DEFAULT_W": 0.3,
+    "WON_QUICKLY_BONUS_PER_CYCLE": 0.1
+  }
+}

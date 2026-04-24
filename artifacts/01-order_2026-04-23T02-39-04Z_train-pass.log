@@ -1,0 +1,300 @@
+npm warn Unknown env config "devdir". This will stop working in the next major version of npm.
+npm warn exec The following package was not found and will be installed: ts-node@10.9.2
+Training AI parameters (evolutionary + multi-game evaluation)...
+Param count: 61  In mutation space: 61  Excluded: 0 (none)
+Evolvable params: siegeChance, recruitGoldThreshold, maxRecruitsWhenRich, maxRecruitsWhenPoor, targetDefenderWeight, nearestTargetDistanceRatio, builderRecruitChance, builderRecruitForMinesAndSiege, foodBufferThreshold, sustainableMilitaryMultiplier, farmFirstBias, farmPriorityThreshold, factoryUpgradePriority, scoutChance, incorporateVillageChance, targetPopWeight, minePriorityThreshold, l2AdoptionRate, targetRangedShare, targetSiegeShare, compositionCorrectionStrength, assaultWingShare, screenWingShare, maxChaseDistance, targetDispersion, villageDefensePriority, villageRecapturePriority, frontlineMeleeShare, backlineRangedDistance, siegeBacklineDistance, flankCavalryShare, formationCohesion, l3AcquisitionWeight, l3IronPerUnitTarget, l2StonePerUnitTarget, militaryLevelMixTarget, militaryLevelMixCorrectionStrength, defenderCityHexCoverageTarget, defenderAssignmentPriority, wallBuildPerCityTarget, wallBuildPriority, wallToDefenderSynergyWeight, wallClosurePriority, wallRepairPriority, wallRingTarget, wallClosureUptimeWeight, supplyExpansionPriority, supplyAnchorDistanceWeight, supplyStarvationRiskWeight, supplyCityAcquisitionBias, contestedZoneCommitShare, contestedZoneMinSurplusMilitary, commanderFieldAssignRate, commanderMinArmySize, scrollTerrainPriority, scrollTerrainMaxDivert, universityIronMinePref, universityCityDefenseThreshold, navalRecruitBias, transportPriority, minShipsBeforeInvade
+Maps: scenario mix ON  (default mix from scripts/lib/scenarios.ts — includes naval-islands)  naval postInit: on (when naval-islands)  base size: 38 (overridden by scenario)  maxCycles: 420
+Gens: 8  population: 8  matches/candidate: 6  elite: 4
+Trend report: using 15 param overrides (artifacts/trend-report.json)
+
+Seed baseline: loaded /Users/natreed/fallen-empire/public/ai-params.json
+Initial baseline: [61 params] {"siegeChance":0.2044860223879972,"recruitGoldThreshold":469,"maxRecruitsWhenRich":2,"maxRecruitsWhe…
+
+
+═══════════════════════════════════════════  Gen 1/8  ═══════════════════════════════════════════
+Baseline: [61 params] {"siegeChance":0.2044860223879972,"recruitGoldThreshold":469,"maxRecruitsWhenRich":2,"maxRecruitsWhe…
+  Candidate 1/8... -16.8 (μ=42.8 σ=141.9)
+  Candidate 2/8... -106.4 (μ=-40.4 σ=157.3)
+  Candidate 3/8... -85.1 (μ=-23.2 σ=147.3)
+  Candidate 4/8... 89.4 (μ=114.0 σ=58.7)
+  Candidate 5/8... -125.0 (μ=-41.9 σ=197.9)
+  Candidate 6/8... -70.5 (μ=-21.8 σ=116.1)
+  Candidate 7/8... 16.9 (μ=38.8 σ=52.2)
+  Candidate 8/8... -154.8 (μ=-90.0 σ=154.3)
+  Generation eval: 368.4s
+
+  ► Best: score 89.4 (μ=114.0 σ=58.7)  [61 params] {"siegeChance":0.20213905972959695,"recruitGoldThreshold":491,"maxRecruitsWhenRich":2,"maxRecruitsWh…
+
+  Sample battles (new best vs previous baseline):
+    1a (seed 501253): North=best → cycle 420, 1-1 cities, 0-0 pop → draw
+    1b (seed 501254): South=best → cycle 93, 3-0 cities, 13-0 pop → North
+    2a (seed 503070): North=best → cycle 75, 5-0 cities, 158-0 pop → North
+    2b (seed 503071): South=best → cycle 420, 5-1 cities, 104-0 pop → draw
+    3a (seed 505910): North=best → cycle 420, 5-4 cities, 23-229 pop → draw
+    3b (seed 505911): South=best → cycle 294, 0-9 cities, 0-254 pop → South
+    4a (seed 514497): North=best → cycle 420, 4-3 cities, 106-96 pop → draw
+    4b (seed 514498): South=best → cycle 420, 6-6 cities, 78-27 pop → draw
+
+═══════════════════════════════════════════  Gen 2/8  ═══════════════════════════════════════════
+Baseline: [61 params] {"siegeChance":0.20213905972959695,"recruitGoldThreshold":491,"maxRecruitsWhenRich":2,"maxRecruitsWh…
+  Candidate 1/8... -26.3 (μ=6.7 σ=78.6)
+  Candidate 2/8... -157.6 (μ=-83.2 σ=177.1)
+  Candidate 3/8... -139.0 (μ=-3.0 σ=323.7)
+  Candidate 4/8... -23.3 (μ=66.4 σ=213.4)
+  Candidate 5/8... -196.2 (μ=-102.6 σ=222.7)
+  Candidate 6/8... 44.2 (μ=53.7 σ=22.6)
+  Candidate 7/8... 67.6 (μ=79.0 σ=27.1)
+  Candidate 8/8... 43.8 (μ=47.7 σ=9.3)
+  Generation eval: 476.4s
+
+  ► Best: score 67.6 (μ=79.0 σ=27.1)  [61 params] {"siegeChance":0.20345758621471116,"recruitGoldThreshold":504,"maxRecruitsWhenRich":2,"maxRecruitsWh…
+
+  Sample battles (new best vs previous baseline):
+    1a (seed 7179): North=best → cycle 420, 1-1 cities, 1-1 pop → draw
+    1b (seed 7180): South=best → cycle 77, 0-7 cities, 0-396 pop → South
+    2a (seed 9362): North=best → cycle 420, 3-5 cities, 18-185 pop → draw
+    2b (seed 9363): South=best → cycle 420, 3-5 cities, 16-197 pop → draw
+    3a (seed 14518): North=best → cycle 182, 0-9 cities, 0-267 pop → South
+    3b (seed 14519): South=best → cycle 420, 2-8 cities, 2-416 pop → draw
+    4a (seed 23189): North=best → cycle 420, 3-12 cities, 95-491 pop → draw
+    4b (seed 23190): South=best → cycle 420, 2-12 cities, 0-531 pop → draw
+
+═══════════════════════════════════════════  Gen 3/8  ═══════════════════════════════════════════
+Baseline: [61 params] {"siegeChance":0.20345758621471116,"recruitGoldThreshold":504,"maxRecruitsWhenRich":2,"maxRecruitsWh…
+  Candidate 1/8... -86.0 (μ=66.3 σ=362.5)
+  Candidate 2/8... -93.4 (μ=-38.6 σ=130.3)
+  Candidate 3/8... -86.1 (μ=30.2 σ=276.9)
+  Candidate 4/8... -110.3 (μ=-44.2 σ=157.4)
+  Candidate 5/8... -54.9 (μ=20.1 σ=178.4)
+  Candidate 6/8... 4.6 (μ=39.8 σ=83.8)
+  Candidate 7/8... -20.9 (μ=41.3 σ=148.2)
+  Candidate 8/8... 70.0 (μ=103.0 σ=78.6)
+  Generation eval: 442.8s
+
+  ► Best: score 70.0 (μ=103.0 σ=78.6)  [61 params] {"siegeChance":0.20857395626863068,"recruitGoldThreshold":432,"maxRecruitsWhenRich":2,"maxRecruitsWh…
+
+  Sample battles (new best vs previous baseline):
+    1a (seed 501668): North=best → cycle 420, 2-5 cities, 2-121 pop → draw
+    1b (seed 501669): South=best → cycle 420, 3-4 cities, 17-52 pop → draw
+    2a (seed 507324): North=best → cycle 420, 3-2 cities, 156-2 pop → draw
+    2b (seed 507325): South=best → cycle 420, 1-10 cities, 0-288 pop → draw
+    3a (seed 520359): North=best → cycle 99, 0-8 cities, 0-218 pop → South
+    3b (seed 520360): South=best → cycle 420, 4-2 cities, 0-103 pop → draw
+    4a (seed 523979): North=best → cycle 420, 1-4 cities, 0-241 pop → draw
+    4b (seed 523980): South=best → cycle 120, 5-0 cities, 124-0 pop → North
+
+═══════════════════════════════════════════  Gen 4/8  ═══════════════════════════════════════════
+Baseline: [61 params] {"siegeChance":0.20857395626863068,"recruitGoldThreshold":432,"maxRecruitsWhenRich":2,"maxRecruitsWh…
+  Candidate 1/8... -3.9 (μ=89.5 σ=222.5)
+  Candidate 2/8... -198.9 (μ=-144.9 σ=128.7)
+  Candidate 3/8... -3.5 (μ=98.4 σ=242.6)
+  Candidate 4/8... -231.8 (μ=-108.0 σ=294.8)
+  Candidate 5/8... -2.9 (μ=114.7 σ=280.0)
+  Candidate 6/8... -240.4 (μ=-34.8 σ=489.5)
+  Candidate 7/8... 26.7 (μ=164.0 σ=326.9)
+  Candidate 8/8... -141.8 (μ=-43.7 σ=233.5)
+  Generation eval: 662.6s
+
+  ► Best: score 26.7 (μ=164.0 σ=326.9)  [61 params] {"siegeChance":0.2049068661548901,"recruitGoldThreshold":427,"maxRecruitsWhenRich":2,"maxRecruitsWhe…
+
+  Sample battles (new best vs previous baseline):
+    1a (seed 197011): North=best → cycle 96, 5-0 cities, 254-0 pop → North
+    1b (seed 197012): South=best → cycle 420, 4-1 cities, 451-0 pop → draw
+    2a (seed 203503): North=best → cycle 420, 1-1 cities, 1-1 pop → draw
+    2b (seed 203504): South=best → cycle 88, 8-0 cities, 353-0 pop → North
+    3a (seed 205535): North=best → cycle 420, 2-6 cities, 9-162 pop → draw
+    3b (seed 205536): South=best → cycle 420, 2-5 cities, 0-490 pop → draw
+    4a (seed 217966): North=best → cycle 420, 4-2 cities, 28-2 pop → draw
+    4b (seed 217967): South=best → cycle 420, 8-2 cities, 434-136 pop → draw
+
+═══════════════════════════════════════════  Gen 5/8  ═══════════════════════════════════════════
+Baseline: [61 params] {"siegeChance":0.2049068661548901,"recruitGoldThreshold":427,"maxRecruitsWhenRich":2,"maxRecruitsWhe…
+  Candidate 1/8... -27.4 (μ=13.7 σ=97.8)
+  Candidate 2/8... 27.6 (μ=142.3 σ=272.9)
+  Candidate 3/8... -161.6 (μ=-7.6 σ=366.5)
+  Candidate 4/8... -186.8 (μ=-101.1 σ=204.2)
+  Candidate 5/8... 49.7 (μ=95.6 σ=109.3)
+  Candidate 6/8... -23.8 (μ=37.8 σ=146.8)
+  Candidate 7/8... -17.1 (μ=73.4 σ=215.6)
+  Candidate 8/8... -118.2 (μ=-31.2 σ=207.3)
+  Generation eval: 497.5s
+
+  ► Best: score 49.7 (μ=95.6 σ=109.3)  [61 params] {"siegeChance":0.2028126965456459,"recruitGoldThreshold":519,"maxRecruitsWhenRich":2,"maxRecruitsWhe…
+
+  Sample battles (new best vs previous baseline):
+    1a (seed 743620): North=best → cycle 420, 1-5 cities, 1-320 pop → draw
+    1b (seed 743621): South=best → cycle 420, 9-6 cities, 296-2 pop → draw
+    2a (seed 761922): North=best → cycle 420, 4-1 cities, 178-1 pop → draw
+    2b (seed 761923): South=best → cycle 420, 1-5 cities, 0-351 pop → draw
+    3a (seed 778902): North=best → cycle 420, 2-5 cities, 218-29 pop → draw
+    3b (seed 778903): South=best → cycle 420, 5-2 cities, 199-10 pop → draw
+    4a (seed 790038): North=best → cycle 420, 9-3 cities, 230-0 pop → draw
+    4b (seed 790039): South=best → cycle 420, 5-9 cities, 39-196 pop → draw
+
+═══════════════════════════════════════════  Gen 6/8  ═══════════════════════════════════════════
+Baseline: [61 params] {"siegeChance":0.2028126965456459,"recruitGoldThreshold":519,"maxRecruitsWhenRich":2,"maxRecruitsWhe…
+  Candidate 1/8... 105.8 (μ=198.7 σ=221.2)
+  Candidate 2/8... -34.6 (μ=-16.4 σ=43.4)
+  Candidate 3/8... -97.2 (μ=8.8 σ=252.4)
+  Candidate 4/8... 54.1 (μ=99.5 σ=108.0)
+  Candidate 5/8... -49.6 (μ=9.1 σ=139.7)
+  Candidate 6/8... -58.8 (μ=10.2 σ=164.3)
+  Candidate 7/8... 53.4 (μ=96.8 σ=103.3)
+  Candidate 8/8... 9.7 (μ=52.7 σ=102.5)
+  Generation eval: 509.8s
+
+  ► Best: score 105.8 (μ=198.7 σ=221.2)  [61 params] {"siegeChance":0.2028126965456459,"recruitGoldThreshold":519,"maxRecruitsWhenRich":2,"maxRecruitsWhe…
+
+  Sample battles (new best vs previous baseline):
+    1a (seed 315361): North=best → cycle 420, 4-8 cities, 123-302 pop → draw
+    1b (seed 315362): South=best → cycle 420, 1-7 cities, 1-272 pop → draw
+    2a (seed 330215): North=best → cycle 420, 1-5 cities, 1-420 pop → draw
+    2b (seed 330216): South=best → cycle 420, 1-5 cities, 1-285 pop → draw
+    3a (seed 344502): North=best → cycle 420, 2-2 cities, 10-18 pop → draw
+    3b (seed 344503): South=best → cycle 420, 4-2 cities, 132-38 pop → draw
+    4a (seed 354563): North=best → cycle 420, 2-4 cities, 11-232 pop → draw
+    4b (seed 354564): South=best → cycle 420, 3-2 cities, 29-139 pop → draw
+
+═══════════════════════════════════════════  Gen 7/8  ═══════════════════════════════════════════
+Baseline: [61 params] {"siegeChance":0.2028126965456459,"recruitGoldThreshold":519,"maxRecruitsWhenRich":2,"maxRecruitsWhe…
+  Candidate 1/8... -5.9 (μ=21.9 σ=66.2)
+  Candidate 2/8... -36.3 (μ=-4.3 σ=76.3)
+  Candidate 3/8... 19.3 (μ=63.4 σ=104.9)
+  Candidate 4/8... -23.9 (μ=55.9 σ=190.0)
+  Candidate 5/8... -30.1 (μ=0.9 σ=73.8)
+  Candidate 6/8... -34.5 (μ=8.9 σ=103.3)
+  Candidate 7/8... 6.1 (μ=75.8 σ=165.8)
+  Candidate 8/8... -49.7 (μ=15.5 σ=155.3)
+  Generation eval: 472.6s
+
+  ► Best: score 19.3 (μ=63.4 σ=104.9)  [61 params] {"siegeChance":0.2008753338828296,"recruitGoldThreshold":506,"maxRecruitsWhenRich":2,"maxRecruitsWhe…
+
+  Sample battles (new best vs previous baseline):
+    1a (seed 847782): North=best → cycle 420, 2-4 cities, 164-42 pop → draw
+    1b (seed 847783): South=best → cycle 420, 2-4 cities, 11-47 pop → draw
+    2a (seed 856231): North=best → cycle 420, 7-2 cities, 331-10 pop → draw
+    2b (seed 856232): South=best → cycle 420, 1-1 cities, 1-1 pop → draw
+    3a (seed 870293): North=best → cycle 420, 1-1 cities, 1-1 pop → draw
+    3b (seed 870294): South=best → cycle 420, 7-11 cities, 46-85 pop → draw
+    4a (seed 876145): North=best → cycle 420, 27-14 cities, 529-139 pop → draw
+    4b (seed 876146): South=best → cycle 420, 27-14 cities, 755-91 pop → draw
+
+═══════════════════════════════════════════  Gen 8/8  ═══════════════════════════════════════════
+Baseline: [61 params] {"siegeChance":0.2008753338828296,"recruitGoldThreshold":506,"maxRecruitsWhenRich":2,"maxRecruitsWhe…
+  Candidate 1/8... 9.6 (μ=87.4 σ=185.2)
+  Candidate 2/8... -33.9 (μ=1.1 σ=83.2)
+  Candidate 3/8... -27.3 (μ=21.3 σ=115.8)
+  Candidate 4/8... -2.2 (μ=31.2 σ=79.7)
+  Candidate 5/8... 49.2 (μ=84.6 σ=84.2)
+  Candidate 6/8... 52.4 (μ=101.6 σ=117.1)
+  Candidate 7/8... -33.1 (μ=33.4 σ=158.3)
+  Candidate 8/8... -47.9 (μ=19.9 σ=161.3)
+  Generation eval: 435.6s
+
+  ► Best: score 52.4 (μ=101.6 σ=117.1)  [61 params] {"siegeChance":0.1987581521622352,"recruitGoldThreshold":505,"maxRecruitsWhenRich":2,"maxRecruitsWhe…
+
+  Sample battles (new best vs previous baseline):
+    1a (seed 398527): North=best → cycle 420, 5-2 cities, 40-2 pop → draw
+    1b (seed 398528): South=best → cycle 420, 4-2 cities, 29-2 pop → draw
+    2a (seed 403774): North=best → cycle 420, 8-3 cities, 55-8 pop → draw
+    2b (seed 403775): South=best → cycle 420, 3-2 cities, 10-8 pop → draw
+    3a (seed 408471): North=best → cycle 420, 3-3 cities, 130-12 pop → draw
+    3b (seed 408472): South=best → cycle 420, 1-1 cities, 0-0 pop → draw
+    4a (seed 412199): North=best → cycle 420, 6-1 cities, 70-1 pop → draw
+    4b (seed 412200): South=best → cycle 420, 1-9 cities, 5-202 pop → draw
+
+Best params:
+{
+  "siegeChance": 0.1987581521622352,
+  "recruitGoldThreshold": 505,
+  "maxRecruitsWhenRich": 2,
+  "maxRecruitsWhenPoor": 1,
+  "targetDefenderWeight": 2.866146801522399,
+  "nearestTargetDistanceRatio": 0.8649340362773013,
+  "builderRecruitChance": 0.48251413194616494,
+  "builderRecruitForMinesAndSiege": 0.425707617394234,
+  "foodBufferThreshold": 15,
+  "sustainableMilitaryMultiplier": 0.8287211239034017,
+  "farmFirstBias": 0.5,
+  "farmPriorityThreshold": 12,
+  "factoryUpgradePriority": 0.7299889948684404,
+  "scoutChance": 1.0217873119099026,
+  "incorporateVillageChance": 0.8760198571498965,
+  "targetPopWeight": 0.9507270393187203,
+  "minePriorityThreshold": 12,
+  "l2AdoptionRate": 0.44668931190211547,
+  "targetRangedShare": 0.15628657785947192,
+  "targetSiegeShare": 0,
+  "compositionCorrectionStrength": 1,
+  "assaultWingShare": 0.5799899126824285,
+  "screenWingShare": 0.35362117987425723,
+  "maxChaseDistance": 5,
+  "targetDispersion": 0.4953714847344576,
+  "villageDefensePriority": 0.3850268480464009,
+  "villageRecapturePriority": 1,
+  "frontlineMeleeShare": 0.24213232264590673,
+  "backlineRangedDistance": 3,
+  "siegeBacklineDistance": 4,
+  "flankCavalryShare": 0.04765715486727318,
+  "formationCohesion": 0.576596952124995,
+  "l3AcquisitionWeight": 1.3276943638781848,
+  "l3IronPerUnitTarget": 14,
+  "l2StonePerUnitTarget": 8,
+  "militaryLevelMixTarget": {
+    "L1": 0.395517067312815,
+    "L2": 0.3461581980495765,
+    "L3": 0.2583247346376086
+  },
+  "militaryLevelMixCorrectionStrength": 0.9359646570748265,
+  "defenderCityHexCoverageTarget": 1,
+  "defenderAssignmentPriority": 1,
+  "wallBuildPerCityTarget": 2,
+  "wallBuildPriority": 0.816632755034038,
+  "wallToDefenderSynergyWeight": 0,
+  "wallClosurePriority": 0.6253567839133818,
+  "wallRepairPriority": 0.15053031692431007,
+  "wallRingTarget": 1,
+  "wallClosureUptimeWeight": 0.09482020770451328,
+  "supplyExpansionPriority": 0.9848664000205736,
+  "supplyAnchorDistanceWeight": 0.12123612276520282,
+  "supplyStarvationRiskWeight": 0.8334950721914484,
+  "supplyCityAcquisitionBias": 0.4817973072749879,
+  "contestedZoneCommitShare": 0.1253758469044423,
+  "contestedZoneMinSurplusMilitary": 4,
+  "commanderFieldAssignRate": 0.3498830105234224,
+  "commanderMinArmySize": 1,
+  "scrollTerrainPriority": 0.15189092798168954,
+  "scrollTerrainMaxDivert": 2,
+  "universityIronMinePref": 0.47560158874936515,
+  "universityCityDefenseThreshold": 0.5789536460644229,
+  "navalRecruitBias": 0.2247823623831886,
+  "transportPriority": 0.8035208945397594,
+  "minShipsBeforeInvade": 3,
+  "maxRecruitsPerCity": 3,
+  "builderSupportPriority": 0,
+  "techProgressionPriority": 0.7678748555088928,
+  "clusterInterdictionPriority": 0.21956557848772712,
+  "clusterIsolationCommitShare": 0.24534689984856878,
+  "clusterIsolationDuration": 2,
+  "techAcquisitionWeight": 0.9821607519244888,
+  "techResourcePerUnitTarget": 8,
+  "localConsolidationPriority": 0.3817351821256604,
+  "frontierExpansionUnitBudgetShare": 0.21826779449096914,
+  "maxExpansionDepthFromNearestAnchor": 20,
+  "anchorFirstExpansionThreshold": 0.46330207152161296,
+  "deepRaidPenaltyDistanceStart": 14,
+  "deepRaidPenaltySlope": 0.9479297606635336,
+  "frontierAlignmentWeight": 1,
+  "attackReadinessThreshold": 0.7099492255416275,
+  "commitWindowCycles": 6,
+  "commitForceShare": 0.7625252472923777,
+  "fallbackLossThreshold": 0.4172107330745448,
+  "strategicExpandWeight": 1.179725001909053,
+  "strategicAttackWeight": 1.1139135974496441,
+  "strategicRiskWeight": 0.9210329870848548,
+  "strategicReserveShare": 0.4964994136424152,
+  "objectiveCommitMinForceRatio": 1.0260374721207672,
+  "objectiveSiegeMinShare": 0.05844473584992254
+}
+
+Wrote /Users/natreed/fallen-empire/artifacts/ai-params-train-pass1.json — use in game to load trained AI.

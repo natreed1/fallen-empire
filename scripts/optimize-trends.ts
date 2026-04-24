@@ -13,7 +13,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import type { AiParams } from '../src/lib/ai';
 import { DEFAULT_AI_PARAMS } from '../src/lib/ai';
-import { SCALAR_PARAM_KEYS } from '../src/lib/aiParamsSchema';
+import { MUTATION_RANGES, SCALAR_PARAM_KEYS } from '../src/lib/aiParamsSchema';
 
 const ARTIFACTS_DIR = path.join(process.cwd(), 'artifacts');
 const LEAGUE_LAST = path.join(ARTIFACTS_DIR, 'league-last.json');
@@ -160,8 +160,9 @@ function recommendedRange(
   spread: number,
 ): [number, number] {
   const def = getParamValue(DEFAULT_AI_PARAMS, key);
-  const lo = key === 'siegeChance' ? 0.05 : key === 'recruitGoldThreshold' ? 100 : key === 'foodBufferThreshold' || key === 'farmPriorityThreshold' ? 0 : 0.5;
-  const hi = key === 'siegeChance' ? 0.5 : key === 'recruitGoldThreshold' ? 800 : key === 'foodBufferThreshold' || key === 'farmPriorityThreshold' ? 30 : key === 'maxRecruitsWhenRich' || key === 'maxRecruitsWhenPoor' ? 5 : 2;
+  const mr = MUTATION_RANGES[key];
+  const lo = mr.min;
+  const hi = mr.max;
   const range = hi - lo;
   let halfWidth: number;
   if (classification === 'stable-good') {
@@ -172,8 +173,13 @@ function recommendedRange(
     halfWidth = range * 0.15;
   }
   const center = classification === 'unstable-bad' ? def : meanVal;
-  const low = Math.max(lo, center - halfWidth);
-  const high = Math.min(hi, center + halfWidth);
+  let low = Math.max(lo, center - halfWidth);
+  let high = Math.min(hi, center + halfWidth);
+  if (low > high) {
+    const c = Math.max(lo, Math.min(hi, center));
+    low = c;
+    high = c;
+  }
   return [low, high];
 }
 

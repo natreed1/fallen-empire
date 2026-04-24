@@ -1,0 +1,19 @@
+Training run artifacts (2026-04-23) — filename pattern: NN-order_<ISO-date-time>Z_<description>
+
+  00 — champion backup taken before swapping public/ai-params.json for validate (pre-validate)
+  01 — first training pass (log + ai-params JSON)
+  02 — second training pass, seeded from pass 01 output (log + ai-params JSON)
+  03 — validate-robustness run after evaluating pass 02 candidate vs DEFAULT_AI_PARAMS
+  04 — training pass: vs-default + self-play blend, TRAIN_MAX_CYCLES=520, stronger WON_QUICKLY bonus, env logged
+
+Files:
+  00-order_2026-04-23T04-02-06Z_champion-backup_pre-validate.json
+  01-order_2026-04-23T02-39-04Z_train-pass.log
+  01-order_2026-04-23T02-39-04Z_train-pass_ai-params.json
+  02-order_2026-04-23T04-00-33Z_train-pass.log
+  02-order_2026-04-23T04-00-33Z_train-pass_ai-params.json
+  03-order_2026-04-23T04-12-02Z_after-pass02_validate-robustness.txt
+  04-order_2026-04-23T14-19-49Z_train-pass.log
+  04-order_2026-04-23T14-19-49Z_train-pass_ai-params.json
+
+Timestamps in filenames are from each file’s modification time when renamed (local system time, for ordering).

@@ -5,6 +5,7 @@
  *
  * Run: npm run validate-robustness
  * Env: VALIDATE_NUM_MATCHES=100 (default 100), VALIDATE_MAX_CYCLES=500, VALIDATE_MAP_SIZE=38
+ *      VALIDATE_SKIP_THRESHOLDS=1 — print results but always exit 0 (for A/B decisiveness sweeps)
  */
 
 import * as path from 'path';
@@ -16,7 +17,6 @@ import {
   type RunSimulationOptions,
   type RunSimulationDiagnostics,
 } from '../src/core/gameCore';
-import { FIXED_ARCHETYPES } from './lib/archetypes';
 import { parseScenarioMix, selectScenario, getScenarioMapOverride } from './lib/scenarios';
 
 const NUM_MATCHES = parseInt(process.env.VALIDATE_NUM_MATCHES || '100', 10);
@@ -30,6 +30,7 @@ const MIN_GAMES_WITH_DEATHS = 1;
 const MAX_DRAW_RATE = 0.95;
 const MIN_OWNER_FLIP_RATE = 0.01;
 const MAX_TOTAL_STARVATION_RATE = 0.7;
+const SKIP_THRESHOLDS = process.env.VALIDATE_SKIP_THRESHOLDS === '1' || process.env.VALIDATE_SKIP_THRESHOLDS === 'true';
 
 const WIN_POINTS = 100;
 const LOSS_POINTS = -30;
@@ -72,8 +73,15 @@ function main() {
   let gamesWithDeaths = 0;
   let gamesWithOwnerFlip = 0;
   let draws = 0;
+  let winsAi1 = 0;
+  let winsAi2 = 0;
   let noCombatGames = 0;
   let totalStarvationGames = 0;
+  let sumCycleAll = 0;
+  let sumCycleDecisive = 0;
+  let decisiveCount = 0;
+  let timeoutAtMaxCycles = 0;
+  let sumKills = 0;
   const baselineScores: number[] = [];
   const candidateScores: number[] = [];
 
@@ -106,11 +114,23 @@ function main() {
       MAX_CYCLES,
       opts,
     );
-    const { winner, diagnostics, ai1Cities, ai2Cities, ai1Pop, ai2Pop } = result;
+    const { winner, diagnostics, ai1Cities, ai2Cities, ai1Pop, ai2Pop, cycle } = result;
+
+    sumCycleAll += cycle;
+    sumKills += diagnostics.totalKills;
+    if (winner === 'ai1') winsAi1++;
+    else if (winner === 'ai2') winsAi2++;
+    else {
+      draws++;
+      if (cycle >= MAX_CYCLES) timeoutAtMaxCycles++;
+    }
+    if (winner !== null) {
+      decisiveCount++;
+      sumCycleDecisive += cycle;
+    }
 
     if (diagnostics.totalKills > 0) gamesWithDeaths++;
     if (diagnostics.hadOwnerFlip) gamesWithOwnerFlip++;
-    if (winner === null) draws++;
     if (diagnostics.totalKills === 0) noCombatGames++;
     if (diagnostics.totalStarvationAbort) totalStarvationGames++;
 
@@ -129,9 +149,13 @@ function main() {
   }
 
   const drawRate = draws / n;
+  const decisiveRate = decisiveCount / n;
   const ownerFlipRate = gamesWithOwnerFlip / n;
   const noCombatRate = noCombatGames / n;
   const totalStarvationRate = totalStarvationGames / n;
+  const avgCycle = sumCycleAll / n;
+  const avgCycleDecisive = decisiveCount > 0 ? sumCycleDecisive / decisiveCount : 0;
+  const avgKills = sumKills / n;
 
   const mean = (arr: number[]) => arr.reduce((a, b) => a + b, 0) / arr.length;
   const std = (arr: number[]) => {
@@ -150,6 +174,14 @@ function main() {
   const baselineRobust = robustScore(baselineScores);
 
   console.log('Results');
+  console.log('  decisiveness (candidate=ai1, default=ai2):');
+  console.log(
+    `    candidateWins: ${winsAi1} (${((winsAi1 / n) * 100).toFixed(1)}%)  defaultWins: ${winsAi2} (${((winsAi2 / n) * 100).toFixed(1)}%)  draws: ${draws} (${(drawRate * 100).toFixed(1)}%)`,
+  );
+  console.log(
+    `    decisiveRate: ${(decisiveRate * 100).toFixed(1)}%  timeoutsAtMaxCycles: ${timeoutAtMaxCycles} (${((timeoutAtMaxCycles / n) * 100).toFixed(1)}%)`,
+  );
+  console.log(`    avgCycle(all): ${avgCycle.toFixed(1)}  avgCycle(decisive only): ${avgCycleDecisive.toFixed(1)}  avgKillsPerGame: ${avgKills.toFixed(2)}`);
   console.log('  gamesWithAnyDeaths:', gamesWithDeaths);
   console.log('  drawRate:', drawRate.toFixed(3));
   console.log('  ownerFlipRate:', ownerFlipRate.toFixed(3));
@@ -177,8 +209,9 @@ function main() {
     failed = true;
   }
 
-  if (failed) process.exit(1);
-  console.log('All regression thresholds passed.');
+  if (failed && !SKIP_THRESHOLDS) process.exit(1);
+  if (failed && SKIP_THRESHOLDS) console.log('(VALIDATE_SKIP_THRESHOLDS: ignoring threshold failures)');
+  else if (!failed) console.log('All regression thresholds passed.');
 }
 
 main();

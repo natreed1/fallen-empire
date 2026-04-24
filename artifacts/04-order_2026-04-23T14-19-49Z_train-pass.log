@@ -1,0 +1,212 @@
+npm warn Unknown env config "devdir". This will stop working in the next major version of npm.
+npm warn exec The following package was not found and will be installed: ts-node@10.9.2
+--- train-ai env snapshot ---
+startedAt: 2026-04-23T14:19:52.539Z
+cwd: /Users/natreed/fallen-empire
+TRAIN_DRAW_PENALTY=20
+TRAIN_ELITE_COUNT=4
+TRAIN_GENERATIONS=6
+TRAIN_MAP_SIZE=38
+TRAIN_MATCHES_PER_PAIR=5
+TRAIN_MAX_CYCLES=520
+TRAIN_MUTATION_STRENGTH=0.14
+TRAIN_OUT_JSON=artifacts/04-order_2026-04-23T14-19-49Z_train-pass_ai-params.json
+TRAIN_POPULATION_SIZE=8
+TRAIN_SELFPLAY_WEIGHT=0.7
+TRAIN_SHOW_BATTLES=0
+TRAIN_VARIANCE_PENALTY=0.45
+TRAIN_VS_DEFAULT_MATCHES=4
+TRAIN_VS_DEFAULT_WEIGHT=0.3
+computed: MAX_CYCLES=520 MAP_SIZE=38 VS_DEFAULT_MATCHES=4 EVAL_SELFPLAY_W=0.7 EVAL_VS_DEFAULT_W=0.3
+-----------------------------
+Training AI parameters (evolutionary + multi-game evaluation)...
+Param count: 61  In mutation space: 61  Excluded: 0 (none)
+Evolvable params: siegeChance, recruitGoldThreshold, maxRecruitsWhenRich, maxRecruitsWhenPoor, targetDefenderWeight, nearestTargetDistanceRatio, builderRecruitChance, builderRecruitForMinesAndSiege, foodBufferThreshold, sustainableMilitaryMultiplier, farmFirstBias, farmPriorityThreshold, factoryUpgradePriority, scoutChance, incorporateVillageChance, targetPopWeight, minePriorityThreshold, l2AdoptionRate, targetRangedShare, targetSiegeShare, compositionCorrectionStrength, assaultWingShare, screenWingShare, maxChaseDistance, targetDispersion, villageDefensePriority, villageRecapturePriority, frontlineMeleeShare, backlineRangedDistance, siegeBacklineDistance, flankCavalryShare, formationCohesion, l3AcquisitionWeight, l3IronPerUnitTarget, l2StonePerUnitTarget, militaryLevelMixTarget, militaryLevelMixCorrectionStrength, defenderCityHexCoverageTarget, defenderAssignmentPriority, wallBuildPerCityTarget, wallBuildPriority, wallToDefenderSynergyWeight, wallClosurePriority, wallRepairPriority, wallRingTarget, wallClosureUptimeWeight, supplyExpansionPriority, supplyAnchorDistanceWeight, supplyStarvationRiskWeight, supplyCityAcquisitionBias, contestedZoneCommitShare, contestedZoneMinSurplusMilitary, commanderFieldAssignRate, commanderMinArmySize, scrollTerrainPriority, scrollTerrainMaxDivert, universityIronMinePref, universityCityDefenseThreshold, navalRecruitBias, transportPriority, minShipsBeforeInvade
+Maps: scenario mix ON  (default mix from scripts/lib/scenarios.ts — includes naval-islands)  naval postInit: on (when naval-islands)  base size: 38 (overridden by scenario)  maxCycles: 520
+Gens: 6  population: 8  matches/candidate: 5  elite: 4
+  vs-default: 4 pair(s)  blend self 70% / vs DEFAULT_AI_PARAMS 30%  (WON_QUICKLY_BONUS/cycle=0.1)
+Trend report: using 15 param overrides (artifacts/trend-report.json)
+
+Seed baseline: loaded /Users/natreed/fallen-empire/public/ai-params.json
+Initial baseline: [61 params] {"siegeChance":0.2044860223879972,"recruitGoldThreshold":469,"maxRecruitsWhenRich":2,"maxRecruitsWhe…
+
+
+═══════════════════════════════════════════  Gen 1/6  ═══════════════════════════════════════════
+Baseline: [61 params] {"siegeChance":0.2044860223879972,"recruitGoldThreshold":469,"maxRecruitsWhenRich":2,"maxRecruitsWhe…
+  Candidate 1/8... 72.6 blend (sp 80.6 + vd 54.0) (μ_sp=88.5 σ_sp=17.4)
+  Candidate 2/8... 47.4 blend (sp 79.6 + vd -27.5) (μ_sp=139.3 σ_sp=132.7)
+  Candidate 3/8... 31.7 blend (sp 16.8 + vd 66.5) (μ_sp=93.4 σ_sp=170.1)
+  Candidate 4/8... -68.9 blend (sp -64.0 + vd -80.5) (μ_sp=-14.6 σ_sp=109.8)
+  Candidate 5/8... -32.8 blend (sp -83.4 + vd 85.3) (μ_sp=-32.4 σ_sp=113.4)
+  Candidate 6/8... -96.0 blend (sp -78.7 + vd -136.5) (μ_sp=-2.5 σ_sp=169.4)
+  Candidate 7/8... 122.6 blend (sp 104.9 + vd 163.8) (μ_sp=143.5 σ_sp=85.7)
+  Candidate 8/8... -70.1 blend (sp -40.2 + vd -139.8) (μ_sp=93.0 σ_sp=296.0)
+  Generation eval: 966.8s
+
+  ► Best: score 122.6 (μ=143.5 σ=85.7)  [61 params] {"siegeChance":0.21306025756421937,"recruitGoldThreshold":424,"maxRecruitsWhenRich":2,"maxRecruitsWh…
+
+═══════════════════════════════════════════  Gen 2/6  ═══════════════════════════════════════════
+Baseline: [61 params] {"siegeChance":0.21306025756421937,"recruitGoldThreshold":424,"maxRecruitsWhenRich":2,"maxRecruitsWh…
+  Candidate 1/8... 60.4 blend (sp 58.5 + vd 64.9) (μ_sp=66.3 σ_sp=17.4)
+  Candidate 2/8... 49.8 blend (sp 43.3 + vd 65.1) (μ_sp=53.0 σ_sp=21.7)
+  Candidate 3/8... 61.0 blend (sp 59.3 + vd 65.2) (μ_sp=72.9 σ_sp=30.4)
+  Candidate 4/8... 43.6 blend (sp 60.0 + vd 5.5) (μ_sp=108.5 σ_sp=107.8)
+  Candidate 5/8... 21.3 blend (sp 40.6 + vd -23.6) (μ_sp=88.3 σ_sp=106.0)
+  Candidate 6/8... 73.8 blend (sp 24.1 + vd 189.7) (μ_sp=58.1 σ_sp=75.5)
+  Candidate 7/8... -24.4 blend (sp 53.4 + vd -205.9) (μ_sp=162.5 σ_sp=242.4)
+  Candidate 8/8... 31.7 blend (sp 73.2 + vd -65.1) (μ_sp=107.7 σ_sp=76.6)
+  Generation eval: 651.1s
+
+  ► Best: score 73.8 (μ=58.1 σ=75.5)  [61 params] {"siegeChance":0.21556812037145223,"recruitGoldThreshold":412,"maxRecruitsWhenRich":2,"maxRecruitsWh…
+
+═══════════════════════════════════════════  Gen 3/6  ═══════════════════════════════════════════
+Baseline: [61 params] {"siegeChance":0.21556812037145223,"recruitGoldThreshold":412,"maxRecruitsWhenRich":2,"maxRecruitsWh…
+  Candidate 1/8... -38.1 blend (sp 71.1 + vd -292.9) (μ_sp=280.2 σ_sp=464.8)
+  Candidate 2/8... -75.5 blend (sp -93.3 + vd -34.0) (μ_sp=-48.6 σ_sp=99.3)
+  Candidate 3/8... -103.0 blend (sp -165.4 + vd 42.6) (μ_sp=-90.2 σ_sp=167.1)
+  Candidate 4/8... -30.3 blend (sp -53.8 + vd 24.5) (μ_sp=6.5 σ_sp=133.9)
+  Candidate 5/8... 69.2 blend (sp 97.1 + vd 3.9) (μ_sp=171.9 σ_sp=166.2)
+  Candidate 6/8... 3.0 blend (sp 12.4 + vd -19.1) (μ_sp=100.6 σ_sp=196.1)
+  Candidate 7/8... 10.5 blend (sp -81.4 + vd 225.0) (μ_sp=30.7 σ_sp=249.2)
+  Candidate 8/8... 40.8 blend (sp 13.6 + vd 104.2) (μ_sp=79.7 σ_sp=146.7)
+  Generation eval: 2864.9s
+
+  ► Best: score 69.2 (μ=171.9 σ=166.2)  [61 params] {"siegeChance":0.21859198355596912,"recruitGoldThreshold":421,"maxRecruitsWhenRich":2,"maxRecruitsWh…
+
+═══════════════════════════════════════════  Gen 4/6  ═══════════════════════════════════════════
+Baseline: [61 params] {"siegeChance":0.21859198355596912,"recruitGoldThreshold":421,"maxRecruitsWhenRich":2,"maxRecruitsWh…
+  Candidate 1/8... 40.9 blend (sp 88.1 + vd -69.3) (μ_sp=114.8 σ_sp=59.3)
+  Candidate 2/8... 35.1 blend (sp 22.3 + vd 64.9) (μ_sp=59.7 σ_sp=83.1)
+  Candidate 3/8... -43.5 blend (sp -28.7 + vd -77.9) (μ_sp=91.4 σ_sp=266.9)
+  Candidate 4/8... 7.9 blend (sp 20.9 + vd -22.6) (μ_sp=102.8 σ_sp=181.9)
+  Candidate 5/8... -77.4 blend (sp -67.8 + vd -100.1) (μ_sp=9.5 σ_sp=171.6)
+  Candidate 6/8... -141.1 blend (sp -166.5 + vd -81.8) (μ_sp=-80.4 σ_sp=191.3)
+  Candidate 7/8... 45.8 blend (sp 23.6 + vd 97.7) (μ_sp=58.0 σ_sp=76.4)
+  Candidate 8/8... 45.8 blend (sp 106.2 + vd -95.1) (μ_sp=187.5 σ_sp=180.7)
+  Generation eval: 1040.4s
+
+  ► Best: score 45.8 (μ=58.0 σ=76.4)  [61 params] {"siegeChance":0.2068917674931677,"recruitGoldThreshold":431,"maxRecruitsWhenRich":2,"maxRecruitsWhe…
+
+═══════════════════════════════════════════  Gen 5/6  ═══════════════════════════════════════════
+Baseline: [61 params] {"siegeChance":0.2068917674931677,"recruitGoldThreshold":431,"maxRecruitsWhenRich":2,"maxRecruitsWhe…
+  Candidate 1/8... -32.7 blend (sp -23.3 + vd -54.6) (μ_sp=35.6 σ_sp=130.8)
+  Candidate 2/8... -56.4 blend (sp -41.3 + vd -91.6) (μ_sp=41.0 σ_sp=183.0)
+  Candidate 3/8... 65.7 blend (sp 61.8 + vd 74.8) (μ_sp=68.4 σ_sp=14.6)
+  Candidate 4/8... -3.8 blend (sp -22.9 + vd 40.6) (μ_sp=37.4 σ_sp=133.9)
+  Candidate 5/8... -70.3 blend (sp -53.4 + vd -109.6) (μ_sp=35.3 σ_sp=197.1)
+  Candidate 6/8... 153.1 blend (sp 158.1 + vd 141.5) (μ_sp=207.7 σ_sp=110.4)
+  Candidate 7/8... 17.5 blend (sp -41.6 + vd 155.3) (μ_sp=1.1 σ_sp=95.0)
+  Candidate 8/8... 62.9 blend (sp 87.0 + vd 6.7) (μ_sp=128.0 σ_sp=91.0)
+  Generation eval: 4874.6s
+
+  ► Best: score 153.1 (μ=207.7 σ=110.4)  [61 params] {"siegeChance":0.2153057639043072,"recruitGoldThreshold":445,"maxRecruitsWhenRich":2,"maxRecruitsWhe…
+
+═══════════════════════════════════════════  Gen 6/6  ═══════════════════════════════════════════
+Baseline: [61 params] {"siegeChance":0.2153057639043072,"recruitGoldThreshold":445,"maxRecruitsWhenRich":2,"maxRecruitsWhe…
+  Candidate 1/8... 149.6 blend (sp 184.4 + vd 68.6) (μ_sp=227.9 σ_sp=96.6)
+  Candidate 2/8... 5.2 blend (sp 70.9 + vd -148.0) (μ_sp=135.9 σ_sp=144.5)
+  Candidate 3/8... 54.5 blend (sp 97.2 + vd -45.2) (μ_sp=209.0 σ_sp=248.3)
+  Candidate 4/8... 7.6 blend (sp -21.3 + vd 74.9) (μ_sp=110.2 σ_sp=292.2)
+  Candidate 5/8... 67.1 blend (sp 173.1 + vd -180.3) (μ_sp=212.7 σ_sp=88.0)
+  Candidate 6/8... 6.3 blend (sp 32.6 + vd -54.9) (μ_sp=143.0 σ_sp=245.4)
+  Candidate 7/8... 107.9 blend (sp 94.2 + vd 139.8) (μ_sp=174.4 σ_sp=178.4)
+  Candidate 8/8... 14.5 blend (sp 59.9 + vd -91.4) (μ_sp=138.4 σ_sp=174.4)
+  Generation eval: 12170.8s
+
+  ► Best: score 149.6 (μ=227.9 σ=96.6)  [61 params] {"siegeChance":0.2153057639043072,"recruitGoldThreshold":445,"maxRecruitsWhenRich":2,"maxRecruitsWhe…
+
+Best params:
+{
+  "siegeChance": 0.2153057639043072,
+  "recruitGoldThreshold": 445,
+  "maxRecruitsWhenRich": 2,
+  "maxRecruitsWhenPoor": 1,
+  "targetDefenderWeight": 2.650346533150456,
+  "nearestTargetDistanceRatio": 0.907491325721002,
+  "builderRecruitChance": 0.5,
+  "builderRecruitForMinesAndSiege": 0.32091111469967093,
+  "foodBufferThreshold": 17,
+  "sustainableMilitaryMultiplier": 0.8840207853756462,
+  "farmFirstBias": 0.4589100876495231,
+  "farmPriorityThreshold": 17,
+  "factoryUpgradePriority": 0.6943334456641083,
+  "scoutChance": 1.0568848274835232,
+  "incorporateVillageChance": 0.9043864156476614,
+  "targetPopWeight": 0.9227714666533093,
+  "minePriorityThreshold": 10,
+  "l2AdoptionRate": 0.15097049120584113,
+  "targetRangedShare": 0.14056776762557122,
+  "targetSiegeShare": 0.03454838657995032,
+  "compositionCorrectionStrength": 0.6694944154190728,
+  "assaultWingShare": 0.7677536831660872,
+  "screenWingShare": 0.2703062714935047,
+  "maxChaseDistance": 4,
+  "targetDispersion": 0.47005611823562565,
+  "villageDefensePriority": 0.3533530492864646,
+  "villageRecapturePriority": 0.8174069171287531,
+  "frontlineMeleeShare": 0.434419657862216,
+  "backlineRangedDistance": 3,
+  "siegeBacklineDistance": 4,
+  "flankCavalryShare": 0.22599686194889596,
+  "formationCohesion": 0.6646266454183133,
+  "l3AcquisitionWeight": 1.231659825349382,
+  "l3IronPerUnitTarget": 12,
+  "l2StonePerUnitTarget": 9,
+  "militaryLevelMixTarget": {
+    "L1": 0.36718782546454787,
+    "L2": 0.24997514524803885,
+    "L3": 0.3828370292874133
+  },
+  "militaryLevelMixCorrectionStrength": 0.8219458185993828,
+  "defenderCityHexCoverageTarget": 1,
+  "defenderAssignmentPriority": 0.9648713124974497,
+  "wallBuildPerCityTarget": 2,
+  "wallBuildPriority": 0.8280683609571348,
+  "wallToDefenderSynergyWeight": 0.05056325766243173,
+  "wallClosurePriority": 0.3365974594748966,
+  "wallRepairPriority": 0.13081830375312373,
+  "wallRingTarget": 1,
+  "wallClosureUptimeWeight": 0.15939429059388202,
+  "supplyExpansionPriority": 1,
+  "supplyAnchorDistanceWeight": 0.4950061310467311,
+  "supplyStarvationRiskWeight": 0.8267666300285388,
+  "supplyCityAcquisitionBias": 0.4123680367005656,
+  "contestedZoneCommitShare": 0.06908336401460001,
+  "contestedZoneMinSurplusMilitary": 1,
+  "commanderFieldAssignRate": 0.37408113060231485,
+  "commanderMinArmySize": 2,
+  "scrollTerrainPriority": 0.31081161824512016,
+  "scrollTerrainMaxDivert": 2,
+  "universityIronMinePref": 0.4924526108149059,
+  "universityCityDefenseThreshold": 0.44691654002893794,
+  "navalRecruitBias": 0.2192879106425331,
+  "transportPriority": 0.5259364256201559,
+  "minShipsBeforeInvade": 1,
+  "maxRecruitsPerCity": 3,
+  "builderSupportPriority": 0,
+  "techProgressionPriority": 0.7678748555088928,
+  "clusterInterdictionPriority": 0.21956557848772712,
+  "clusterIsolationCommitShare": 0.24534689984856878,
+  "clusterIsolationDuration": 2,
+  "techAcquisitionWeight": 0.9821607519244888,
+  "techResourcePerUnitTarget": 8,
+  "localConsolidationPriority": 0.3817351821256604,
+  "frontierExpansionUnitBudgetShare": 0.21826779449096914,
+  "maxExpansionDepthFromNearestAnchor": 20,
+  "anchorFirstExpansionThreshold": 0.46330207152161296,
+  "deepRaidPenaltyDistanceStart": 14,
+  "deepRaidPenaltySlope": 0.9479297606635336,
+  "frontierAlignmentWeight": 1,
+  "attackReadinessThreshold": 0.7099492255416275,
+  "commitWindowCycles": 6,
+  "commitForceShare": 0.7625252472923777,
+  "fallbackLossThreshold": 0.4172107330745448,
+  "strategicExpandWeight": 1.179725001909053,
+  "strategicAttackWeight": 1.1139135974496441,
+  "strategicRiskWeight": 0.9210329870848548,
+  "strategicReserveShare": 0.4964994136424152,
+  "objectiveCommitMinForceRatio": 1.0260374721207672,
+  "objectiveSiegeMinShare": 0.05844473584992254
+}
+
+Wrote /Users/natreed/fallen-empire/artifacts/04-order_2026-04-23T14-19-49Z_train-pass_ai-params.json — use in game to load trained AI.

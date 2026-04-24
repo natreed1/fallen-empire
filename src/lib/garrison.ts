@@ -61,6 +61,8 @@ export function clearPatrolFieldsMutable(u: Unit): void {
   delete u.patrolCenterR;
   delete u.patrolRadius;
   delete u.patrolHexKeys;
+  delete u.patrolCityId;
+  delete u.patrolFrontSlot;
 }
 
 /**
@@ -103,7 +105,7 @@ export function tryReGarrisonIdleUnit(u: Unit, cities: City[]): void {
   if (u.hp <= 0 || !isLandMilitaryUnit(u) || u.aboardShipId) return;
   if (u.status !== 'idle') return;
   if (u.cityDefenseMode === 'auto_engage') return;
-  if (u.patrolCenterQ !== undefined) return;
+  if (u.patrolCenterQ !== undefined || u.patrolCityId !== undefined) return;
   const city = cities.find(c => c.q === u.q && c.r === u.r && c.ownerId === u.ownerId);
   if (!city) return;
   u.garrisonCityId = city.id;

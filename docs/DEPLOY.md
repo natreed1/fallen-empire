@@ -4,18 +4,20 @@ The game is a standard **Next.js 14** app. All gameplay runs in the browser; hos
 
 ## 1. Environment variables (Vercel) — optional
 
-**Production** uses built-in defaults for the password gate (see [`src/lib/siteAuth.ts`](../src/lib/siteAuth.ts)), so you do **not** need to set anything in Vercel for protection to work.
+**Production** uses built-in defaults for the password gate (see `[src/lib/siteAuth.ts](../src/lib/siteAuth.ts)`), so you do **not** need to set anything in Vercel for protection to work.
 
 To **change** the password or rotate the session signing key, add in **Settings → Environment Variables**:
 
-| Name | Value |
-|------|--------|
-| `SITE_PASSWORD` | Shared password shown on `/login` |
+
+| Name            | Value                                                                           |
+| --------------- | ------------------------------------------------------------------------------- |
+| `SITE_PASSWORD` | Shared password shown on `/login`                                               |
 | `COOKIE_SECRET` | Long random secret (e.g. `openssl rand -hex 32`); changing it logs everyone out |
 
-**Local dev:** Unset = no gate. Set both in `.env.local` (see [`.env.example`](../.env.example)) to test `/login` locally.
 
-Copy [`.env.example`](../.env.example) to `.env.local` locally when testing the gate:
+**Local dev:** Unset = no gate. Set both in `.env.local` (see `[.env.example](../.env.example)`) to test `/login` locally.
+
+Copy `[.env.example](../.env.example)` to `.env.local` locally when testing the gate:
 
 ```bash
 cp .env.example .env.local
@@ -47,28 +49,30 @@ In Vercel: **Project → Settings → Domains** — add your domain and follow D
 
 ## 5. Multiplayer game server (Railway) + Vercel client
 
-The **Next.js app** can stay on **Vercel**. **Online 1v1** also needs the **WebSocket game process** in [`game-server/`](../game-server/) running 24/7 — that is **not** run on Vercel. **Railway** (or similar) hosts that process; the browser connects from your Vercel URL to Railway over **`wss://`**.
+The **Next.js app** can stay on **Vercel**. **Online 1v1** also needs the **WebSocket game process** in `[game-server/](../game-server/)` running 24/7 — that is **not** run on Vercel. **Railway** (or similar) hosts that process; the browser connects from your Vercel URL to Railway over `**wss://`**.
 
 ### 5.1 Create the Railway service (same GitHub repo)
 
-The game server imports **`src/`** from the repo root (`../../src/...` from `game-server`). **Railpack** (auto-detect) often fails on a monorepo (“Error creating build plan with Railpack”). This repo uses **`game-server/Dockerfile`** with **build context = repository root** so both `src/` and `game-server/` are included. [`railway.toml`](../railway.toml) at the repo root sets the Docker builder.
+The game server imports `**src/**` from the repo root (`../../src/...` from `game-server`). **Railpack** (auto-detect) often fails on a monorepo (“Error creating build plan with Railpack”). This repo uses `**game-server/Dockerfile`** with **build context = repository root** so both `src/` and `game-server/` are included. `[railway.toml](../railway.toml)` at the repo root sets the Docker builder.
 
 1. In [Railway](https://railway.app): **New project** → **Deploy from GitHub repo** → select this repository.
 2. Open the service **Settings → Build**:
-   - **Root Directory:** leave **empty** (repo root), **not** `game-server`.  
-     If Root Directory is set to only `game-server`, the Docker build cannot see `src/` and will fail.
-   - **Builder:** **Dockerfile** (or let Railway read [`railway.toml`](../railway.toml) after redeploy).
-   - **Dockerfile path:** `game-server/Dockerfile`
+  - **Root Directory:** leave **empty** (repo root), **not** `game-server`.  
+   If Root Directory is set to only `game-server`, the Docker build cannot see `src/` and will fail.
+  - **Builder:** **Dockerfile** (or let Railway read `[railway.toml](../railway.toml)` after redeploy).
+  - **Dockerfile path:** `game-server/Dockerfile`
 3. **Deploy** — the image runs `npm start` inside `/app/game-server` (see the Dockerfile).
-4. **Generate domain:** **Settings → Networking → Public Networking** → generate a public URL (e.g. `*.up.railway.app`). Browsers use **`wss://`** to the **same host** for WebSockets.
+4. **Generate domain:** **Settings → Networking → Public Networking** → generate a public URL (e.g. `*.up.railway.app`). Browsers use `**wss://`** to the **same host** for WebSockets.
 
 ### 5.2 Environment variable on Vercel (connect the two products)
 
 In **Vercel → your Next.js project → Settings → Environment Variables** (Production):
 
-| Name | Value |
-|------|--------|
+
+| Name                             | Value                            |
+| -------------------------------- | -------------------------------- |
 | `NEXT_PUBLIC_MULTIPLAYER_WS_URL` | `wss://YOUR-RAILWAY-PUBLIC-HOST` |
+
 
 Example: if Railway shows `https://fallen-empire-game-production-xxxx.up.railway.app`, set:
 
@@ -80,11 +84,13 @@ Redeploy Vercel after saving so the client bundle picks up the variable.
 
 ### 5.3 What runs where
 
-| Piece | Host |
-|--------|------|
-| Next.js UI | Vercel |
-| `game-server` (WS + sim ticks) | Railway |
-| Browser | Uses `NEXT_PUBLIC_MULTIPLAYER_WS_URL` → Railway |
+
+| Piece                          | Host                                            |
+| ------------------------------ | ----------------------------------------------- |
+| Next.js UI                     | Vercel                                          |
+| `game-server` (WS + sim ticks) | Railway                                         |
+| Browser                        | Uses `NEXT_PUBLIC_MULTIPLAYER_WS_URL` → Railway |
+
 
 You do **not** merge the two into one deploy: two hosts, one env var links them.
 
@@ -100,3 +106,4 @@ Terminal B: `npm run dev`, open the app, **1v1 Online** — should connect to `w
 - **HTTPS:** Vercel provides TLS; the auth cookie uses `Secure` in production.
 - **Dev-only API routes** (`/api/workflow`, `/api/evolve`) use the filesystem; they may error on Vercel and are not required to play the game.
 - **Logout:** `DELETE /api/auth` clears the session cookie (optional; not wired in the UI).
+

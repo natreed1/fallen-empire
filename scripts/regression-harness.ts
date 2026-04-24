@@ -6,6 +6,9 @@
  * Env: REGRESSION_SEEDS=10001,10002,10003 (comma-separated fixed seeds)
  *      REGRESSION_PARAMS_A=public/ai-params.json (path to first params)
  *      REGRESSION_PARAMS_B=public/ai-params.json (path to second, or omit for default)
+ *      REGRESSION_MATCH_TRAIN_SIM=1 — use the same scenario mix + naval postInit as `npm run train-ai`
+ *        (honors TRAIN_USE_SCENARIO_MIX, TRAIN_SCENARIO_MIX, TRAIN_NAVAL_POSTINIT, TRAIN_NAVAL_EDUCATION,
+ *        TRAIN_MAX_CYCLES, TRAIN_MAP_SIZE when set; else falls back to REGRESSION_*).
  */
 
 import * as path from 'path';
@@ -16,10 +19,13 @@ import {
   type AiParams,
   type RunSimulationOptions,
 } from '../src/core/gameCore';
+import { getTrainSimOptsForSeed, readTrainSimMatchConfigFromEnv } from './lib/trainSimOptions';
 
 const DEFAULT_SEEDS = [10001, 10002, 10003, 10004, 10005];
 const MAX_CYCLES = parseInt(process.env.REGRESSION_MAX_CYCLES || '300', 10);
 const MAP_SIZE = parseInt(process.env.REGRESSION_MAP_SIZE || '38', 10);
+const MATCH_TRAIN_SIM =
+  process.env.REGRESSION_MATCH_TRAIN_SIM === '1' || process.env.REGRESSION_MATCH_TRAIN_SIM === 'true';
 
 function loadParams(filePath: string): AiParams {
   const resolved = path.isAbsolute(filePath) ? filePath : path.join(process.cwd(), filePath);
@@ -40,14 +46,24 @@ function main(): void {
   const paramsA = loadParams(pathA);
   const paramsB = pathB ? loadParams(pathB) : DEFAULT_AI_PARAMS;
   const seeds = getSeeds();
-  const opts: RunSimulationOptions = { maxCycles: MAX_CYCLES, mapConfigOverride: { width: MAP_SIZE, height: MAP_SIZE } };
+  const trainCfg = readTrainSimMatchConfigFromEnv();
+  const flatOpts: RunSimulationOptions = { maxCycles: MAX_CYCLES, mapConfigOverride: { width: MAP_SIZE, height: MAP_SIZE } };
 
   console.log('Regression harness (deterministic A/B)');
   console.log(`  Params A: ${pathA}`);
   console.log(`  Params B: ${pathB || 'DEFAULT_AI_PARAMS'}`);
   console.log(`  Seeds: ${seeds.join(', ')}`);
-  console.log(`  MaxCycles: ${MAX_CYCLES}  Map: ${MAP_SIZE}x${MAP_SIZE}`);
+  if (MATCH_TRAIN_SIM) {
+    console.log(
+      `  Sim mode: MATCH_TRAIN_SIM (maxCycles=${trainCfg.maxCycles}, mapSize=${trainCfg.mapSize}, scenarioMix=${trainCfg.useScenarioMix}, navalPostInit=${trainCfg.navalPostInit}, navalEducation=${trainCfg.navalEducation})`,
+    );
+  } else {
+    console.log(`  Sim mode: flat map  MaxCycles: ${MAX_CYCLES}  Map: ${MAP_SIZE}x${MAP_SIZE}`);
+  }
   console.log('');
+
+  const simOptsForSeed = (seed: number): RunSimulationOptions =>
+    MATCH_TRAIN_SIM ? getTrainSimOptsForSeed(seed, trainCfg) : flatOpts;
 
   let winsA = 0;
   let winsB = 0;
@@ -56,8 +72,10 @@ function main(): void {
   let gamesWithOwnerFlip = 0;
 
   for (const seed of seeds) {
-    const r1 = runSimulationWithDiagnostics(paramsA, paramsB, seed, MAX_CYCLES, opts);
-    const r2 = runSimulationWithDiagnostics(paramsB, paramsA, seed + 1, MAX_CYCLES, opts);
+    const o1 = simOptsForSeed(seed);
+    const o2 = simOptsForSeed(seed + 1);
+    const r1 = runSimulationWithDiagnostics(paramsA, paramsB, seed, o1.maxCycles ?? MAX_CYCLES, o1);
+    const r2 = runSimulationWithDiagnostics(paramsB, paramsA, seed + 1, o2.maxCycles ?? MAX_CYCLES, o2);
     if (r1.winner === 'ai1') winsA++;
     else if (r1.winner === 'ai2') winsB++;
     else draws++;

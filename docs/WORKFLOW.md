@@ -12,11 +12,11 @@ A single place to capture ideas, things to build, and notes so we can see them a
 | *"Add [X] to backlog"* / *"We should build …"* / *"Come back to this"* | **Backlog** below |
 | *"Note [X]"* / *"Document this"* / *"Add to notes"* | **Notes** below |
 | *"What’s in the workflow?"* / *"Show workflow"* | This file |
-| *"Run the changes check"* / *"Check changes"* | Use the prompt in [CURSOR_SIMULATION_FIX_OUTLINE.MD](./CURSOR_SIMULATION_FIX_OUTLINE.MD) |
+| *"Run the changes check"* / *"Check changes"* | Use the prompt in [CURSOR_SIMULATION_FIX_OUTLINE.md](./CURSOR_SIMULATION_FIX_OUTLINE.md) |
 
 ---
 
-**Use it in the browser:** Run the app and open [/workflow](http://localhost:3000/workflow) to view and edit this doc (like a simple Google Doc). Use **Edit** to change it and **Save** to write back to this file.
+**Use it in the browser:** Run the app and open [/workflow](http://localhost:3010/workflow) to view and edit this doc (like a simple Google Doc). Use **Edit** to change it and **Save** to write back to this file.
 
 ---
 
@@ -25,6 +25,7 @@ A single place to capture ideas, things to build, and notes so we can see them a
 *Future features, "would be cool", rough concepts. No commitment yet.*
 
 - **Field command UI polish** — Clearer hierarchy (primary vs secondary actions), consolidate repeated hex/coords into one “context chip,” compact tab + army header row, optional collapsible “advanced” (attach/link/map sub-panels), stronger empty states (commander, nothing to attach), and consistent button tiers (one accent for confirm, muted for cancel/danger).
+- **Combat participation cap** — Only allow a limited number of units to actively engage in a single combat at once (excess in the hex wait in reserve or contribute indirectly), to reduce death-ball stacking and make front lines/readability matter more.
 
 ---
 
@@ -58,12 +59,13 @@ A single place to capture ideas, things to build, and notes so we can see them a
 
 ## Related docs
 
+- [Documentation index](./README.md) — all `docs/` markdown in one place
 - [Plan: Level 3 units, stone/iron](./PLAN_LEVEL3_UNITS_STONE_IRON.md) — L3 tier, L2 stone, L3 iron, defender L3-only
 - [Balance: L3 & defender](./BALANCE_L3_DEFENDER.md) — cost/stat table, economy, tuning notes
 - [Siege & Combat Design](./SIEGE_AND_COMBAT_DESIGN.md) — city capture, siege, supply, combat rules (and **Implementation checklist** for changes check)
 - [AI Training](./AI_TRAINING.md) — sim, fitness, main-thread training
-- [Cursor simulation fix outline](./CURSOR_SIMULATION_FIX_OUTLINE.MD) — changes check prompt and sim/training points
+- [Cursor simulation fix outline](./CURSOR_SIMULATION_FIX_OUTLINE.md) — changes check prompt and sim/training points
 - [Simulation economy analysis](./SIMULATION_ECONOMY_ANALYSIS.md) — starvation lock, food-aware recruit gating
 - [Optimization](./OPTIMIZATION.md) — evolutionary model, GPU notes
 
-*Last updated: 2026-04-15*
+*Last updated: 2026-04-23*

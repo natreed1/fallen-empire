@@ -7,6 +7,8 @@ export function getNextWallBuildHex(
   tiles: Map<string, Tile>,
   builtWallKeys: Set<string>,
   queuedWallKeys: Set<string>,
+  /** When set, skip wall hexes not yet explored (fog of war). */
+  exploredHexKeys?: Set<string> | null,
 ): { q: number; r: number; ring: 1 | 2 } | null {
   for (const ring of [1, 2] as const) {
     const ringHexes = getHexRing(city.q, city.r, ring);
@@ -15,6 +17,7 @@ export function getNextWallBuildHex(
       if (!t || t.biome === 'water') continue;
       const k = tileKey(q, r);
       if (builtWallKeys.has(k) || queuedWallKeys.has(k)) continue;
+      if (exploredHexKeys && !exploredHexKeys.has(k)) continue;
       return { q, r, ring };
     }
   }

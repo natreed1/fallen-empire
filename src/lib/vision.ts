@@ -1,6 +1,6 @@
 import {
   Tile, City, Unit, Hero, ScoutTower, Commander,
-  VISION_RANGE, CITY_VISION_RANGE, BUILDING_VISION_RANGE, SCOUT_TOWER_VISION_RANGE,
+  VISION_RANGE, LAND_SCOUT_VISION_RANGE, CITY_VISION_RANGE, BUILDING_VISION_RANGE, SCOUT_TOWER_VISION_RANGE,
   TERRITORY_BORDER_VISION_RANGE,
   hexDistance, tileKey, parseTileKey,
   type MapQuadrantId,
@@ -87,10 +87,11 @@ export function computeVisibleHexes(
 ): Set<string> {
   const sources: VisionSource[] = [];
 
-  // Units grant VISION_RANGE
+  // Units grant VISION_RANGE (land scouts see farther)
   for (const u of units) {
     if (u.ownerId === playerId && u.hp > 0) {
-      sources.push({ q: u.q, r: u.r, range: VISION_RANGE });
+      const range = u.type === 'scout' ? LAND_SCOUT_VISION_RANGE : VISION_RANGE;
+      sources.push({ q: u.q, r: u.r, range });
     }
   }
 

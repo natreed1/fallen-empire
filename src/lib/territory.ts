@@ -104,6 +104,43 @@ export function getPlayerTerritory(
   return keys;
 }
 
+/** Land tiles of `cityId`'s territory that border a hex outside that territory (front line). */
+export function getCityFrontierLandHexKeys(
+  cityId: string,
+  territory: Map<string, TerritoryInfo>,
+  tiles: Map<string, Tile>,
+): string[] {
+  const terrKeys = getCityTerritory(cityId, territory);
+  const keySet = new Set(terrKeys);
+  const out: string[] = [];
+  for (const k of terrKeys) {
+    const t = tiles.get(k);
+    if (!t || t.biome === 'water') continue;
+    const [q, r] = parseTileKey(k);
+    let isBorder = false;
+    for (const [nq, nr] of hexNeighbors(q, r)) {
+      if (!keySet.has(tileKey(nq, nr))) {
+        isBorder = true;
+        break;
+      }
+    }
+    if (isBorder) out.push(k);
+  }
+  return out;
+}
+
+/** Stable ring order for patrol goal rotation (angle around city center in axial space). */
+export function sortPatrolFrontierKeys(keys: string[], centerQ: number, centerR: number): string[] {
+  return [...keys].sort((a, b) => {
+    const [aq, ar] = parseTileKey(a);
+    const [bq, br] = parseTileKey(b);
+    const angA = Math.atan2(ar - centerR, aq - centerQ);
+    const angB = Math.atan2(br - centerR, bq - centerQ);
+    if (angA !== angB) return angA - angB;
+    return a.localeCompare(b);
+  });
+}
+
 /** City to spend refined wood from for a field build: territory hex's city first, else nearest stocked city. */
 export function findCityForRefinedWoodSpend(
   q: number,
@@ -125,6 +162,42 @@ export function findCityForRefinedWoodSpend(
   for (const c of cities) {
     if (c.ownerId !== playerId) continue;
     if ((c.storage.refinedWood ?? 0) < amount) continue;
+    const d = hexDistance(q, r, c.q, c.r);
+    if (d < bestD) {
+      bestD = d;
+      best = c;
+    }
+  }
+  return best;
+}
+
+/** City to spend stone + wood + refined wood for a field trebuchet (same-city stock; territory hex preferred). */
+export function findCityForSiegeFieldSpend(
+  q: number,
+  r: number,
+  playerId: string,
+  costs: { stone: number; wood: number; refinedWood: number },
+  cities: City[],
+  territory: Map<string, TerritoryInfo>,
+): City | null {
+  const needS = Math.max(0, costs.stone);
+  const needW = Math.max(0, costs.wood);
+  const needR = Math.max(0, costs.refinedWood);
+  const canStock = (c: City) =>
+    (c.storage.stone ?? 0) >= needS &&
+    (c.storage.wood ?? 0) >= needW &&
+    (c.storage.refinedWood ?? 0) >= needR;
+  const key = tileKey(q, r);
+  const terr = territory.get(key);
+  if (terr?.playerId === playerId) {
+    const c = cities.find(x => x.id === terr.cityId);
+    if (c && canStock(c)) return c;
+  }
+  let best: City | null = null;
+  let bestD = Infinity;
+  for (const c of cities) {
+    if (c.ownerId !== playerId) continue;
+    if (!canStock(c)) continue;
     const d = hexDistance(q, r, c.q, c.r);
     if (d < bestD) {
       bestD = d;

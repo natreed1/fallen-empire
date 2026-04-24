@@ -11,7 +11,7 @@ import {
   City, Unit, Player, Hero, Tile, TerritoryInfo,
   CityBuilding, ScoutMission, WallSection, ScoutTower, WeatherEvent,
   ConstructionSite, BuildingType,
-  Commander, ScrollItem, ScrollAttachment, COMMANDER_STARTING_PICK,
+  Commander, ScrollItem, ScrollAttachment, COMMANDER_STARTING_PICK, type Politician,
   SpecialRegionKind, ScrollRelicSite,
   DefenseInstallation, UnitStack, OperationalArmy,
   ensureCityBuildingHp, UNIT_HP_REGEN_FRACTION_PER_CYCLE, isNavalUnitType, getShipMaxCargo,
@@ -19,18 +19,21 @@ import {
   BUILDING_BP_COST, BUILDING_JOBS, getBuildingJobs,
   BP_RATE_BASE,
   getUnitStats,
+  getUnitPopCost,
   SCOUT_MISSION_COST,
   SCOUT_MISSION_MOVEMENT_TICKS,
   VILLAGE_INCORPORATE_COST,
   FRONTIER_CYCLES, CITY_NAMES, PLAYER_COLORS,
   CITY_CAPTURE_HOLD_TICKS,
   MOVEMENT_TICKS_PER_ECONOMY_CYCLE,
+  COMMANDER_RECRUIT_GOLD,
   WALL_SECTION_STONE_COST, WALL_SECTION_HP, WALL_SECTION_BP_COST, getHexRing,
   defenseInstallationCurrentHp,
 } from '../types/game';
 import { generateMap, placeAncientCity, rebuildSpecialTerrainForCapitals, type ScrollRelicClusters } from '../lib/mapGenerator';
 import { calculateTerritory } from '../lib/territory';
 import { processEconomyTurn } from '../lib/gameLoop';
+import { processResearchTick } from '../lib/researchTick';
 import { syncUniversityBuildingLevelsForCities } from '../lib/universityPopulation';
 import {
   planAiTurn,
@@ -72,7 +75,9 @@ import { computeConstructionAvailableBp, fillUniversitySlotTasks } from '../lib/
 import { computeContestedZoneHexKeys, applyContestedZonePayout } from '../lib/contestedZone';
 import { rollCommanderIdentity, createCommanderRecord, syncCommandersToAssignments, unassignCommandersWithDeadAnchors, clearInvalidCommanderAssignments } from '../lib/commanders';
 import { tickScrollRelicPickup, returnScrollsForDeadCarriers } from '../lib/scrolls';
-import { spawnUnitFromPendingLand } from '../lib/pendingLandRecruit';
+import { spawnUnitFromPendingLand, type PendingLandRecruit } from '../lib/pendingLandRecruit';
+import { advanceBattalionTrainingOrders, landPending } from '../lib/battalionTraining';
+import { renderCommanderPortraitDataUrl } from '../lib/commanderPortrait';
 import {
   spawnUnitFromPendingShip,
   isPendingShipRecruit,
@@ -179,6 +184,99 @@ export function applyNavalGauntletPostInit(state: SimState): SimState {
   return { ...state, units };
 }
 
+function countAliveShipsByPlayer(units: Unit[], ownerA: string, ownerB: string): { ai1Ships: number; ai2Ships: number } {
+  let ai1Ships = 0;
+  let ai2Ships = 0;
+  for (const u of units) {
+    if (u.hp <= 0 || !isNavalUnitType(u.type)) continue;
+    if (u.ownerId === ownerA) ai1Ships += 1;
+    else if (u.ownerId === ownerB) ai2Ships += 1;
+  }
+  return { ai1Ships, ai2Ships };
+}
+
+/** Land hexes reachable from a start hex without crossing water (for overseas / cross-massif metrics). */
+function floodFillLandKeys(tiles: Map<string, Tile>, startQ: number, startR: number): Set<string> {
+  const startTile = tiles.get(tileKey(startQ, startR));
+  if (!startTile || startTile.biome === 'water') return new Set();
+  const out = new Set<string>();
+  const stack: { q: number; r: number }[] = [{ q: startQ, r: startR }];
+  while (stack.length > 0) {
+    const { q, r } = stack.pop()!;
+    const k = tileKey(q, r);
+    if (out.has(k)) continue;
+    const t = tiles.get(k);
+    if (!t || t.biome === 'water') continue;
+    out.add(k);
+    for (const [nq, nr] of hexNeighbors(q, r)) {
+      stack.push({ q: nq, r: nr });
+    }
+  }
+  return out;
+}
+
+/**
+ * End-state metrics: cities/armies not on the same landmass as spawn capital (requires {@link SimState.aiSpawnCapital}),
+ * and land troops currently in ship cargo (embarked).
+ */
+export function computeTravelMetrics(state: SimState): {
+  ai1OverseasCities: number;
+  ai2OverseasCities: number;
+  ai1OverseasLandMilitary: number;
+  ai2OverseasLandMilitary: number;
+  ai1CargoAboard: number;
+  ai2CargoAboard: number;
+} {
+  const spawn = state.aiSpawnCapital;
+  if (!spawn) {
+    return {
+      ai1OverseasCities: 0,
+      ai2OverseasCities: 0,
+      ai1OverseasLandMilitary: 0,
+      ai2OverseasLandMilitary: 0,
+      ai1CargoAboard: 0,
+      ai2CargoAboard: 0,
+    };
+  }
+  const s1 = spawn[AI_ID];
+  const s2 = spawn[AI_ID_2];
+  const comp1 = s1 ? floodFillLandKeys(state.tiles, s1.q, s1.r) : new Set<string>();
+  const comp2 = s2 ? floodFillLandKeys(state.tiles, s2.q, s2.r) : new Set<string>();
+
+  let ai1OverseasCities = 0;
+  let ai2OverseasCities = 0;
+  for (const c of state.cities) {
+    const k = tileKey(c.q, c.r);
+    if (c.ownerId === AI_ID && !comp1.has(k)) ai1OverseasCities += 1;
+    if (c.ownerId === AI_ID_2 && !comp2.has(k)) ai2OverseasCities += 1;
+  }
+
+  let ai1OverseasLandMilitary = 0;
+  let ai2OverseasLandMilitary = 0;
+  let ai1CargoAboard = 0;
+  let ai2CargoAboard = 0;
+  for (const u of state.units) {
+    if (u.hp <= 0) continue;
+    if (u.aboardShipId) {
+      if (u.ownerId === AI_ID && !isNavalUnitType(u.type)) ai1CargoAboard += 1;
+      if (u.ownerId === AI_ID_2 && !isNavalUnitType(u.type)) ai2CargoAboard += 1;
+      continue;
+    }
+    if (isNavalUnitType(u.type) || u.type === 'builder') continue;
+    const k = tileKey(u.q, u.r);
+    if (u.ownerId === AI_ID && !comp1.has(k)) ai1OverseasLandMilitary += 1;
+    if (u.ownerId === AI_ID_2 && !comp2.has(k)) ai2OverseasLandMilitary += 1;
+  }
+  return {
+    ai1OverseasCities,
+    ai2OverseasCities,
+    ai1OverseasLandMilitary,
+    ai2OverseasLandMilitary,
+    ai1CargoAboard,
+    ai2CargoAboard,
+  };
+}
+
 export type SimState = {
   config: MapConfig;
   tiles: Map<string, Tile>;
@@ -230,6 +328,10 @@ export type SimState = {
   combatMoraleState: MoraleState;
   /** Land + ship recruits completing next cycle (parity with useGameStore pendingRecruits). */
   pendingRecruits: SimPendingRecruit[];
+  /**
+   * Headless / bot init: original capital hex per player (for overseas metrics). Not required for all clients.
+   */
+  aiSpawnCapital?: Record<string, { q: number; r: number }>;
 };
 
 let _cityNameIdx = 0;
@@ -402,6 +504,7 @@ function initBotVsBotGameOnce(
     operationalArmies: [],
     combatMoraleState: new Map(),
     pendingRecruits: [],
+    aiSpawnCapital: { [AI_ID]: { q: ai1Q, r: ai1R }, [AI_ID_2]: { q: ai2Q, r: ai2R } },
   };
 }
 
@@ -413,6 +516,18 @@ export type SimResult = {
   ai2Cities: number;
   ai1Pop: number;
   ai2Pop: number;
+  /** Alive naval units at end (scout/warship/transport/etc.); used for training tie-breaks when games time out. */
+  ai1Ships: number;
+  ai2Ships: number;
+  /** Cities owned by each AI whose hex is not on the same landmass (water-bounded) as that AI’s original capital. */
+  ai1OverseasCities: number;
+  ai2OverseasCities: number;
+  /** Land military units (not embarked, not builder) standing on a different landmass than spawn capital. */
+  ai1OverseasLandMilitary: number;
+  ai2OverseasLandMilitary: number;
+  /** Land units currently in ship cargo (embarked). */
+  ai1CargoAboard: number;
+  ai2CargoAboard: number;
 };
 
 /** Per-cycle trace snapshot for starvation/debug instrumentation. */
@@ -466,6 +581,8 @@ export function runSimulation(
   const ai2Cities = state.cities.filter(c => c.ownerId === AI_ID_2);
   const ai1Pop = ai1Cities.reduce((a, c) => a + c.population, 0);
   const ai2Pop = ai2Cities.reduce((a, c) => a + c.population, 0);
+  const { ai1Ships, ai2Ships } = countAliveShipsByPlayer(state.units, AI_ID, AI_ID_2);
+  const travel = computeTravelMetrics(state);
 
   let winner: 'ai1' | 'ai2' | null = null;
   if (state.phase === 'victory') {
@@ -481,6 +598,9 @@ export function runSimulation(
     ai2Cities: ai2Cities.length,
     ai1Pop,
     ai2Pop,
+    ai1Ships,
+    ai2Ships,
+    ...travel,
   };
 }
 
@@ -528,6 +648,8 @@ export function runSimulationWithDiagnostics(
   const ai2Cities = state.cities.filter(c => c.ownerId === AI_ID_2);
   const ai1Pop = ai1Cities.reduce((a, c) => a + c.population, 0);
   const ai2Pop = ai2Cities.reduce((a, c) => a + c.population, 0);
+  const { ai1Ships, ai2Ships } = countAliveShipsByPlayer(state.units, AI_ID, AI_ID_2);
+  const travel = computeTravelMetrics(state);
   diag.finalAi1Pop = ai1Pop;
   diag.finalAi2Pop = ai2Pop;
 
@@ -557,6 +679,9 @@ export function runSimulationWithDiagnostics(
     ai2Cities: ai2Cities.length,
     ai1Pop,
     ai2Pop,
+    ai1Ships,
+    ai2Ships,
+    ...travel,
     diagnostics: { ...diag, unitsAtEnd, totalStarvationAbort },
   };
 }
@@ -648,6 +773,22 @@ export type SimDiagnostics = {
   commanderFieldAssignmentsAi1?: number;
   /** Commanders assigned to field by AI2. */
   commanderFieldAssignmentsAi2?: number;
+  /** Cycles where that side’s empire could not fully pay L1 gun (sword) upkeep for supplied troops. */
+  cyclesGunsL1ShortAi1?: number;
+  cyclesGunsL1ShortAi2?: number;
+  /** Cycles where L2 gun upkeep was short while demand > 0. */
+  cyclesGunsL2ShortAi1?: number;
+  cyclesGunsL2ShortAi2?: number;
+  /** Cumulative count of `planAiTurn` retreat actions issued per side (per cycle sum). */
+  aiRetreatOrdersAi1?: number;
+  aiRetreatOrdersAi2?: number;
+  /** Cumulative move orders from AI plans (proxy for offensive posture). */
+  aiMoveOrdersAi1?: number;
+  aiMoveOrdersAi2?: number;
+  aiStanceChangesAi1?: number;
+  aiStanceChangesAi2?: number;
+  /** Cycles where at least one unit was in `fighting` immediately after combat resolution. */
+  cyclesAnyFightingAfterCombat?: number;
   /** Ship recruits queued (pending) by AI1 this game. */
   shipsQueuedAi1?: number;
   /** Ship recruits queued (pending) by AI2 this game. */
@@ -683,24 +824,57 @@ export function stepSimulation(
   const newGlobalMovementTick = state.globalMovementTick + MOVEMENT_TICKS_PER_ECONOMY_CYCLE;
   const newSimTimeMs = state.simTimeMs + MOVEMENT_TICKS_PER_ECONOMY_CYCLE * 1000;
 
-  let pendingRecruitsAcc = state.pendingRecruits.filter(pr => pr.completesAtCycle !== newCycle);
-
-  // ── Building HP migration + land recruits completing this cycle (matches runCycle) ──
+  // ── HoI-style land training + ship/commander completes (matches useGameStore.runCycle) ──
   let citiesPrep = state.cities.map(c => ({
     ...c,
+    storage: { ...c.storage },
+    storageCap: { ...c.storageCap },
     buildings: c.buildings.map(b => ensureCityBuildingHp(b)),
   }));
+  const nonLandPending = state.pendingRecruits.filter(pr => !landPending(pr));
+  const landListUnadvanced = state.pendingRecruits.filter(landPending) as PendingLandRecruit[];
+  let pendingRecruitsAcc = [...nonLandPending, ...landListUnadvanced].filter(pr => {
+    if (landPending(pr)) return true;
+    return pr.completesAtCycle !== newCycle;
+  });
+
   let unitsPrep = [...state.units];
-  for (const pr of state.pendingRecruits.filter(p => p.completesAtCycle === newCycle)) {
+  let commandersPrep = state.commanders.map(c => ({ ...c }));
+  let playersPrep = state.players.map(p => ({ ...p }));
+  for (const pr of state.pendingRecruits.filter(p => !landPending(p) && p.completesAtCycle === newCycle)) {
     if (isPendingShipRecruit(pr)) {
       const u = spawnUnitFromPendingShip(pr, citiesPrep);
       if (u) unitsPrep.push(u);
-    } else {
-      const u = spawnUnitFromPendingLand(pr, citiesPrep);
-      if (u) unitsPrep.push(u);
+    } else if ('commanderSeed' in pr) {
+      const cpr = pr as { cityId: string; playerId: string; commanderSeed: number };
+      const city = citiesPrep.find(c => c.id === cpr.cityId);
+      if (city && city.ownerId === cpr.playerId) {
+        const rolled = rollCommanderIdentity(cpr.commanderSeed);
+        const portraitDataUrl = renderCommanderPortraitDataUrl(rolled.portraitSeed);
+        commandersPrep = [
+          ...commandersPrep,
+          {
+            id: generateId('cmd'),
+            name: rolled.name,
+            ownerId: cpr.playerId,
+            q: city.q,
+            r: city.r,
+            portraitSeed: rolled.portraitSeed,
+            portraitDataUrl,
+            traitIds: rolled.traitIds,
+            backstory: rolled.backstory,
+            assignment: null,
+            commanderKind: rolled.commanderKind,
+          },
+        ];
+      } else {
+        const pid = cpr.playerId;
+        playersPrep = playersPrep.map(p =>
+          p.id === pid ? { ...p, gold: p.gold + COMMANDER_RECRUIT_GOLD } : p,
+        );
+      }
     }
   }
-
   // ── Passive HP regen + army rally/replenish ──
   unitsPrep = unitsPrep.map(u => {
     if (u.hp <= 0 || u.hp >= u.maxHp || u.aboardShipId || isNavalUnitType(u.type) || u.type === 'builder') {
@@ -710,7 +884,6 @@ export function stepSimulation(
     const add = Math.max(1, Math.floor(u.maxHp * UNIT_HP_REGEN_FRACTION_PER_CYCLE));
     return { ...u, hp: Math.min(u.maxHp, u.hp + add) };
   });
-  let playersPrep = state.players.map(p => ({ ...p }));
   let unitStacksState = updateArmyRallyFromUnits(state.unitStacks ?? [], unitsPrep);
   const replen = computeArmyReplenishment({
     unitStacks: unitStacksState,
@@ -750,6 +923,23 @@ export function stepSimulation(
   let units = econ.units;
   let players = econ.players;
 
+  const landForTraining = pendingRecruitsAcc.filter(landPending) as PendingLandRecruit[];
+  const { nextPending: nextLandTrained, readyToSpawn } = advanceBattalionTrainingOrders(landForTraining, cities);
+  const legacyLandSpawns = nextLandTrained.filter(
+    pr => pr.trainingCyclesTotal == null && pr.completesAtCycle === newCycle,
+  );
+  const allLandSpawns = [...readyToSpawn, ...legacyLandSpawns];
+  const spawnedLandIds = new Set(allLandSpawns.map(p => p.id));
+  const nonLandAfterTraining = pendingRecruitsAcc.filter(pr => !landPending(pr));
+  pendingRecruitsAcc = [
+    ...nonLandAfterTraining,
+    ...nextLandTrained.filter(pr => !spawnedLandIds.has(pr.id)),
+  ];
+  for (const pr of allLandSpawns) {
+    const u = spawnUnitFromPendingLand(pr, cities);
+    if (u) units.push(u);
+  }
+
   // ── Contested zone payout (every 2nd cycle) ──
   const preContestedGold1 = players.find(p => p.id === AI_ID)?.gold ?? 0;
   const preContestedGold2 = players.find(p => p.id === AI_ID_2)?.gold ?? 0;
@@ -777,6 +967,12 @@ export function stepSimulation(
     if (postGold2 > preContestedGold2 || postIron2 > preContestedIron2) {
       diagnostics.contestedZoneWinsAi2 = (diagnostics.contestedZoneWinsAi2 ?? 0) + 1;
     }
+  }
+
+  // ── Research & education (parity with client; mutates player objects in `players`) ──
+  const politiciansEmpty: Politician[] = [];
+  for (const p of players) {
+    processResearchTick(p, cities, commandersPrep, politiciansEmpty);
   }
 
   // ── Scroll search progress ──
@@ -811,6 +1007,20 @@ export function stepSimulation(
   // ── Upkeep (empire-pooled supply; cache avoids recomputing per-unit supply when position unchanged) ──
   const supplyCache = state.supplyCache ?? new Map<string, SupplyCacheEntry>();
   const upkeepResult = upkeepTick(units, cities, state.heroes, newCycle, state.tiles, state.territory, supplyCache);
+  if (diagnostics) {
+    if (upkeepResult.gunsL1ShortOwners.includes(AI_ID)) {
+      diagnostics.cyclesGunsL1ShortAi1 = (diagnostics.cyclesGunsL1ShortAi1 ?? 0) + 1;
+    }
+    if (upkeepResult.gunsL1ShortOwners.includes(AI_ID_2)) {
+      diagnostics.cyclesGunsL1ShortAi2 = (diagnostics.cyclesGunsL1ShortAi2 ?? 0) + 1;
+    }
+    if (upkeepResult.gunsL2ShortOwners.includes(AI_ID)) {
+      diagnostics.cyclesGunsL2ShortAi1 = (diagnostics.cyclesGunsL2ShortAi1 ?? 0) + 1;
+    }
+    if (upkeepResult.gunsL2ShortOwners.includes(AI_ID_2)) {
+      diagnostics.cyclesGunsL2ShortAi2 = (diagnostics.cyclesGunsL2ShortAi2 ?? 0) + 1;
+    }
+  }
   units = units.filter(u => u.hp > 0);
 
   const countStatus = (list: Unit[]) => {
@@ -938,6 +1148,7 @@ export function stepSimulation(
       state.contestedZoneHexKeys, state.commanders, scrollInventory, scrollAttachments,
       state.scrollRelics, state.scrollRegionClaimed,
       state.config.mapTerrain,
+      { pendingRecruits: pendingRecruitsAcc },
     ));
 
   if (traceCallback) {
@@ -964,6 +1175,15 @@ export function stepSimulation(
       unitStatusAi1: countStatus(ai1Units),
       unitStatusAi2: countStatus(ai2Units),
     });
+  }
+
+  if (diagnostics) {
+    diagnostics.aiRetreatOrdersAi1 = (diagnostics.aiRetreatOrdersAi1 ?? 0) + (plans[0].retreats?.length ?? 0);
+    diagnostics.aiRetreatOrdersAi2 = (diagnostics.aiRetreatOrdersAi2 ?? 0) + (plans[1].retreats?.length ?? 0);
+    diagnostics.aiMoveOrdersAi1 = (diagnostics.aiMoveOrdersAi1 ?? 0) + (plans[0].moveTargets?.length ?? 0);
+    diagnostics.aiMoveOrdersAi2 = (diagnostics.aiMoveOrdersAi2 ?? 0) + (plans[1].moveTargets?.length ?? 0);
+    diagnostics.aiStanceChangesAi1 = (diagnostics.aiStanceChangesAi1 ?? 0) + (plans[0].stanceChanges?.length ?? 0);
+    diagnostics.aiStanceChangesAi2 = (diagnostics.aiStanceChangesAi2 ?? 0) + (plans[1].stanceChanges?.length ?? 0);
   }
 
   for (let cfgIdx = 0; cfgIdx < aiConfigs.length; cfgIdx++) {
@@ -1086,6 +1306,22 @@ export function stepSimulation(
       tilesMut.set(tileKey(inc.q, inc.r), { ...tile, hasVillage: false });
     }
 
+    for (const da of aiPlan.defendAssignments ?? []) {
+      const unit = units.find(u => u.id === da.unitId && u.ownerId === aiPlayerId);
+      const city = cities.find(c => c.id === da.cityId && c.ownerId === aiPlayerId);
+      if (!unit || !city || unit.hp <= 0 || unit.status === 'fighting') continue;
+      unit.defendCityId = city.id;
+      unit.cityDefenseMode = da.mode;
+      applyDeployFlagsForMoveMutable(unit, city.q, city.r, cities);
+      clearPatrolFieldsMutable(unit);
+      unit.targetQ = city.q;
+      unit.targetR = city.r;
+      unit.status = 'moving';
+      unit.stance = da.mode === 'auto_engage' ? 'aggressive' : 'defensive';
+      unit.nextMoveAt = 0;
+      unit.marchInitialHexDistance = marchHexDistanceAtOrder(unit, city.q, city.r);
+    }
+
     for (const mt of aiPlan.moveTargets) {
       const unit = units.find(u => u.id === mt.unitId);
       // Allow idle, moving, or starving units to receive move targets (not fighting) so headless sims stay decisive
@@ -1095,7 +1331,7 @@ export function stepSimulation(
         unit.targetQ = mt.toQ;
         unit.targetR = mt.toR;
         unit.status = 'moving';
-        unit.stance = 'aggressive';
+        unit.stance = mt.stance ?? 'aggressive';
         unit.marchInitialHexDistance = marchHexDistanceAtOrder(unit, mt.toQ, mt.toR);
       }
     }
@@ -1112,7 +1348,7 @@ export function stepSimulation(
           .filter(c => c.ownerId === aiPlayerId && c.type === 'wall_section')
           .map(c => tileKey(c.q, c.r)),
       );
-      const next = getNextWallBuildHex(city, tilesMut, ownerWallKeys, queuedWallKeys);
+      const next = getNextWallBuildHex(city, tilesMut, ownerWallKeys, queuedWallKeys, null);
       if (!next) continue;
       if (wr.ring === 2 && next.ring === 1) continue;
       const cityIdx = cities.indexOf(city);
@@ -1140,7 +1376,7 @@ export function stepSimulation(
   }
 
   // ── Apply new AI actions: commander assignments, scroll attachments, university tasks ──
-  let commandersMut = state.commanders.map(c => ({ ...c }));
+  let commandersMut = commandersPrep.map(c => ({ ...c }));
   for (let cfgIdx = 0; cfgIdx < aiConfigs.length; cfgIdx++) {
     const { id: aiPlayerId } = aiConfigs[cfgIdx];
     const aiPlan = plans[cfgIdx];
@@ -1341,6 +1577,10 @@ export function stepSimulation(
 
   aliveUnits = movingUnits.filter(u => u.hp > 0 && !mergedKilledUnitIds.includes(u.id));
 
+  if (diagnostics && aliveUnits.some(u => u.status === 'fighting')) {
+    diagnostics.cyclesAnyFightingAfterCombat = (diagnostics.cyclesAnyFightingAfterCombat ?? 0) + 1;
+  }
+
   let commandersNext = movingCommanders;
   unassignCommandersWithDeadAnchors(commandersNext, aliveUnits);
   clearInvalidCommanderAssignments(commandersNext, citiesToSet, state.operationalArmies ?? []);
@@ -1355,7 +1595,7 @@ export function stepSimulation(
   const popDeductByCityId: Record<string, number> = {};
   for (const u of units) {
     if (killedIds.has(u.id) && u.originCityId) {
-      popDeductByCityId[u.originCityId] = (popDeductByCityId[u.originCityId] ?? 0) + 1;
+      popDeductByCityId[u.originCityId] = (popDeductByCityId[u.originCityId] ?? 0) + getUnitPopCost(u.type);
     }
   }
   citiesToSet = Object.keys(popDeductByCityId).length === 0

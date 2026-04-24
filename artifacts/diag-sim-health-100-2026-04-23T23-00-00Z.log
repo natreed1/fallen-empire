@@ -1,0 +1,22 @@
+npm warn Unknown env config "devdir". This will stop working in the next major version of npm.
+npm warn exec The following package was not found and will be installed: ts-node@10.9.2
+Headless sim health check
+  Games: 100  DIAG_MATCH_TRAIN_SIM maxCycles=520 mapSize=38 scenarioMix=true navalPostInit=true
+
+Results:
+  games_with_combat_deaths: 54/100
+  games_with_owner_flip: 45/100
+  total_kills: 2590
+  avg_units_at_end: 38.4
+  draw_rate_pct: 80.0 (80/100)
+  starvation_lock_frequency_pct: 69.0 (69/100 games with all-starving)
+  total_starvation_abort_frequency_pct: 0.0 (0/100 games aborted both irrecoverable)
+  final_pop_min: 2
+  final_pop_median: 218
+  ai_instant_builds_placed_per_game_avg (excludes spawn farm/barracks/academy on capitals): farms_early=10.9 farms_late=0.9 markets=0.0 mines=0.0 quarries=0.0 barracks_extra=0.0 factories=0.0 academies_extra=0.0 gold_mines=0.0
+  first_cycle_any_starvation: games=82 avg_cycle=36.6219512195122
+  first_cycle_all_starving: games=69 avg_cycle=37
+  first_cycle_food_zero_ai1: games=57 avg_cycle=37.824561403508774
+  first_cycle_food_zero_ai2: games=51 avg_cycle=38.431372549019606
+
+  PASS (deaths present, draw rate not extreme)
