@@ -10,9 +10,11 @@ import {
 const originalNodeEnv = process.env.NODE_ENV;
 const originalSitePassword = process.env.SITE_PASSWORD;
 const originalCookieSecret = process.env.COOKIE_SECRET;
+const mutableEnv = process.env as Record<string, string | undefined>;
 
 function resetEnv() {
-  process.env.NODE_ENV = originalNodeEnv;
+  if (originalNodeEnv === undefined) delete mutableEnv.NODE_ENV;
+  else mutableEnv.NODE_ENV = originalNodeEnv;
   if (originalSitePassword === undefined) delete process.env.SITE_PASSWORD;
   else process.env.SITE_PASSWORD = originalSitePassword;
   if (originalCookieSecret === undefined) delete process.env.COOKIE_SECRET;
@@ -23,7 +25,7 @@ try {
   delete process.env.SITE_PASSWORD;
   delete process.env.COOKIE_SECRET;
 
-  process.env.NODE_ENV = 'production';
+  mutableEnv.NODE_ENV = 'production';
   assert.equal(getResolvedSitePassword(), '');
   assert.equal(getResolvedCookieSecret(), '');
   assert.equal(isSiteAuthConfigured(), false);
@@ -36,7 +38,7 @@ try {
   assert.equal(isSiteAuthConfigured(), true);
   assert.equal(isProductionSiteAuthMisconfigured(), false);
 
-  process.env.NODE_ENV = 'development';
+  mutableEnv.NODE_ENV = 'development';
   delete process.env.SITE_PASSWORD;
   delete process.env.COOKIE_SECRET;
   assert.equal(isSiteAuthConfigured(), false);
