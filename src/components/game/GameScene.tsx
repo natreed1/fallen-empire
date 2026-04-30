@@ -379,9 +379,10 @@ function useCameraTarget(): [number, number, number] {
         return [x, 0, z];
       }
     }
-    // Bot-vs-bot / online 1v1: center camera on capitals so both are visible
+    // Watch modes: center camera on capitals so all empires are visible.
+    // Multiplayer is playable, so it should start at the local capital and then leave user panning alone.
     if (
-      (gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4' || gameMode === 'spectate' || gameMode === 'multiplayer') &&
+      (gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4' || gameMode === 'spectate') &&
       cities.length >= 2
     ) {
       let sumX = 0, sumZ = 0;
@@ -427,15 +428,13 @@ function CameraZoomController() {
   const phase = useGameStore(s => s.phase);
   const gameMode = useGameStore(s => s.gameMode);
   const { camera } = useThree();
-  const prevPhaseRef = useRef(phase);
   const botZoomSet = useRef(false);
-  const battleTestZoomSet = useRef(false);
 
   useEffect(() => {
     const cam = camera as THREE.OrthographicCamera;
     if (
       phase === 'playing' &&
-      (gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4' || gameMode === 'spectate' || gameMode === 'multiplayer') &&
+      (gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4' || gameMode === 'spectate') &&
       !botZoomSet.current
     ) {
       botZoomSet.current = true;
@@ -443,34 +442,6 @@ function CameraZoomController() {
       cam.updateProjectionMatrix();
     }
     if (phase !== 'playing') botZoomSet.current = false;
-
-    if (phase === 'playing' && gameMode === 'battle_test' && !battleTestZoomSet.current) {
-      battleTestZoomSet.current = true;
-      cam.zoom = 36;
-      cam.updateProjectionMatrix();
-    }
-    if (phase !== 'playing') battleTestZoomSet.current = false;
-
-    if (
-      (prevPhaseRef.current === 'place_city' || prevPhaseRef.current === 'starting_game') &&
-      phase === 'playing' &&
-      (gameMode === 'human_vs_ai' || gameMode === 'human_solo')
-    ) {
-      const targetZoom = 35;
-      const startZoom = cam.zoom;
-      const duration = 1200;
-      const startTime = Date.now();
-      const animate = () => {
-        const elapsed = Date.now() - startTime;
-        const t = Math.min(1, elapsed / duration);
-        const eased = 1 - Math.pow(1 - t, 3);
-        cam.zoom = startZoom + (targetZoom - startZoom) * eased;
-        cam.updateProjectionMatrix();
-        if (t < 1) requestAnimationFrame(animate);
-      };
-      animate();
-    }
-    prevPhaseRef.current = phase;
   }, [phase, gameMode, camera]);
 
   return null;
@@ -505,7 +476,9 @@ export default function GameScene() {
   const gameMode = useGameStore(s => s.gameMode);
   const liveTarget = useCameraTarget();
   const isBotWatch =
-    gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4' || gameMode === 'spectate' || gameMode === 'multiplayer';
+    gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4' || gameMode === 'spectate';
+  const isPlayableCameraMode =
+    gameMode === 'human_vs_ai' || gameMode === 'human_solo' || gameMode === 'battle_test' || gameMode === 'multiplayer';
   const [mapTarget, setMapTarget] = useState(liveTarget);
   const [aiParamsLoadAttempted, setAiParamsLoadAttempted] = useState(false);
   const prevPhaseForCameraRef = useRef(phase);
@@ -516,13 +489,17 @@ export default function GameScene() {
       prevPhaseForCameraRef.current = phase;
       return;
     }
+    if (isPlayableCameraMode) {
+      prevPhaseForCameraRef.current = phase;
+      return;
+    }
     const enteredPlaying = prevPhaseForCameraRef.current !== 'playing' && phase === 'playing';
     // Keep syncing while not in the match (menus / placement); on first frame of play, snap to capital / live target
     if (phase !== 'playing' || enteredPlaying) {
       setMapTarget(liveTarget);
     }
     prevPhaseForCameraRef.current = phase;
-  }, [liveTarget, phase, isBotWatch]);
+  }, [liveTarget, phase, isBotWatch, isPlayableCameraMode]);
 
   useEscapeKey();
 
@@ -631,7 +608,7 @@ export default function GameScene() {
           far={500}
         />
 
-        <MapController target={mapTarget} />
+        <MapController target={mapTarget} applyTargetUpdates={!isPlayableCameraMode} />
         <CameraZoomController />
         <HexInteractionPlane />
 

@@ -84,5 +84,5 @@ export function defaultHexTopRadius(): number {
  * and never reveals the dark prism sides (fixes black “gaps” inside tiles).
  */
 export function defaultBiomePaintRadius(): number {
-  return HEX_RADIUS * HEX_INNER_RATIO * 1.035;
+  return HEX_RADIUS * HEX_INNER_RATIO * 1.055;
 }

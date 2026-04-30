@@ -262,6 +262,7 @@ function getSpriteTexture(key: string): THREE.Texture {
 const MAP_ENTITY_SPRITE_MAT = {
   transparent: true as const,
   alphaTest: 0.08,
+  depthTest: false,
   depthWrite: false,
   sizeAttenuation: false,
 };
@@ -460,7 +461,7 @@ function BiomeTextureLayer({
   textureKey,
   opacity = 1,
   renderOrder = 2,
-  surfaceYOffset = 0.021,
+  surfaceYOffset = 0.045,
   /** RGBA decals (e.g. resource patches) need blending + a bit more polygon offset. */
   transparentMap = false,
   /** Optional discard threshold for masked hex caps (sr_*); keep 0 for soft feature art. */
@@ -500,7 +501,7 @@ function BiomeTextureLayer({
     const dummy = new THREE.Object3D();
     tiles.forEach((tile, i) => {
       const [x, z] = axialToWorld(tile.q, tile.r, HEX_RADIUS);
-      // Never scale below 1 — sub-1.0 shrinks the cap inside the prism and shows dark sides as “black cracks”.
+      // Keep the paint cap proud of the terrain prism so close zoom cannot expose dark side faces.
       const sc = 1.005 + terrainHash01(tile.q + 2, tile.r + 5) * 0.02;
       dummy.position.set(x, tile.height + surfaceYOffset, z);
       dummy.rotation.set(0, 0, 0);
@@ -1382,7 +1383,7 @@ function UnknownFogOverlay({ tiles }: { tiles: Tile[] }) {
       new THREE.MeshBasicMaterial({
         color: '#06070d',
         transparent: true,
-        opacity: 0.93,
+        opacity: 0.62,
         depthWrite: false,
       }),
     [],
@@ -3610,20 +3611,30 @@ export default function HexGrid() {
     return { groups, roadTiles, ruinTiles, villageTiles };
   }, [discoveredTilesMap]);
 
-  const mapShoreline = useMemo(() => {
+  const terrainBiomeGroups = useMemo(() => {
+    const groups: Record<Biome, Tile[]> = {
+      water: [], plains: [], forest: [], mountain: [], desert: [],
+    };
+    for (const tile of tiles.values()) {
+      groups[tile.biome].push(tile);
+    }
+    return groups;
+  }, [tiles]);
+
+  const terrainShoreline = useMemo(() => {
     const coastalWater: Tile[] = [];
     const deepWater: Tile[] = [];
     const beachLand: Tile[] = [];
-    for (const t of discoveredTilesMap.values()) {
+    for (const t of tiles.values()) {
       if (t.biome === 'water') {
-        if (isCoastalWaterTile(t, discoveredTilesMap)) coastalWater.push(t);
+        if (isCoastalWaterTile(t, tiles)) coastalWater.push(t);
         else deepWater.push(t);
-      } else if (isBeachLandTile(t, discoveredTilesMap)) {
+      } else if (isBeachLandTile(t, tiles)) {
         beachLand.push(t);
       }
     }
     return { coastalWater, deepWater, beachLand };
-  }, [discoveredTilesMap]);
+  }, [tiles]);
 
   // Territory by player
   const territoryByPlayer = useMemo(() => {
@@ -3786,24 +3797,24 @@ export default function HexGrid() {
   return (
     <group>
       {/* Terrain */}
-      {(Object.entries(biomeGroups.groups) as [Biome, Tile[]][]).map(([biome, bTiles]) => (
+      {(Object.entries(terrainBiomeGroups) as [Biome, Tile[]][]).map(([biome, bTiles]) => (
         <TerrainLayer key={biome} tiles={bTiles} biome={biome} />
       ))}
-      <DeepWaterVariantLayers tiles={mapShoreline.deepWater} />
+      <DeepWaterVariantLayers tiles={terrainShoreline.deepWater} />
       <BiomeTextureLayer
-        tiles={mapShoreline.coastalWater}
+        tiles={terrainShoreline.coastalWater}
         textureKey="biome_water_coast"
         transparentMap
         alphaTest={0.04}
       />
-      <LandBiomeVariantLayers tiles={biomeGroups.groups.plains} biome="plains" />
-      <LandBiomeVariantLayers tiles={biomeGroups.groups.forest} biome="forest" />
-      <LandBiomeVariantLayers tiles={biomeGroups.groups.mountain} biome="mountain" />
-      <LandBiomeVariantLayers tiles={biomeGroups.groups.desert} biome="desert" />
-      <BeachSandLayer tiles={mapShoreline.beachLand} />
+      <LandBiomeVariantLayers tiles={terrainBiomeGroups.plains} biome="plains" />
+      <LandBiomeVariantLayers tiles={terrainBiomeGroups.forest} biome="forest" />
+      <LandBiomeVariantLayers tiles={terrainBiomeGroups.mountain} biome="mountain" />
+      <LandBiomeVariantLayers tiles={terrainBiomeGroups.desert} biome="desert" />
+      <BeachSandLayer tiles={terrainShoreline.beachLand} />
       <MedievalHexOutlineLayer tiles={Array.from(discoveredTilesMap.values())} />
       <MapEdgeOutlineLayer tiles={mapEdgeOutlineTiles} />
-      <MountainSnowLayer tiles={biomeGroups.groups.mountain} tilesMap={discoveredTilesMap} />
+      <MountainSnowLayer tiles={terrainBiomeGroups.mountain} tilesMap={tiles} />
 
       {/* Map features */}
       <RoadOverlay tiles={biomeGroups.roadTiles} />

@@ -26,7 +26,14 @@ function mapPlayerId(role: 'host' | 'guest', id: string): string {
 export function remapSimStateForClient(state: SimState, role: 'host' | 'guest'): SimState {
   const mp = (id: string) => mapPlayerId(role, id);
 
-  const players = state.players.map(p => ({ ...p, id: mp(p.id) }));
+  const players = state.players.map(p => {
+    const id = mp(p.id);
+    return {
+      ...p,
+      id,
+      isHuman: id === LOCAL,
+    };
+  });
 
   const scrollInventory: Record<string, ScrollItem[]> = {};
   for (const [k, v] of Object.entries(state.scrollInventory)) {

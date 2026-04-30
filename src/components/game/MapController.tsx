@@ -17,6 +17,7 @@ export const MAP_CAMERA_OFFSET = new THREE.Vector3(ISO_RUN, ISO_RUN * Math.SQRT2
 
 interface MapControllerProps {
   target?: [number, number, number];
+  applyTargetUpdates?: boolean;
 }
 
 /**
@@ -24,16 +25,19 @@ interface MapControllerProps {
  * Uses drei's MapControls with a locked perspective: camera position is always
  * target + CAMERA_OFFSET so zoom and pan do not change the viewing angle.
  */
-export default function MapController({ target }: MapControllerProps) {
+export default function MapController({ target, applyTargetUpdates = true }: MapControllerProps) {
   const controlsRef = useRef<any>(null);
+  const appliedInitialTargetRef = useRef(false);
   const { camera } = useThree();
 
   useEffect(() => {
     if (target && controlsRef.current) {
+      if (!applyTargetUpdates && appliedInitialTargetRef.current) return;
       controlsRef.current.target.set(...target);
       controlsRef.current.update();
+      appliedInitialTargetRef.current = true;
     }
-  }, [target]);
+  }, [target, applyTargetUpdates]);
 
   // Early: turn off MapControls while box-selecting (before controls.update applies pan).
   useFrame(() => {
