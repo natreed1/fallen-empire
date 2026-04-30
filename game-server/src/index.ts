@@ -81,7 +81,7 @@ function broadcastLobby(room: Room): void {
     type: 'lobby',
     players: room.clients.size,
     maxPlayers: 2,
-    started: room.clients.size >= 2 && room.state != null,
+    started: hasJoinedRole(room, 'host') && hasJoinedRole(room, 'guest') && room.state != null,
     tickMs: room.effectiveTickMs,
     paused: room.paused,
     speedMultiplier: room.speedMultiplier,
@@ -107,6 +107,13 @@ function mergePlan(base: AiActions, patch: Partial<AiActions>): AiActions {
     ...patch,
     moveTargets: Array.from(mt.values()),
   };
+}
+
+function hasJoinedRole(room: Room, role: ClientMeta['role']): boolean {
+  for (const c of room.clients.values()) {
+    if (c.role === role) return true;
+  }
+  return false;
 }
 
 function stepRoom(room: Room): void {
@@ -137,7 +144,7 @@ function stepRoom(room: Room): void {
 
 function maybeStartTick(room: Room): void {
   if (room.tickTimer) return;
-  if (room.paused || room.clients.size < 2 || !room.state) return;
+  if (room.paused || !hasJoinedRole(room, 'host') || !hasJoinedRole(room, 'guest') || !room.state) return;
   const ms = roomEffectiveTickMs(room);
   room.effectiveTickMs = ms;
   room.tickTimer = setInterval(() => stepRoom(room), ms);
@@ -223,6 +230,10 @@ wss.on('connection', (socket) => {
       if (room.clients.has(socket)) return;
 
       if (msg.role === 'host') {
+        if (hasJoinedRole(room, 'host')) {
+          socket.send(JSON.stringify({ type: 'error', message: 'Room already has a host.' }));
+          return;
+        }
         if (!room.state) {
           const seed = Math.floor(Math.random() * 1e9);
           room.state = initMultiplayerGame(seed);
@@ -233,7 +244,7 @@ wss.on('connection', (socket) => {
           socket.send(JSON.stringify({ type: 'error', message: 'Room not created yet — host must join first.' }));
           return;
         }
-        if (room.clients.size >= 2) {
+        if (hasJoinedRole(room, 'guest')) {
           socket.send(JSON.stringify({ type: 'error', message: 'Room is full.' }));
           return;
         }

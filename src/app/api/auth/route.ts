@@ -3,6 +3,7 @@ import {
   SITE_AUTH_COOKIE,
   getResolvedCookieSecret,
   getResolvedSitePassword,
+  isProductionSiteAuthMisconfigured,
   isSiteAuthConfigured,
   signSiteAuthToken,
 } from '@/lib/siteAuth';
@@ -10,6 +11,13 @@ import {
 const COOKIE_MAX_AGE_SEC = 60 * 60 * 24 * 30; // 30 days
 
 export async function POST(request: NextRequest) {
+  if (isProductionSiteAuthMisconfigured()) {
+    return NextResponse.json(
+      { error: 'Site auth is not configured (set SITE_PASSWORD and COOKIE_SECRET).' },
+      { status: 503 },
+    );
+  }
+
   if (!isSiteAuthConfigured()) {
     return NextResponse.json(
       { error: 'Site auth is not configured (set SITE_PASSWORD and COOKIE_SECRET in .env.local for local dev).' },
