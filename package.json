@@ -24,6 +24,7 @@
     "seasonal-sim": "npx ts-node -r tsconfig-paths/register --project tsconfig.train.json scripts/seasonal-sim.ts",
     "regression-harness": "npx ts-node -r tsconfig-paths/register --project tsconfig.train.json scripts/regression-harness.ts",
     "validate-ai-params": "npx ts-node -r tsconfig-paths/register --project tsconfig.train.json scripts/validate-ai-params.ts",
+    "test:ml-cohort": "npx ts-node -r tsconfig-paths/register --project tsconfig.train.json scripts/ml-lora-cohort-guard.ts",
     "train-ai-overnight": "bash scripts/overnight-train.sh"
   },
   "dependencies": {
