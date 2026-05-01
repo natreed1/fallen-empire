@@ -19,12 +19,13 @@ import {
 import { emptyAiActions, type AiActions } from '../../src/lib/ai.ts';
 import { serializeSimState, type SerializedSimState } from '../../src/lib/simStateSerialization.ts';
 import { MAX_MATCH_ECONOMY_CYCLES } from '../../src/types/game.ts';
+import { decideJoin, HOST_REQUIRED_MESSAGE, HOST_PLAYER_SLOT, GUEST_PLAYER_SLOT } from './roomPolicy.ts';
 
 const PORT = Number(process.env.PORT ?? 3333);
 const TICK_MS = Number(process.env.MULTIPLAYER_TICK_MS ?? 4000);
 
-const P1 = 'player_ai';
-const P2 = 'player_ai_2';
+const P1 = HOST_PLAYER_SLOT;
+const P2 = GUEST_PLAYER_SLOT;
 
 const SIM_SPEEDS = [0.5, 1, 2, 4] as const;
 type SimSpeedMultiplier = (typeof SIM_SPEEDS)[number];
@@ -222,22 +223,24 @@ wss.on('connection', (socket) => {
       const room = getOrCreateRoom(msg.roomId);
       if (room.clients.has(socket)) return;
 
+      const joinDecision = decideJoin(room.clients.values(), msg.role);
+      if (!joinDecision.ok) {
+        socket.send(JSON.stringify({ type: 'error', message: joinDecision.message }));
+        return;
+      }
+
       if (msg.role === 'host') {
         if (!room.state) {
           const seed = Math.floor(Math.random() * 1e9);
           room.state = initMultiplayerGame(seed);
         }
-        room.clients.set(socket, { socket, role: 'host', playerId: P1 });
+        room.clients.set(socket, { socket, role: 'host', playerId: joinDecision.playerId });
       } else {
         if (!room.state) {
-          socket.send(JSON.stringify({ type: 'error', message: 'Room not created yet — host must join first.' }));
+          socket.send(JSON.stringify({ type: 'error', message: HOST_REQUIRED_MESSAGE }));
           return;
         }
-        if (room.clients.size >= 2) {
-          socket.send(JSON.stringify({ type: 'error', message: 'Room is full.' }));
-          return;
-        }
-        room.clients.set(socket, { socket, role: 'guest', playerId: P2 });
+        room.clients.set(socket, { socket, role: 'guest', playerId: joinDecision.playerId });
       }
 
       socket.send(
