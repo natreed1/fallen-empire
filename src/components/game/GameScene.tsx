@@ -484,16 +484,21 @@ export default function GameScene() {
   const prevPhaseForCameraRef = useRef(phase);
 
   useEffect(() => {
+    const enteredPlaying = prevPhaseForCameraRef.current !== 'playing' && phase === 'playing';
     if (isBotWatch) {
       setMapTarget(liveTarget);
       prevPhaseForCameraRef.current = phase;
       return;
     }
     if (isPlayableCameraMode) {
+      // Seed playable modes before control is handed to the player, including
+      // multiplayer's first authoritative snapshot.
+      if (phase !== 'playing' || enteredPlaying) {
+        setMapTarget(liveTarget);
+      }
       prevPhaseForCameraRef.current = phase;
       return;
     }
-    const enteredPlaying = prevPhaseForCameraRef.current !== 'playing' && phase === 'playing';
     // Keep syncing while not in the match (menus / placement); on first frame of play, snap to capital / live target
     if (phase !== 'playing' || enteredPlaying) {
       setMapTarget(liveTarget);
