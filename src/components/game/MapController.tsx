@@ -27,15 +27,14 @@ interface MapControllerProps {
  */
 export default function MapController({ target, applyTargetUpdates = true }: MapControllerProps) {
   const controlsRef = useRef<any>(null);
-  const appliedInitialTargetRef = useRef(false);
+  const userControlledRef = useRef(false);
   const { camera } = useThree();
 
   useEffect(() => {
     if (target && controlsRef.current) {
-      if (!applyTargetUpdates && appliedInitialTargetRef.current) return;
+      if (!applyTargetUpdates && userControlledRef.current) return;
       controlsRef.current.target.set(...target);
       controlsRef.current.update();
-      appliedInitialTargetRef.current = true;
     }
   }, [target, applyTargetUpdates]);
 
@@ -67,6 +66,9 @@ export default function MapController({ target, applyTargetUpdates = true }: Map
       zoomSpeed={1.5}
       panSpeed={1.8}
       screenSpacePanning
+      onStart={() => {
+        userControlledRef.current = true;
+      }}
       mouseButtons={{ LEFT: MOUSE.PAN, MIDDLE: MOUSE.DOLLY, RIGHT: null as any }}
     />
   );

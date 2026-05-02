@@ -223,6 +223,10 @@ wss.on('connection', (socket) => {
       if (room.clients.has(socket)) return;
 
       if (msg.role === 'host') {
+        if (Array.from(room.clients.values()).some(client => client.role === 'host')) {
+          socket.send(JSON.stringify({ type: 'error', message: 'Host slot is already occupied.' }));
+          return;
+        }
         if (!room.state) {
           const seed = Math.floor(Math.random() * 1e9);
           room.state = initMultiplayerGame(seed);
@@ -235,6 +239,10 @@ wss.on('connection', (socket) => {
         }
         if (room.clients.size >= 2) {
           socket.send(JSON.stringify({ type: 'error', message: 'Room is full.' }));
+          return;
+        }
+        if (Array.from(room.clients.values()).some(client => client.role === 'guest')) {
+          socket.send(JSON.stringify({ type: 'error', message: 'Guest slot is already occupied.' }));
           return;
         }
         room.clients.set(socket, { socket, role: 'guest', playerId: P2 });
