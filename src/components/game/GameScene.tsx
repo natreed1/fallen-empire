@@ -477,8 +477,7 @@ export default function GameScene() {
   const liveTarget = useCameraTarget();
   const isBotWatch =
     gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4' || gameMode === 'spectate';
-  const isPlayableCameraMode =
-    gameMode === 'human_vs_ai' || gameMode === 'human_solo' || gameMode === 'battle_test' || gameMode === 'multiplayer';
+  const isMultiplayerCameraMode = gameMode === 'multiplayer';
   const [mapTarget, setMapTarget] = useState(liveTarget);
   const [aiParamsLoadAttempted, setAiParamsLoadAttempted] = useState(false);
   const prevPhaseForCameraRef = useRef(phase);
@@ -489,7 +488,7 @@ export default function GameScene() {
       prevPhaseForCameraRef.current = phase;
       return;
     }
-    if (isPlayableCameraMode) {
+    if (isMultiplayerCameraMode) {
       prevPhaseForCameraRef.current = phase;
       return;
     }
@@ -499,7 +498,7 @@ export default function GameScene() {
       setMapTarget(liveTarget);
     }
     prevPhaseForCameraRef.current = phase;
-  }, [liveTarget, phase, isBotWatch, isPlayableCameraMode]);
+  }, [liveTarget, phase, isBotWatch, isMultiplayerCameraMode]);
 
   useEscapeKey();
 
@@ -608,7 +607,7 @@ export default function GameScene() {
           far={500}
         />
 
-        <MapController target={mapTarget} applyTargetUpdates={!isPlayableCameraMode} />
+        <MapController target={mapTarget} applyTargetUpdates={!isMultiplayerCameraMode} />
         <CameraZoomController />
         <HexInteractionPlane />
 
