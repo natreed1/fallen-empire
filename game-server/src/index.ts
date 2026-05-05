@@ -98,6 +98,13 @@ function broadcastSimSettings(room: Room): void {
   });
 }
 
+function roomHasRole(room: Room, role: ClientMeta['role']): boolean {
+  for (const client of room.clients.values()) {
+    if (client.role === role) return true;
+  }
+  return false;
+}
+
 function mergePlan(base: AiActions, patch: Partial<AiActions>): AiActions {
   const mt = new Map<string, { unitId: string; toQ: number; toR: number }>();
   for (const m of base.moveTargets) mt.set(m.unitId, m);
@@ -223,6 +230,14 @@ wss.on('connection', (socket) => {
       if (room.clients.has(socket)) return;
 
       if (msg.role === 'host') {
+        if (roomHasRole(room, 'host')) {
+          socket.send(JSON.stringify({ type: 'error', message: 'Host is already connected.' }));
+          return;
+        }
+        if (room.clients.size >= 2) {
+          socket.send(JSON.stringify({ type: 'error', message: 'Room is full.' }));
+          return;
+        }
         if (!room.state) {
           const seed = Math.floor(Math.random() * 1e9);
           room.state = initMultiplayerGame(seed);
@@ -231,6 +246,10 @@ wss.on('connection', (socket) => {
       } else {
         if (!room.state) {
           socket.send(JSON.stringify({ type: 'error', message: 'Room not created yet — host must join first.' }));
+          return;
+        }
+        if (roomHasRole(room, 'guest')) {
+          socket.send(JSON.stringify({ type: 'error', message: 'Guest is already connected.' }));
           return;
         }
         if (room.clients.size >= 2) {
