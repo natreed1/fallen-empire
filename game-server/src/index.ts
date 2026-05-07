@@ -223,6 +223,10 @@ wss.on('connection', (socket) => {
       if (room.clients.has(socket)) return;
 
       if (msg.role === 'host') {
+        if ([...room.clients.values()].some(c => c.role === 'host')) {
+          socket.send(JSON.stringify({ type: 'error', message: 'Room already has a host.' }));
+          return;
+        }
         if (!room.state) {
           const seed = Math.floor(Math.random() * 1e9);
           room.state = initMultiplayerGame(seed);
@@ -233,7 +237,7 @@ wss.on('connection', (socket) => {
           socket.send(JSON.stringify({ type: 'error', message: 'Room not created yet — host must join first.' }));
           return;
         }
-        if (room.clients.size >= 2) {
+        if ([...room.clients.values()].some(c => c.role === 'guest')) {
           socket.send(JSON.stringify({ type: 'error', message: 'Room is full.' }));
           return;
         }
