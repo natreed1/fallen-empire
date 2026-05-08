@@ -3396,7 +3396,10 @@ export const useGameStore = create<GameState>((set, get) => ({
 
       for (const mt of aiPlan.moveTargets) {
         const unit = units.find(u => u.id === mt.unitId);
-        if (unit && unit.hp > 0 && unit.status !== 'fighting') {
+        const targetTile = Number.isInteger(mt.toQ) && Number.isInteger(mt.toR)
+          ? tilesMut.get(tileKey(mt.toQ, mt.toR))
+          : undefined;
+        if (unit && unit.ownerId === aiPlayerId && targetTile && unit.hp > 0 && unit.status !== 'fighting') {
           applyDeployFlagsForMoveMutable(unit, mt.toQ, mt.toR, cities);
           clearPatrolFieldsMutable(unit);
           unit.targetQ = mt.toQ;
