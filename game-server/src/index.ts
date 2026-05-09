@@ -19,6 +19,7 @@ import {
 import { emptyAiActions, type AiActions } from '../../src/lib/ai.ts';
 import { serializeSimState, type SerializedSimState } from '../../src/lib/simStateSerialization.ts';
 import { MAX_MATCH_ECONOMY_CYCLES } from '../../src/types/game.ts';
+import { getRoomJoinRejection } from './roomMembership.ts';
 
 const PORT = Number(process.env.PORT ?? 3333);
 const TICK_MS = Number(process.env.MULTIPLAYER_TICK_MS ?? 4000);
@@ -221,6 +222,19 @@ wss.on('connection', (socket) => {
     if (msg.type === 'join' && msg.roomId && msg.role) {
       const room = getOrCreateRoom(msg.roomId);
       if (room.clients.has(socket)) return;
+      const joinRejection = getRoomJoinRejection(room.clients.values(), msg.role, room.state != null);
+      if (joinRejection === 'duplicate-host') {
+        socket.send(JSON.stringify({ type: 'error', message: 'Room already has a host.' }));
+        return;
+      }
+      if (joinRejection === 'missing-host') {
+        socket.send(JSON.stringify({ type: 'error', message: 'Room not created yet — host must join first.' }));
+        return;
+      }
+      if (joinRejection === 'duplicate-guest') {
+        socket.send(JSON.stringify({ type: 'error', message: 'Room already has a guest.' }));
+        return;
+      }
 
       if (msg.role === 'host') {
         if (!room.state) {
@@ -229,10 +243,6 @@ wss.on('connection', (socket) => {
         }
         room.clients.set(socket, { socket, role: 'host', playerId: P1 });
       } else {
-        if (!room.state) {
-          socket.send(JSON.stringify({ type: 'error', message: 'Room not created yet — host must join first.' }));
-          return;
-        }
         if (room.clients.size >= 2) {
           socket.send(JSON.stringify({ type: 'error', message: 'Room is full.' }));
           return;
