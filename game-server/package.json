@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "start": "tsx --tsconfig tsconfig.json src/index.ts",
-    "dev": "tsx watch --tsconfig tsconfig.json src/index.ts"
+    "dev": "tsx watch --tsconfig tsconfig.json src/index.ts",
+    "test": "node --import tsx --test src/roomMembership.test.ts"
   },
   "dependencies": {
     "simplex-noise": "^4.0.1",
