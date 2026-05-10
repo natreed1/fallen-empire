@@ -15,7 +15,7 @@ import {
   stepSimulation,
   type SimState,
 } from '../../src/core/gameCore.ts';
-import { DEFAULT_AI_PARAMS, emptyAiActions, type AiActions } from '../../src/lib/ai.ts';
+import { emptyAiActions, type AiActions } from '../../src/lib/ai.ts';
 import { serializeSimState, type SerializedSimState } from '../../src/lib/simStateSerialization.ts';
 import { MAX_MATCH_ECONOMY_CYCLES } from '../../src/types/game.ts';
 
@@ -24,6 +24,7 @@ const TICK_MS = Number(process.env.MULTIPLAYER_TICK_MS ?? 4000);
 
 const P1 = 'player_ai';
 const P2 = 'player_ai_2';
+const MULTIPLAYER_AI_PARAMS = {} as Parameters<typeof stepSimulation>[1];
 
 const SIM_SPEEDS = [0.5, 1, 2, 4] as const;
 type SimSpeedMultiplier = (typeof SIM_SPEEDS)[number];
@@ -162,8 +163,8 @@ function stepRoom(room: Room): void {
 
   room.state = stepSimulation(
     room.state,
-    DEFAULT_AI_PARAMS,
-    DEFAULT_AI_PARAMS,
+    MULTIPLAYER_AI_PARAMS,
+    MULTIPLAYER_AI_PARAMS,
     undefined,
     undefined,
     { humanPlansByPlayerId: plans },
