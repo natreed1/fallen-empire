@@ -88,6 +88,17 @@ function broadcastLobby(room: Room): void {
   });
 }
 
+function sendError(socket: WebSocket, message: string): void {
+  socket.send(JSON.stringify({ type: 'error', message }));
+}
+
+function hasClientForPlayer(room: Room, playerId: typeof P1 | typeof P2): boolean {
+  for (const client of room.clients.values()) {
+    if (client.playerId === playerId) return true;
+  }
+  return false;
+}
+
 function broadcastSimSettings(room: Room): void {
   room.effectiveTickMs = roomEffectiveTickMs(room);
   broadcast(room, {
@@ -96,6 +107,38 @@ function broadcastSimSettings(room: Room): void {
     paused: room.paused,
     speedMultiplier: room.speedMultiplier,
   });
+}
+
+function isFiniteInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && Number.isInteger(value);
+}
+
+function sanitizePlanForPlayer(
+  room: Room,
+  playerId: typeof P1 | typeof P2,
+  patch: Partial<AiActions>,
+): Partial<AiActions> {
+  if (!room.state) return {};
+
+  const rawMoveTargets = Array.isArray(patch.moveTargets) ? patch.moveTargets : [];
+  const moveTargets: { unitId: string; toQ: number; toR: number }[] = [];
+  for (const m of rawMoveTargets) {
+    if (
+      !m ||
+      typeof m.unitId !== 'string' ||
+      !isFiniteInteger(m.toQ) ||
+      !isFiniteInteger(m.toR) ||
+      !room.state.tiles.has(`${m.toQ},${m.toR}`)
+    ) {
+      continue;
+    }
+
+    const unit = room.state.units.find(u => u.id === m.unitId);
+    if (!unit || unit.ownerId !== playerId) continue;
+    moveTargets.push({ unitId: m.unitId, toQ: m.toQ, toR: m.toR });
+  }
+
+  return { moveTargets };
 }
 
 function mergePlan(base: AiActions, patch: Partial<AiActions>): AiActions {
@@ -165,7 +208,7 @@ wss.on('connection', (socket) => {
     try {
       msg = JSON.parse(String(data));
     } catch {
-      socket.send(JSON.stringify({ type: 'error', message: 'Invalid JSON' }));
+      sendError(socket, 'Invalid JSON');
       return;
     }
 
@@ -181,11 +224,11 @@ wss.on('connection', (socket) => {
         }
       }
       if (!found || !meta) {
-        socket.send(JSON.stringify({ type: 'error', message: 'Not in a room' }));
+        sendError(socket, 'Not in a room');
         return;
       }
       if (meta.role !== 'host') {
-        socket.send(JSON.stringify({ type: 'error', message: 'Only the host can change game speed or pause.' }));
+        sendError(socket, 'Only the host can change game speed or pause.');
         return;
       }
       const m = msg as {
@@ -218,11 +261,20 @@ wss.on('connection', (socket) => {
       return;
     }
 
-    if (msg.type === 'join' && msg.roomId && msg.role) {
+    if (
+      msg.type === 'join' &&
+      typeof msg.roomId === 'string' &&
+      msg.roomId.length > 0 &&
+      (msg.role === 'host' || msg.role === 'guest')
+    ) {
       const room = getOrCreateRoom(msg.roomId);
       if (room.clients.has(socket)) return;
 
       if (msg.role === 'host') {
+        if (hasClientForPlayer(room, P1)) {
+          sendError(socket, 'Host slot is already occupied.');
+          return;
+        }
         if (!room.state) {
           const seed = Math.floor(Math.random() * 1e9);
           room.state = initMultiplayerGame(seed);
@@ -230,11 +282,11 @@ wss.on('connection', (socket) => {
         room.clients.set(socket, { socket, role: 'host', playerId: P1 });
       } else {
         if (!room.state) {
-          socket.send(JSON.stringify({ type: 'error', message: 'Room not created yet — host must join first.' }));
+          sendError(socket, 'Room not created yet — host must join first.');
           return;
         }
-        if (room.clients.size >= 2) {
-          socket.send(JSON.stringify({ type: 'error', message: 'Room is full.' }));
+        if (room.clients.size >= 2 || hasClientForPlayer(room, P2)) {
+          sendError(socket, 'Guest slot is already occupied.');
           return;
         }
         room.clients.set(socket, { socket, role: 'guest', playerId: P2 });
@@ -273,11 +325,12 @@ wss.on('connection', (socket) => {
         }
       }
       if (!found || !meta) {
-        socket.send(JSON.stringify({ type: 'error', message: 'Not in a room' }));
+        sendError(socket, 'Not in a room');
         return;
       }
       const cur = found.pending[meta.playerId] ?? emptyAiActions();
-      found.pending[meta.playerId] = mergePlan(cur, msg.plan);
+      const rawPlan = msg.plan && typeof msg.plan === 'object' ? msg.plan : {};
+      found.pending[meta.playerId] = mergePlan(cur, sanitizePlanForPlayer(found, meta.playerId, rawPlan));
       return;
     }
   });
