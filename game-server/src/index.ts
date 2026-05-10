@@ -15,7 +15,7 @@ import {
   stepSimulation,
   type SimState,
 } from '../../src/core/gameCore.ts';
-import { emptyAiActions, type AiActions } from '../../src/lib/ai.ts';
+import type { AiActions } from '../../src/lib/ai.ts';
 import { serializeSimState, type SerializedSimState } from '../../src/lib/simStateSerialization.ts';
 
 const PORT = Number(process.env.PORT ?? 3333);
@@ -44,6 +44,23 @@ type Room = {
 };
 
 const rooms = new Map<string, Room>();
+
+function emptyAiActions(): AiActions {
+  return {
+    builds: [],
+    upgrades: [],
+    recruits: [],
+    moveTargets: [],
+    scouts: [],
+    incorporateVillages: [],
+    buildWallRings: [],
+    commanderAssignments: [],
+    scrollAttachments: [],
+    universityTasks: [],
+    stanceChanges: [],
+    retreats: [],
+  };
+}
 
 function roomEffectiveTickMs(room: Room): number {
   return Math.max(250, Math.round(TICK_MS / room.speedMultiplier));
