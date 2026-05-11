@@ -75,13 +75,24 @@ function broadcast(room: Room, msg: object): void {
   }
 }
 
+function hasClientRole(room: Room, role: ClientMeta['role']): boolean {
+  for (const meta of room.clients.values()) {
+    if (meta.role === role) return true;
+  }
+  return false;
+}
+
+function hasBothPlayerSlots(room: Room): boolean {
+  return hasClientRole(room, 'host') && hasClientRole(room, 'guest');
+}
+
 function broadcastLobby(room: Room): void {
   room.effectiveTickMs = roomEffectiveTickMs(room);
   broadcast(room, {
     type: 'lobby',
     players: room.clients.size,
     maxPlayers: 2,
-    started: room.clients.size >= 2 && room.state != null,
+    started: hasBothPlayerSlots(room) && room.state != null,
     tickMs: room.effectiveTickMs,
     paused: room.paused,
     speedMultiplier: room.speedMultiplier,
@@ -137,7 +148,7 @@ function stepRoom(room: Room): void {
 
 function maybeStartTick(room: Room): void {
   if (room.tickTimer) return;
-  if (room.paused || room.clients.size < 2 || !room.state) return;
+  if (room.paused || !hasBothPlayerSlots(room) || !room.state) return;
   const ms = roomEffectiveTickMs(room);
   room.effectiveTickMs = ms;
   room.tickTimer = setInterval(() => stepRoom(room), ms);
@@ -221,6 +232,15 @@ wss.on('connection', (socket) => {
     if (msg.type === 'join' && msg.roomId && msg.role) {
       const room = getOrCreateRoom(msg.roomId);
       if (room.clients.has(socket)) return;
+      if (hasClientRole(room, msg.role)) {
+        socket.send(
+          JSON.stringify({
+            type: 'error',
+            message: msg.role === 'host' ? 'Host slot is already occupied.' : 'Guest slot is already occupied.',
+          }),
+        );
+        return;
+      }
 
       if (msg.role === 'host') {
         if (!room.state) {
@@ -231,10 +251,6 @@ wss.on('connection', (socket) => {
       } else {
         if (!room.state) {
           socket.send(JSON.stringify({ type: 'error', message: 'Room not created yet — host must join first.' }));
-          return;
-        }
-        if (room.clients.size >= 2) {
-          socket.send(JSON.stringify({ type: 'error', message: 'Room is full.' }));
           return;
         }
         room.clients.set(socket, { socket, role: 'guest', playerId: P2 });
