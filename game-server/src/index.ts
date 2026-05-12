@@ -98,13 +98,29 @@ function broadcastSimSettings(room: Room): void {
   });
 }
 
-function mergePlan(base: AiActions, patch: Partial<AiActions>): AiActions {
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function mergeClientMovePlan(base: AiActions, patch: unknown): AiActions {
   const mt = new Map<string, { unitId: string; toQ: number; toR: number }>();
   for (const m of base.moveTargets) mt.set(m.unitId, m);
-  for (const m of patch.moveTargets ?? []) mt.set(m.unitId, m);
+  const moveTargets = isPlainObject(patch) ? patch.moveTargets : undefined;
+  if (Array.isArray(moveTargets)) {
+    for (const raw of moveTargets) {
+      if (!isPlainObject(raw)) continue;
+      const { unitId, toQ, toR } = raw;
+      if (
+        typeof unitId === 'string' &&
+        Number.isInteger(toQ) &&
+        Number.isInteger(toR)
+      ) {
+        mt.set(unitId, { unitId, toQ, toR });
+      }
+    }
+  }
   return {
     ...base,
-    ...patch,
     moveTargets: Array.from(mt.values()),
   };
 }
@@ -161,7 +177,7 @@ const wss = new WebSocketServer({ port: PORT });
 
 wss.on('connection', (socket) => {
   socket.on('message', (data) => {
-    let msg: { type?: string; roomId?: string; role?: 'host' | 'guest'; plan?: Partial<AiActions> };
+    let msg: { type?: string; roomId?: string; role?: 'host' | 'guest'; plan?: unknown };
     try {
       msg = JSON.parse(String(data));
     } catch {
@@ -277,7 +293,7 @@ wss.on('connection', (socket) => {
         return;
       }
       const cur = found.pending[meta.playerId] ?? emptyAiActions();
-      found.pending[meta.playerId] = mergePlan(cur, msg.plan);
+      found.pending[meta.playerId] = mergeClientMovePlan(cur, msg.plan);
       return;
     }
   });
