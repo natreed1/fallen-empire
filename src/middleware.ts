@@ -2,12 +2,18 @@ import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 import {
   SITE_AUTH_COOKIE,
+  getSiteAuthConfigurationError,
   getResolvedCookieSecret,
   isSiteAuthConfigured,
   verifySiteAuthToken,
 } from '@/lib/siteAuth';
 
 export async function middleware(request: NextRequest) {
+  const configError = getSiteAuthConfigurationError();
+  if (configError) {
+    return new NextResponse(configError, { status: 503 });
+  }
+
   if (!isSiteAuthConfigured()) {
     return NextResponse.next();
   }

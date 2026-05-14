@@ -2,11 +2,9 @@
 
 The game is a standard **Next.js 14** app. All gameplay runs in the browser; hosting is “build + serve.”
 
-## 1. Environment variables (Vercel) — optional
+## 1. Environment variables (Vercel) — required for production auth
 
-**Production** uses built-in defaults for the password gate (see [`src/lib/siteAuth.ts`](../src/lib/siteAuth.ts)), so you do **not** need to set anything in Vercel for protection to work.
-
-To **change** the password or rotate the session signing key, add in **Settings → Environment Variables**:
+**Production** requires explicit password-gate settings. Add in **Settings → Environment Variables**:
 
 | Name | Value |
 |------|--------|
