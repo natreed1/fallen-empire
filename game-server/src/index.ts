@@ -16,7 +16,7 @@ import {
   DEFAULT_AI_PARAMS,
   type SimState,
 } from '../../src/core/gameCore.ts';
-import { emptyAiActions, type AiActions } from '../../src/lib/ai.ts';
+import { emptyAiActions, type AiActions, type AiMoveAction } from '../../src/lib/ai.ts';
 import { serializeSimState, type SerializedSimState } from '../../src/lib/simStateSerialization.ts';
 import { MAX_MATCH_ECONOMY_CYCLES } from '../../src/types/game.ts';
 
@@ -98,13 +98,27 @@ function broadcastSimSettings(room: Room): void {
   });
 }
 
+function isMoveTarget(value: unknown): value is AiMoveAction {
+  if (!value || typeof value !== 'object') return false;
+  const move = value as Partial<AiMoveAction>;
+  return (
+    typeof move.unitId === 'string' &&
+    typeof move.toQ === 'number' &&
+    typeof move.toR === 'number' &&
+    Number.isFinite(move.toQ) &&
+    Number.isFinite(move.toR)
+  );
+}
+
 function mergePlan(base: AiActions, patch: Partial<AiActions>): AiActions {
   const mt = new Map<string, { unitId: string; toQ: number; toR: number }>();
   for (const m of base.moveTargets) mt.set(m.unitId, m);
-  for (const m of patch.moveTargets ?? []) mt.set(m.unitId, m);
+  const moveTargets = Array.isArray(patch.moveTargets) ? patch.moveTargets : [];
+  for (const m of moveTargets) {
+    if (isMoveTarget(m)) mt.set(m.unitId, { unitId: m.unitId, toQ: m.toQ, toR: m.toR });
+  }
   return {
     ...base,
-    ...patch,
     moveTargets: Array.from(mt.values()),
   };
 }
