@@ -9,16 +9,48 @@ import {
   stepSimulation,
 } from '../src/core/gameCore';
 import { emptyAiActions } from '../src/lib/ai';
+import type { Unit } from '../src/types/game';
 
 const P1 = 'player_ai';
 const P2 = 'player_ai_2';
 
 const state = initMultiplayerGame(12345, { width: 38, height: 38 });
-const p1Unit = state.units.find(u => u.ownerId === P1 && u.hp > 0);
-const p2Unit = state.units.find(u => u.ownerId === P2 && u.hp > 0);
+const p1City = state.cities.find(c => c.ownerId === P1);
+const p2City = state.cities.find(c => c.ownerId === P2);
 
-assert.ok(p1Unit, 'expected a player 1 unit in multiplayer initial state');
-assert.ok(p2Unit, 'expected a player 2 unit in multiplayer initial state');
+assert.ok(p1City, 'expected a player 1 city in multiplayer initial state');
+assert.ok(p2City, 'expected a player 2 city in multiplayer initial state');
+
+const p1Unit: Unit = {
+  id: 'p1-test-unit',
+  type: 'infantry',
+  q: p1City.q,
+  r: p1City.r,
+  ownerId: P1,
+  hp: 30,
+  maxHp: 30,
+  xp: 0,
+  level: 0,
+  status: 'idle',
+  stance: 'aggressive',
+  nextMoveAt: 0,
+};
+const p2Unit: Unit = {
+  id: 'p2-test-unit',
+  type: 'infantry',
+  q: p2City.q,
+  r: p2City.r,
+  ownerId: P2,
+  hp: 30,
+  maxHp: 30,
+  xp: 0,
+  level: 0,
+  status: 'idle',
+  stance: 'aggressive',
+  nextMoveAt: 0,
+};
+
+state.units = [p1Unit, p2Unit];
 
 const stolenTarget = { q: p2Unit.q + 3, r: p2Unit.r };
 const legitimateTarget = { q: p1Unit.q + 3, r: p1Unit.r };
