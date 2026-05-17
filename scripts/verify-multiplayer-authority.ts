@@ -20,7 +20,7 @@ type ServerMessage = {
   [key: string]: unknown;
 };
 
-function assert(cond: boolean, msg: string): asserts cond {
+function assert(cond: unknown, msg: string): asserts cond {
   if (!cond) throw new Error(msg);
 }
 
