@@ -9,6 +9,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 import { DEFAULT_AI_PARAMS, initMultiplayerGame, stepSimulation } from '../src/core/gameCore';
 import { emptyAiActions } from '../src/lib/ai';
+import type { Unit } from '../src/types/game';
 
 const P1 = 'player_ai';
 const P2 = 'player_ai_2';
@@ -140,12 +141,31 @@ async function closeServer(server: ChildProcessWithoutNullStreams): Promise<void
 
 function verifyCrossPlayerMoveTargetsAreIgnored(): void {
   const state = initMultiplayerGame(424242);
-  const targetUnit = state.units.find(u => u.ownerId === P2 && u.hp > 0);
-  assert(targetUnit, 'expected player 2 to start with a live unit');
+  const p2City = state.cities.find(c => c.ownerId === P2);
+  assert(p2City, 'expected player 2 to start with a city');
+
+  const targetUnit: Unit = {
+    id: 'authority-p2-unit',
+    type: 'infantry',
+    q: p2City.q,
+    r: p2City.r,
+    ownerId: P2,
+    hp: 10,
+    maxHp: 10,
+    xp: 0,
+    level: 0,
+    status: 'idle',
+    stance: 'aggressive',
+    nextMoveAt: 0,
+  };
+  const controlledState = {
+    ...state,
+    units: [...state.units, targetUnit],
+  };
 
   const maliciousTarget = { toQ: targetUnit.q + 7, toR: targetUnit.r - 5 };
   const next = stepSimulation(
-    state,
+    controlledState,
     DEFAULT_AI_PARAMS,
     DEFAULT_AI_PARAMS,
     undefined,
