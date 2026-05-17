@@ -210,7 +210,13 @@ async function verifyDuplicateHostIsRejected(): Promise<void> {
   }
 }
 
-verifyCrossPlayerMoveTargetsAreIgnored();
-await verifyDuplicateHostIsRejected();
+async function main(): Promise<void> {
+  verifyCrossPlayerMoveTargetsAreIgnored();
+  await verifyDuplicateHostIsRejected();
+  console.log('verify-multiplayer-authority: ok');
+}
 
-console.log('verify-multiplayer-authority: ok');
+main().catch(err => {
+  console.error(err);
+  process.exitCode = 1;
+});
