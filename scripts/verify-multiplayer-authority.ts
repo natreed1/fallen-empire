@@ -131,12 +131,39 @@ async function waitForMessage(
 async function closeServer(server: ChildProcessWithoutNullStreams): Promise<void> {
   if (server.exitCode != null) return;
   server.kill('SIGTERM');
-  await Promise.race([
-    once(server, 'exit'),
-    delay(1500).then(() => {
-      if (server.exitCode == null) server.kill('SIGKILL');
-    }),
+  const exited = await Promise.race([
+    once(server, 'exit').then(() => true),
+    delay(1500).then(() => false),
   ]);
+  if (!exited && server.exitCode == null) {
+    server.kill('SIGKILL');
+    await Promise.race([once(server, 'exit'), delay(1500)]);
+  }
+}
+
+async function closeSocket(socket: WebSocket): Promise<void> {
+  if (socket.readyState === WebSocket.CLOSED) return;
+  await new Promise<void>(resolve => {
+    const timeout = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, 1000);
+    const onClose = () => {
+      cleanup();
+      resolve();
+    };
+    const cleanup = () => {
+      clearTimeout(timeout);
+      socket.removeEventListener('close', onClose);
+    };
+    socket.addEventListener('close', onClose);
+    try {
+      socket.close();
+    } catch {
+      cleanup();
+      resolve();
+    }
+  });
 }
 
 function verifyCrossPlayerMoveTargetsAreIgnored(): void {
@@ -191,8 +218,9 @@ function verifyCrossPlayerMoveTargetsAreIgnored(): void {
 
 async function verifyDuplicateHostIsRejected(): Promise<void> {
   const port = 42000 + Math.floor(Math.random() * 10000);
-  const server = spawn('npm', ['--prefix', 'game-server', 'run', 'start'], {
-    cwd: process.cwd(),
+  const tsxBin = process.platform === 'win32' ? 'node_modules\\.bin\\tsx.cmd' : './node_modules/.bin/tsx';
+  const server = spawn(tsxBin, ['--tsconfig', 'tsconfig.json', 'src/index.ts'], {
+    cwd: `${process.cwd()}/game-server`,
     env: {
       ...process.env,
       PORT: String(port),
@@ -219,13 +247,7 @@ async function verifyDuplicateHostIsRejected(): Promise<void> {
     const duplicateHost = await waitForMessage(host2, msg => msg.type === 'joined' || msg.type === 'error', 'duplicate host join');
     assert(duplicateHost.type === 'error', 'duplicate host was allowed to join the same room');
   } finally {
-    for (const socket of sockets) {
-      try {
-        socket.close();
-      } catch {
-        // ignore cleanup failures
-      }
-    }
+    await Promise.all(sockets.map(closeSocket));
     await closeServer(server);
   }
 }
