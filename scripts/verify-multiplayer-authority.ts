@@ -2,10 +2,11 @@
  * Regression checks for multiplayer room access and cross-player order authority.
  * Run with: npm exec --yes tsx -- scripts/verify-multiplayer-authority.ts
  */
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn, type ChildProcessByStdio } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
+import type { Readable } from 'node:stream';
 
 import { DEFAULT_AI_PARAMS, initMultiplayerGame, stepSimulation } from '../src/core/gameCore';
 import { emptyAiActions } from '../src/lib/ai';
@@ -19,6 +20,7 @@ type ServerMessage = {
   message?: string;
   [key: string]: unknown;
 };
+type GameServerProcess = ChildProcessByStdio<null, Readable, Readable>;
 
 function assert(cond: unknown, msg: string): asserts cond {
   if (!cond) throw new Error(msg);
@@ -31,7 +33,7 @@ function messageDataToString(data: unknown): string {
   return String(data);
 }
 
-async function waitForServerReady(server: ChildProcessWithoutNullStreams): Promise<void> {
+async function waitForServerReady(server: GameServerProcess): Promise<void> {
   let output = '';
   await new Promise<void>((resolve, reject) => {
     const timeout = setTimeout(() => {
@@ -128,7 +130,7 @@ async function waitForMessage(
   });
 }
 
-async function closeServer(server: ChildProcessWithoutNullStreams): Promise<void> {
+async function closeServer(server: GameServerProcess): Promise<void> {
   if (server.exitCode != null) return;
   server.kill('SIGTERM');
   const exited = await Promise.race([
