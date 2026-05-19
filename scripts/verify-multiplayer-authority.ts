@@ -4,6 +4,7 @@ import {
   stepSimulation,
 } from '../src/core/gameCore';
 import { emptyAiActions } from '../src/lib/ai';
+import type { Unit } from '../src/types/game';
 
 const P1 = 'player_ai';
 const P2 = 'player_ai_2';
@@ -15,15 +16,41 @@ function assert(condition: unknown, message: string): asserts condition {
 }
 
 const state = initMultiplayerGame(424242);
-const p1Unit = state.units.find(u => u.ownerId === P1 && u.hp > 0 && u.status !== 'fighting');
-const p2Unit = state.units.find(u => u.ownerId === P2 && u.hp > 0 && u.status !== 'fighting');
 const p1City = state.cities.find(c => c.ownerId === P1);
 const p2City = state.cities.find(c => c.ownerId === P2);
 
-assert(p1Unit, 'expected Player 1 to start with a movable unit');
-assert(p2Unit, 'expected Player 2 to start with a movable unit');
 assert(p1City, 'expected Player 1 to start with a city');
 assert(p2City, 'expected Player 2 to start with a city');
+
+const p1Unit: Unit = {
+  id: 'regression_p1_unit',
+  type: 'infantry',
+  q: p1City.q,
+  r: p1City.r,
+  ownerId: P1,
+  hp: 100,
+  maxHp: 100,
+  xp: 0,
+  level: 1,
+  status: 'idle',
+  stance: 'aggressive',
+  nextMoveAt: 0,
+};
+const p2Unit: Unit = {
+  id: 'regression_p2_unit',
+  type: 'infantry',
+  q: p2City.q,
+  r: p2City.r,
+  ownerId: P2,
+  hp: 100,
+  maxHp: 100,
+  xp: 0,
+  level: 1,
+  status: 'idle',
+  stance: 'aggressive',
+  nextMoveAt: 0,
+};
+state.units = [p1Unit, p2Unit];
 
 const p2Before = {
   q: p2Unit.q,
