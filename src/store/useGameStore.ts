@@ -726,6 +726,10 @@ export function gameModeUsesMatchCycleCap(mode: GameMode): boolean {
   return mode === 'human_vs_ai' || mode === 'multiplayer';
 }
 
+export function gameModeIsAiOnlyObserver(mode: GameMode): boolean {
+  return mode === 'bot_vs_bot' || mode === 'bot_vs_bot_4' || mode === 'spectate';
+}
+
 /** When set on an order, only these units receive the order on confirm; omitted = whole stack (legacy). */
 type TacticalParticipation = { participatingUnitIds?: string[] };
 
@@ -2486,7 +2490,7 @@ export const useGameStore = create<GameState>((set, get) => ({
 
       const territoryAfterCapture = citiesFinal !== updatedCities ? calculateTerritory(citiesFinal, s.tiles) : undefined;
       let phaseAfterCapture: GamePhase = s.phase;
-      if (s.gameMode === 'bot_vs_bot' || s.gameMode === 'spectate') {
+      if (gameModeIsAiOnlyObserver(s.gameMode)) {
         const aiIds = s.players.filter(p => !p.isHuman).map(p => p.id);
         const alive = aiIds.filter(pid => citiesFinal.some(c => c.ownerId === pid));
         if (alive.length <= 1) {
@@ -2961,7 +2965,7 @@ export const useGameStore = create<GameState>((set, get) => ({
           });
         } else {
           clearAllTimers();
-          if (st.gameMode === 'bot_vs_bot' || st.gameMode === 'spectate') {
+          if (gameModeIsAiOnlyObserver(st.gameMode)) {
             const aiIds = st.players.filter(p => !p.isHuman).map(p => p.id);
             let bestId = aiIds[0];
             let bestScore = -1;
@@ -3535,7 +3539,7 @@ export const useGameStore = create<GameState>((set, get) => ({
           p.id === winnerId ? { ...p, gold: p.gold + 50 } : p
         );
         const winnerName =
-          s.gameMode === 'bot_vs_bot' || s.gameMode === 'spectate'
+          gameModeIsAiOnlyObserver(s.gameMode)
             ? (s.players.find(p => p.id === winnerId)?.name ?? 'Empire')
             : winnerId === HUMAN_ID
               ? 'You'
@@ -3588,7 +3592,7 @@ export const useGameStore = create<GameState>((set, get) => ({
 
     // Victory check
     let phase: GamePhase = 'playing';
-    if (s.gameMode === 'bot_vs_bot' || s.gameMode === 'spectate') {
+    if (gameModeIsAiOnlyObserver(s.gameMode)) {
       const aiIds = s.players.filter(p => !p.isHuman).map(p => p.id);
       const alive = aiIds.filter(pid => citiesForSet.some(c => c.ownerId === pid));
       if (alive.length <= 1) {
