@@ -5,6 +5,7 @@
 import { initMultiplayerGame, stepSimulation, DEFAULT_AI_PARAMS, type SimState } from '../src/core/gameCore';
 import { emptyAiActions, type AiActions } from '../src/lib/ai';
 import { mergeClientPlan } from '../game-server/src/clientPlans';
+import type { Unit } from '../src/types/game';
 
 const P1 = 'player_ai';
 const P2 = 'player_ai_2';
@@ -30,23 +31,37 @@ function stepWithPlans(state: SimState, p1Plan: AiActions, p2Plan: AiActions): S
   );
 }
 
-function firstUnit(state: SimState, ownerId: string) {
-  const unit = state.units.find(u => u.ownerId === ownerId && u.hp > 0);
-  if (!unit) throw new Error(`missing unit for ${ownerId}`);
-  return unit;
-}
-
 function firstCity(state: SimState, ownerId: string) {
   const city = state.cities.find(c => c.ownerId === ownerId);
   if (!city) throw new Error(`missing city for ${ownerId}`);
   return city;
 }
 
+function addTestUnit(state: SimState, ownerId: string, id: string): Unit {
+  const city = firstCity(state, ownerId);
+  const unit: Unit = {
+    id,
+    type: 'infantry',
+    q: city.q,
+    r: city.r,
+    ownerId,
+    hp: 100,
+    maxHp: 100,
+    xp: 0,
+    level: 0,
+    status: 'idle',
+    stance: 'aggressive',
+    nextMoveAt: 0,
+  };
+  state.units = [...state.units, unit];
+  return unit;
+}
+
 const emptyP2Plan = emptyAiActions();
 
 {
   const state = initMultiplayerGame(9981, { width: 38, height: 38 });
-  const p2Unit = firstUnit(state, P2);
+  const p2Unit = addTestUnit(state, P2, 'p2-test-unit-deny');
   const p1City = firstCity(state, P1);
 
   const next = stepWithPlans(state, planWithMove(p2Unit.id, p1City.q, p1City.r), emptyP2Plan);
@@ -59,7 +74,7 @@ const emptyP2Plan = emptyAiActions();
 
 {
   const state = initMultiplayerGame(9982, { width: 38, height: 38 });
-  const p2Unit = firstUnit(state, P2);
+  const p2Unit = addTestUnit(state, P2, 'p2-test-unit-allow');
   const p1City = firstCity(state, P1);
 
   const next = stepWithPlans(state, emptyAiActions(), planWithMove(p2Unit.id, p1City.q, p1City.r));
