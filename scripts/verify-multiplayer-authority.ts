@@ -67,7 +67,7 @@ const emptyP2Plan = emptyAiActions();
   const next = stepWithPlans(state, planWithMove(p2Unit.id, p1City.q, p1City.r), emptyP2Plan);
   const after = next.units.find(u => u.id === p2Unit.id);
 
-  assert(after != null, 'opponent unit still exists');
+  if (!after) throw new Error('opponent unit still exists');
   assert(after.targetQ === undefined && after.targetR === undefined, 'player 1 must not be able to target player 2 units');
   assert(after.status !== 'moving', 'player 1 must not be able to move player 2 units');
 }
@@ -80,7 +80,7 @@ const emptyP2Plan = emptyAiActions();
   const next = stepWithPlans(state, emptyAiActions(), planWithMove(p2Unit.id, p1City.q, p1City.r));
   const after = next.units.find(u => u.id === p2Unit.id);
 
-  assert(after != null, 'own unit still exists');
+  if (!after) throw new Error('own unit still exists');
   assert(after.targetQ === p1City.q && after.targetR === p1City.r, 'owner move target should be preserved');
   assert(after.status === 'moving', 'owner move should still be applied');
 }

@@ -11,6 +11,7 @@ function toMoveAction(value: unknown): AiMoveAction | null {
   if (!isRecord(value)) return null;
   const { unitId, toQ, toR } = value;
   if (typeof unitId !== 'string' || unitId.length === 0 || unitId.length > MAX_UNIT_ID_LENGTH) return null;
+  if (typeof toQ !== 'number' || typeof toR !== 'number') return null;
   if (!Number.isSafeInteger(toQ) || !Number.isSafeInteger(toR)) return null;
   return { unitId, toQ, toR };
 }
