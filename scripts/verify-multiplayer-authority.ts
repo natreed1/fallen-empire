@@ -5,19 +5,13 @@
  */
 import { DEFAULT_AI_PARAMS, initMultiplayerGame, stepSimulation } from '../src/core/gameCore';
 import { emptyAiActions, type AiActions } from '../src/lib/ai';
-import type { Unit } from '../src/types/game';
+import type { City, Unit } from '../src/types/game';
 
 const P1 = 'player_ai';
 const P2 = 'player_ai_2';
 
 function assert(cond: boolean, msg: string) {
   if (!cond) throw new Error(msg);
-}
-
-function firstMobileUnit(units: Unit[], ownerId: string): Unit {
-  const unit = units.find(u => u.ownerId === ownerId && u.hp > 0 && u.status !== 'fighting');
-  assert(!!unit, `expected mobile unit for ${ownerId}`);
-  return unit!;
 }
 
 function planWithMoves(moves: AiActions['moveTargets']): AiActions {
@@ -27,12 +21,34 @@ function planWithMoves(moves: AiActions['moveTargets']): AiActions {
   };
 }
 
-const initial = initMultiplayerGame(20260522);
-const p1Unit = firstMobileUnit(initial.units, P1);
-const p2Unit = firstMobileUnit(initial.units, P2);
-const p1City = initial.cities.find(c => c.ownerId === P1);
-const p2City = initial.cities.find(c => c.ownerId === P2);
+function testUnit(id: string, ownerId: string, city: City): Unit {
+  return {
+    id,
+    type: 'infantry',
+    q: city.q,
+    r: city.r,
+    ownerId,
+    hp: 100,
+    maxHp: 100,
+    xp: 0,
+    level: 0,
+    status: 'idle',
+    stance: 'aggressive',
+    nextMoveAt: 0,
+  } as Unit;
+}
+
+const generated = initMultiplayerGame(20260522);
+const p1City = generated.cities.find(c => c.ownerId === P1);
+const p2City = generated.cities.find(c => c.ownerId === P2);
 assert(!!p1City && !!p2City, 'expected both multiplayer capitals');
+
+const p1Unit = testUnit('authority_p1', P1, p1City!);
+const p2Unit = testUnit('authority_p2', P2, p2City!);
+const initial = {
+  ...generated,
+  units: [p1Unit, p2Unit],
+};
 
 const maliciousTarget = { q: p1City!.q, r: p1City!.r };
 const legitimateTarget = { q: p2City!.q, r: p2City!.r };
