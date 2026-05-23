@@ -89,11 +89,11 @@ const hijackedP2 = next.units.find(u => u.id === p2Unit.id);
 assert(Boolean(movedP1), 'expected p1 unit after step');
 assert(Boolean(hijackedP2), 'expected p2 unit after step');
 
+const p1HasMoveOrder =
+  (movedP1!.targetQ === p1Dest.q && movedP1!.targetR === p1Dest.r) ||
+  (movedP1!.q === p1Dest.q && movedP1!.r === p1Dest.r);
 assert(
-  movedP1!.targetQ === p1Dest.q ||
-    movedP1!.q === p1Dest.q ||
-    movedP1!.targetR === p1Dest.r ||
-    movedP1!.r === p1Dest.r,
+  p1HasMoveOrder,
   'owned unit should accept its player move target',
 );
 assert(hijackedP2!.q === p2City!.q && hijackedP2!.r === p2City!.r, 'opponent unit position must not change');
