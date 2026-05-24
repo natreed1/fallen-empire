@@ -13,10 +13,9 @@ import { randomUUID } from 'crypto';
 import {
   initMultiplayerGame,
   stepSimulation,
-  DEFAULT_AI_PARAMS,
   type SimState,
 } from '../../src/core/gameCore.ts';
-import { emptyAiActions, type AiActions } from '../../src/lib/ai.ts';
+import { DEFAULT_AI_PARAMS, emptyAiActions, type AiActions } from '../../src/lib/ai.ts';
 import { serializeSimState, type SerializedSimState } from '../../src/lib/simStateSerialization.ts';
 import { MAX_MATCH_ECONOMY_CYCLES } from '../../src/types/game.ts';
 
@@ -157,6 +156,13 @@ function restartTickIfRunning(room: Room): void {
   maybeStartTick(room);
 }
 
+function hasClientRole(room: Room, role: ClientMeta['role']): boolean {
+  for (const client of room.clients.values()) {
+    if (client.role === role) return true;
+  }
+  return false;
+}
+
 const wss = new WebSocketServer({ port: PORT });
 
 wss.on('connection', (socket) => {
@@ -223,6 +229,10 @@ wss.on('connection', (socket) => {
       if (room.clients.has(socket)) return;
 
       if (msg.role === 'host') {
+        if (hasClientRole(room, 'host')) {
+          socket.send(JSON.stringify({ type: 'error', message: 'Host already joined this room.' }));
+          return;
+        }
         if (!room.state) {
           const seed = Math.floor(Math.random() * 1e9);
           room.state = initMultiplayerGame(seed);
@@ -231,6 +241,10 @@ wss.on('connection', (socket) => {
       } else {
         if (!room.state) {
           socket.send(JSON.stringify({ type: 'error', message: 'Room not created yet — host must join first.' }));
+          return;
+        }
+        if (hasClientRole(room, 'guest')) {
+          socket.send(JSON.stringify({ type: 'error', message: 'Guest already joined this room.' }));
           return;
         }
         if (room.clients.size >= 2) {
