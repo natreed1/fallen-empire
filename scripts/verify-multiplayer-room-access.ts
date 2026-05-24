@@ -38,6 +38,26 @@ async function waitForServer(server: ChildProcessWithoutNullStreams): Promise<vo
   await ready;
 }
 
+async function stopServer(server: ChildProcessWithoutNullStreams): Promise<void> {
+  if (server.exitCode !== null) return;
+  const exited = new Promise(resolve => server.once('exit', resolve));
+  try {
+    if (server.pid && process.platform !== 'win32') process.kill(-server.pid, 'SIGTERM');
+    else server.kill('SIGTERM');
+  } catch {
+    server.kill('SIGTERM');
+  }
+  await Promise.race([exited, wait(2_000)]);
+  if (server.exitCode === null) {
+    try {
+      if (server.pid && process.platform !== 'win32') process.kill(-server.pid, 'SIGKILL');
+      else server.kill('SIGKILL');
+    } catch {
+      // The process may have exited between the check and the signal.
+    }
+  }
+}
+
 function openSocket(url: string): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
     const socket = new WebSocket(url);
@@ -84,6 +104,7 @@ async function main() {
   const server = spawn('npm', ['--prefix', 'game-server', 'start'], {
     cwd: process.cwd(),
     env: { ...process.env, PORT: String(port), MULTIPLAYER_TICK_MS: '60000' },
+    detached: process.platform !== 'win32',
   });
 
   const sockets: WebSocket[] = [];
@@ -128,8 +149,7 @@ async function main() {
     console.log('verify-multiplayer-room-access: ok');
   } finally {
     for (const socket of sockets) socket.close();
-    server.kill('SIGTERM');
-    await wait(250);
+    await stopServer(server);
   }
 }
 
