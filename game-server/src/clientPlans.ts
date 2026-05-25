@@ -1,8 +1,25 @@
-import { emptyAiActions, type AiActions } from '../../src/lib/ai';
+import type { AiActions } from '../../src/lib/ai';
 
 type MoveTarget = AiActions['moveTargets'][number];
 
 const MAX_MOVE_TARGETS_PER_PLAN = 256;
+
+function emptyClientActions(): AiActions {
+  return {
+    builds: [],
+    upgrades: [],
+    recruits: [],
+    moveTargets: [],
+    scouts: [],
+    incorporateVillages: [],
+    buildWallRings: [],
+    commanderAssignments: [],
+    scrollAttachments: [],
+    universityTasks: [],
+    stanceChanges: [],
+    retreats: [],
+  };
+}
 
 function isFiniteCoordinate(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
@@ -33,7 +50,7 @@ function sanitizeMoveTargets(input: unknown): MoveTarget[] {
 }
 
 export function mergeClientPlan(base: AiActions, patch: unknown): AiActions {
-  const merged = emptyAiActions();
+  const merged = emptyClientActions();
   const byUnit = new Map<string, MoveTarget>();
 
   for (const target of base.moveTargets) byUnit.set(target.unitId, target);
