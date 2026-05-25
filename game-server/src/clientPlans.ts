@@ -1,4 +1,4 @@
-import { emptyAiActions, type AiActions } from '../../src/lib/ai.ts';
+import { emptyAiActions, type AiActions } from '../../src/lib/ai';
 
 type MoveTarget = AiActions['moveTargets'][number];
 
