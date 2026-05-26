@@ -480,23 +480,23 @@ export default function GameScene() {
   const isPlayableCameraMode =
     gameMode === 'human_vs_ai' || gameMode === 'human_solo' || gameMode === 'battle_test' || gameMode === 'multiplayer';
   const [mapTarget, setMapTarget] = useState(liveTarget);
+  const [mapTargetRevision, setMapTargetRevision] = useState(0);
   const [aiParamsLoadAttempted, setAiParamsLoadAttempted] = useState(false);
   const prevPhaseForCameraRef = useRef(phase);
 
   useEffect(() => {
+    const enteredPlaying = prevPhaseForCameraRef.current !== 'playing' && phase === 'playing';
     if (isBotWatch) {
       setMapTarget(liveTarget);
       prevPhaseForCameraRef.current = phase;
       return;
     }
-    if (isPlayableCameraMode) {
-      prevPhaseForCameraRef.current = phase;
-      return;
-    }
-    const enteredPlaying = prevPhaseForCameraRef.current !== 'playing' && phase === 'playing';
     // Keep syncing while not in the match (menus / placement); on first frame of play, snap to capital / live target
     if (phase !== 'playing' || enteredPlaying) {
       setMapTarget(liveTarget);
+      if (isPlayableCameraMode) {
+        setMapTargetRevision(rev => rev + 1);
+      }
     }
     prevPhaseForCameraRef.current = phase;
   }, [liveTarget, phase, isBotWatch, isPlayableCameraMode]);
@@ -608,7 +608,11 @@ export default function GameScene() {
           far={500}
         />
 
-        <MapController target={mapTarget} applyTargetUpdates={!isPlayableCameraMode} />
+        <MapController
+          target={mapTarget}
+          applyTargetUpdates={!isPlayableCameraMode}
+          targetRevision={mapTargetRevision}
+        />
         <CameraZoomController />
         <HexInteractionPlane />
 
