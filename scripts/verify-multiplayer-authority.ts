@@ -8,7 +8,7 @@ import {
   stepSimulation,
 } from '../src/core/gameCore';
 import { emptyAiActions } from '../src/lib/ai';
-import { tileKey } from '../src/types/game';
+import { tileKey, type Unit } from '../src/types/game';
 
 function assert(cond: boolean, msg: string): void {
   if (!cond) throw new Error(msg);
@@ -22,6 +22,34 @@ const state = initMultiplayerGame(4242, {
   height: 24,
   mapTerrain: 'no_water',
 });
+
+const p1City = state.cities.find(c => c.ownerId === P1);
+const p2City = state.cities.find(c => c.ownerId === P2);
+assert(!!p1City, 'expected a Player 1 city');
+assert(!!p2City, 'expected a Player 2 city');
+
+const p1TestUnit: Unit = {
+  id: 'verify-p1-unit',
+  type: 'infantry',
+  q: p1City!.q,
+  r: p1City!.r,
+  ownerId: P1,
+  hp: 10,
+  maxHp: 10,
+  xp: 0,
+  level: 0,
+  status: 'idle',
+  stance: 'aggressive',
+  nextMoveAt: 0,
+};
+const p2TestUnit: Unit = {
+  ...p1TestUnit,
+  id: 'verify-p2-unit',
+  q: p2City!.q,
+  r: p2City!.r,
+  ownerId: P2,
+};
+state.units = [p1TestUnit, p2TestUnit];
 
 const p1Unit = state.units.find(u => u.ownerId === P1 && u.hp > 0);
 const p2Unit = state.units.find(u => u.ownerId === P2 && u.hp > 0);
