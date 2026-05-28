@@ -98,13 +98,34 @@ function broadcastSimSettings(room: Room): void {
   });
 }
 
+function roomHasRole(room: Room, role: ClientMeta['role']): boolean {
+  for (const client of room.clients.values()) {
+    if (client.role === role) return true;
+  }
+  return false;
+}
+
+function sanitizePlanPatch(patch: Partial<AiActions>): Partial<AiActions> {
+  const moveTargets = Array.isArray(patch.moveTargets)
+    ? patch.moveTargets.filter(
+      (m): m is AiActions['moveTargets'][number] =>
+        !!m &&
+        typeof m.unitId === 'string' &&
+        Number.isInteger(m.toQ) &&
+        Number.isInteger(m.toR),
+    )
+    : [];
+  return { moveTargets };
+}
+
 function mergePlan(base: AiActions, patch: Partial<AiActions>): AiActions {
+  const safePatch = sanitizePlanPatch(patch);
   const mt = new Map<string, { unitId: string; toQ: number; toR: number }>();
   for (const m of base.moveTargets) mt.set(m.unitId, m);
-  for (const m of patch.moveTargets ?? []) mt.set(m.unitId, m);
+  for (const m of safePatch.moveTargets ?? []) mt.set(m.unitId, m);
   return {
     ...base,
-    ...patch,
+    ...safePatch,
     moveTargets: Array.from(mt.values()),
   };
 }
@@ -223,6 +244,10 @@ wss.on('connection', (socket) => {
       if (room.clients.has(socket)) return;
 
       if (msg.role === 'host') {
+        if (room.clients.size >= 2 || roomHasRole(room, 'host')) {
+          socket.send(JSON.stringify({ type: 'error', message: 'Room is full.' }));
+          return;
+        }
         if (!room.state) {
           const seed = Math.floor(Math.random() * 1e9);
           room.state = initMultiplayerGame(seed);
@@ -235,6 +260,10 @@ wss.on('connection', (socket) => {
         }
         if (room.clients.size >= 2) {
           socket.send(JSON.stringify({ type: 'error', message: 'Room is full.' }));
+          return;
+        }
+        if (roomHasRole(room, 'guest')) {
+          socket.send(JSON.stringify({ type: 'error', message: 'Guest slot is already filled.' }));
           return;
         }
         room.clients.set(socket, { socket, role: 'guest', playerId: P2 });
