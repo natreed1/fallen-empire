@@ -98,15 +98,30 @@ function broadcastSimSettings(room: Room): void {
   });
 }
 
-function mergePlan(base: AiActions, patch: Partial<AiActions>): AiActions {
+function mergePlan(base: AiActions, patch: Partial<AiActions>, playerId: string, state: SimState | null): AiActions {
+  const safePatch: Partial<AiActions> = patch && typeof patch === 'object' ? patch : {};
   const mt = new Map<string, { unitId: string; toQ: number; toR: number }>();
+  const ownedUnitIds = new Set((state?.units ?? []).filter(u => u.ownerId === playerId).map(u => u.id));
   for (const m of base.moveTargets) mt.set(m.unitId, m);
-  for (const m of patch.moveTargets ?? []) mt.set(m.unitId, m);
+  const moveTargets = Array.isArray(safePatch.moveTargets) ? safePatch.moveTargets : [];
+  for (const m of moveTargets) {
+    if (!m || typeof m.unitId !== 'string') continue;
+    if (!Number.isInteger(m.toQ) || !Number.isInteger(m.toR)) continue;
+    if (!ownedUnitIds.has(m.unitId)) continue;
+    mt.set(m.unitId, { unitId: m.unitId, toQ: m.toQ, toR: m.toR });
+  }
   return {
     ...base,
-    ...patch,
+    ...safePatch,
     moveTargets: Array.from(mt.values()),
   };
+}
+
+function roleIsOccupied(room: Room, role: ClientMeta['role']): boolean {
+  for (const meta of room.clients.values()) {
+    if (meta.role === role) return true;
+  }
+  return false;
 }
 
 function stepRoom(room: Room): void {
@@ -222,7 +237,16 @@ wss.on('connection', (socket) => {
       const room = getOrCreateRoom(msg.roomId);
       if (room.clients.has(socket)) return;
 
+      if (msg.role !== 'host' && msg.role !== 'guest') {
+        socket.send(JSON.stringify({ type: 'error', message: 'Invalid room role.' }));
+        return;
+      }
+
       if (msg.role === 'host') {
+        if (roleIsOccupied(room, 'host')) {
+          socket.send(JSON.stringify({ type: 'error', message: 'Host slot is already occupied.' }));
+          return;
+        }
         if (!room.state) {
           const seed = Math.floor(Math.random() * 1e9);
           room.state = initMultiplayerGame(seed);
@@ -231,6 +255,10 @@ wss.on('connection', (socket) => {
       } else {
         if (!room.state) {
           socket.send(JSON.stringify({ type: 'error', message: 'Room not created yet — host must join first.' }));
+          return;
+        }
+        if (roleIsOccupied(room, 'guest')) {
+          socket.send(JSON.stringify({ type: 'error', message: 'Guest slot is already occupied.' }));
           return;
         }
         if (room.clients.size >= 2) {
@@ -277,7 +305,7 @@ wss.on('connection', (socket) => {
         return;
       }
       const cur = found.pending[meta.playerId] ?? emptyAiActions();
-      found.pending[meta.playerId] = mergePlan(cur, msg.plan);
+      found.pending[meta.playerId] = mergePlan(cur, msg.plan, meta.playerId, found.state);
       return;
     }
   });
