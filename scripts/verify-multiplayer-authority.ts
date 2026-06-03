@@ -36,8 +36,8 @@ function makeUnit(id: string, ownerId: string, q: number, r: number): Unit {
 const state = initMultiplayerGame(12345, { width: 38, height: 38 });
 const p1City = state.cities.find(c => c.ownerId === P1);
 const p2City = state.cities.find(c => c.ownerId === P2);
-assert(p1City, 'expected player 1 city');
-assert(p2City, 'expected player 2 city');
+assert(p1City !== undefined, 'expected player 1 city');
+assert(p2City !== undefined, 'expected player 2 city');
 
 const p1Unit = makeUnit('p1-unit', P1, p1City.q, p1City.r);
 const p2Unit = makeUnit('p2-unit', P2, p2City.q, p2City.r);
@@ -65,8 +65,8 @@ const after = stepSimulation(
 
 const p1After = after.units.find(u => u.id === p1Unit.id);
 const p2After = after.units.find(u => u.id === p2Unit.id);
-assert(p1After, 'expected player 1 unit to survive');
-assert(p2After, 'expected player 2 unit to survive');
+assert(p1After !== undefined, 'expected player 1 unit to survive');
+assert(p2After !== undefined, 'expected player 2 unit to survive');
 
 assert(p1After.status === 'idle', 'player 2 plan must not move a player 1 unit');
 assert(p1After.targetQ === undefined && p1After.targetR === undefined, 'player 1 unit must not receive cross-owner targets');
