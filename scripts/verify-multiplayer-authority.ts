@@ -4,9 +4,10 @@
  * Run with: `npm exec --yes tsx -- scripts/verify-multiplayer-authority.ts`
  */
 import assert from 'node:assert/strict';
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn, type ChildProcessByStdio } from 'node:child_process';
 import { once } from 'node:events';
 import { join } from 'node:path';
+import type { Readable } from 'node:stream';
 import { setTimeout as delay } from 'node:timers/promises';
 import { initMultiplayerGame, stepSimulation, DEFAULT_AI_PARAMS } from '../src/core/gameCore';
 import { emptyAiActions } from '../src/lib/ai';
@@ -140,7 +141,9 @@ async function closeSocket(socket: WebSocket): Promise<void> {
   });
 }
 
-async function waitForServerReady(child: ChildProcessWithoutNullStreams, port: number): Promise<void> {
+type ServerProcess = ChildProcessByStdio<null, Readable, Readable>;
+
+async function waitForServerReady(child: ServerProcess, port: number): Promise<void> {
   let output = '';
   child.stdout.on('data', chunk => {
     output += String(chunk);
