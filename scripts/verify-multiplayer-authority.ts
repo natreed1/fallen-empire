@@ -195,6 +195,13 @@ async function verifyLiveServerRoomAuthority(): Promise<void> {
   }
 }
 
-verifySharedSimulationMoveOwnership();
-await verifyLiveServerRoomAuthority();
-console.log('verify-multiplayer-authority: ok');
+async function main(): Promise<void> {
+  verifySharedSimulationMoveOwnership();
+  await verifyLiveServerRoomAuthority();
+  console.log('verify-multiplayer-authority: ok');
+}
+
+main().catch(error => {
+  console.error(error);
+  process.exit(1);
+});
