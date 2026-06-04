@@ -40,7 +40,7 @@ function verifySharedSimulationMoveOwnership(): void {
 
   const p1Unit = makeUnit('p1-unit', P1, p1City.q, p1City.r);
   const p2Unit = makeUnit('p2-unit', P2, p2City.q, p2City.r);
-  const p1Target = { toQ: p1City.q + 1, toR: p1City.r };
+  const p1Target = { toQ: p2City.q, toR: p2City.r };
   const stolenTarget = { toQ: p1City.q, toR: p1City.r };
 
   const next = stepSimulation(
