@@ -6,6 +6,7 @@
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { once } from 'node:events';
+import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { initMultiplayerGame, stepSimulation, DEFAULT_AI_PARAMS } from '../src/core/gameCore';
 import { emptyAiActions } from '../src/lib/ai';
@@ -126,6 +127,19 @@ async function joinRoom(port: number, roomId: string, role: 'host' | 'guest'): P
   return { socket, first };
 }
 
+async function closeSocket(socket: WebSocket): Promise<void> {
+  if (socket.readyState === WebSocket.CLOSED) return;
+  await new Promise<void>(resolve => {
+    const timeout = setTimeout(resolve, 500);
+    const onClose = () => {
+      clearTimeout(timeout);
+      resolve();
+    };
+    socket.addEventListener('close', onClose, { once: true });
+    socket.close();
+  });
+}
+
 async function waitForServerReady(child: ChildProcessWithoutNullStreams, port: number): Promise<void> {
   let output = '';
   child.stdout.on('data', chunk => {
@@ -148,8 +162,10 @@ async function waitForServerReady(child: ChildProcessWithoutNullStreams, port: n
 async function verifyLiveServerRoomAuthority(): Promise<void> {
   const port = 38000 + Math.floor(Math.random() * 1000);
   const roomId = `authority-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
-  const child = spawn('npm', ['run', 'game-server'], {
-    cwd: process.cwd(),
+  const serverDir = join(process.cwd(), 'game-server');
+  const tsxBin = join(serverDir, 'node_modules', '.bin', 'tsx');
+  const child = spawn(tsxBin, ['--tsconfig', 'tsconfig.json', 'src/index.ts'], {
+    cwd: serverDir,
     env: { ...process.env, PORT: String(port), MULTIPLAYER_TICK_MS: '1000' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -180,13 +196,7 @@ async function verifyLiveServerRoomAuthority(): Promise<void> {
     await delay(500);
     assert.equal(child.exitCode, null, 'malformed plan payload must not crash the server');
   } finally {
-    for (const socket of sockets) {
-      try {
-        socket.close();
-      } catch {
-        // Best-effort cleanup.
-      }
-    }
+    await Promise.all(sockets.map(socket => closeSocket(socket).catch(() => undefined)));
     if (child.pid && child.exitCode == null) {
       child.kill('SIGTERM');
       await Promise.race([once(child, 'exit'), delay(2000)]);
