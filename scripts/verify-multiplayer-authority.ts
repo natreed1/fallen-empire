@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -78,7 +78,7 @@ function assertFogRenderingUsesDiscoveredTiles(): void {
   assert.match(hexGrid, /opacity:\s*0\.93/, 'unknown fog should remain near-opaque');
   assert.match(
     hexGrid,
-    /for \(const tile of discoveredTilesMap\.values\(\)\) \{\s*groups\[tile\.biome\]\.push\(tile\);/s,
+    /for \(const tile of discoveredTilesMap\.values\(\)\) \{[\s\S]*groups\[tile\.biome\]\.push\(tile\);/,
     'terrain biome groups should only include discovered tiles',
   );
   assert.match(
@@ -111,7 +111,7 @@ function wait(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-function waitForServerReady(server: ChildProcessWithoutNullStreams, output: { text: string }): Promise<void> {
+function waitForServerReady(server: ChildProcess, output: { text: string }): Promise<void> {
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
       reject(new Error(`game server did not start:\n${output.text}`));
@@ -131,8 +131,8 @@ function waitForServerReady(server: ChildProcessWithoutNullStreams, output: { te
       }
     };
 
-    server.stdout.on('data', onData);
-    server.stderr.on('data', onData);
+    server.stdout?.on('data', onData);
+    server.stderr?.on('data', onData);
     server.once('exit', onExit);
   });
 }
