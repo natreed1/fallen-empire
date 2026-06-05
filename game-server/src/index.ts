@@ -18,7 +18,7 @@ import {
 } from '../../src/core/gameCore.ts';
 import { emptyAiActions, type AiActions } from '../../src/lib/ai.ts';
 import { serializeSimState, type SerializedSimState } from '../../src/lib/simStateSerialization.ts';
-import { MAX_MATCH_ECONOMY_CYCLES } from '../../src/types/game.ts';
+import { MAX_MATCH_ECONOMY_CYCLES, tileKey } from '../../src/types/game.ts';
 
 const PORT = Number(process.env.PORT ?? 3333);
 const TICK_MS = Number(process.env.MULTIPLAYER_TICK_MS ?? 4000);
@@ -98,13 +98,51 @@ function broadcastSimSettings(room: Room): void {
   });
 }
 
-function mergePlan(base: AiActions, patch: Partial<AiActions>): AiActions {
+function roomHasRole(room: Room, role: ClientMeta['role']): boolean {
+  for (const client of room.clients.values()) {
+    if (client.role === role) return true;
+  }
+  return false;
+}
+
+function isValidMoveTarget(value: unknown): value is AiActions['moveTargets'][number] {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as { unitId?: unknown; toQ?: unknown; toR?: unknown };
+  return (
+    typeof candidate.unitId === 'string' &&
+    Number.isInteger(candidate.toQ) &&
+    Number.isInteger(candidate.toR)
+  );
+}
+
+function sanitizeMoveTargets(
+  room: Room,
+  playerId: typeof P1 | typeof P2,
+  patch: Partial<AiActions>,
+): AiActions['moveTargets'] {
+  if (!room.state || !Array.isArray(patch.moveTargets)) return [];
+  const out: AiActions['moveTargets'] = [];
+  for (const raw of patch.moveTargets) {
+    if (!isValidMoveTarget(raw)) continue;
+    const unit = room.state.units.find(u => u.id === raw.unitId);
+    if (!unit || unit.ownerId !== playerId || unit.hp <= 0) continue;
+    if (!room.state.tiles.has(tileKey(raw.toQ, raw.toR))) continue;
+    out.push(raw);
+  }
+  return out;
+}
+
+function mergePlan(
+  room: Room,
+  playerId: typeof P1 | typeof P2,
+  base: AiActions,
+  patch: Partial<AiActions>,
+): AiActions {
   const mt = new Map<string, { unitId: string; toQ: number; toR: number }>();
   for (const m of base.moveTargets) mt.set(m.unitId, m);
-  for (const m of patch.moveTargets ?? []) mt.set(m.unitId, m);
+  for (const m of sanitizeMoveTargets(room, playerId, patch)) mt.set(m.unitId, m);
   return {
     ...base,
-    ...patch,
     moveTargets: Array.from(mt.values()),
   };
 }
@@ -223,6 +261,10 @@ wss.on('connection', (socket) => {
       if (room.clients.has(socket)) return;
 
       if (msg.role === 'host') {
+        if (roomHasRole(room, 'host')) {
+          socket.send(JSON.stringify({ type: 'error', message: 'Host slot is already occupied.' }));
+          return;
+        }
         if (!room.state) {
           const seed = Math.floor(Math.random() * 1e9);
           room.state = initMultiplayerGame(seed);
@@ -235,6 +277,10 @@ wss.on('connection', (socket) => {
         }
         if (room.clients.size >= 2) {
           socket.send(JSON.stringify({ type: 'error', message: 'Room is full.' }));
+          return;
+        }
+        if (roomHasRole(room, 'guest')) {
+          socket.send(JSON.stringify({ type: 'error', message: 'Guest slot is already occupied.' }));
           return;
         }
         room.clients.set(socket, { socket, role: 'guest', playerId: P2 });
@@ -277,7 +323,7 @@ wss.on('connection', (socket) => {
         return;
       }
       const cur = found.pending[meta.playerId] ?? emptyAiActions();
-      found.pending[meta.playerId] = mergePlan(cur, msg.plan);
+      found.pending[meta.playerId] = mergePlan(found, meta.playerId, cur, msg.plan);
       return;
     }
   });

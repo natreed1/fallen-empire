@@ -489,11 +489,14 @@ export default function GameScene() {
       prevPhaseForCameraRef.current = phase;
       return;
     }
+    const enteredPlaying = prevPhaseForCameraRef.current !== 'playing' && phase === 'playing';
     if (isPlayableCameraMode) {
+      if (phase !== 'playing' || enteredPlaying) {
+        setMapTarget(liveTarget);
+      }
       prevPhaseForCameraRef.current = phase;
       return;
     }
-    const enteredPlaying = prevPhaseForCameraRef.current !== 'playing' && phase === 'playing';
     // Keep syncing while not in the match (menus / placement); on first frame of play, snap to capital / live target
     if (phase !== 'playing' || enteredPlaying) {
       setMapTarget(liveTarget);
@@ -542,10 +545,15 @@ export default function GameScene() {
     useGameStore.getState().startSoloPlacement();
   }, [sandboxMode, isGenerated, phase]);
 
+  const enteredPlayingForCameraRender = prevPhaseForCameraRef.current !== 'playing' && phase === 'playing';
+  const shouldApplyCameraTargetUpdate =
+    !isPlayableCameraMode || phase !== 'playing' || enteredPlayingForCameraRender;
+  const controllerTarget =
+    isPlayableCameraMode && shouldApplyCameraTargetUpdate ? liveTarget : mapTarget;
   const cameraPosition: [number, number, number] = [
-    mapTarget[0] + MAP_CAMERA_OFFSET.x,
-    mapTarget[1] + MAP_CAMERA_OFFSET.y,
-    mapTarget[2] + MAP_CAMERA_OFFSET.z,
+    controllerTarget[0] + MAP_CAMERA_OFFSET.x,
+    controllerTarget[1] + MAP_CAMERA_OFFSET.y,
+    controllerTarget[2] + MAP_CAMERA_OFFSET.z,
   ];
 
   return (
@@ -608,7 +616,7 @@ export default function GameScene() {
           far={500}
         />
 
-        <MapController target={mapTarget} applyTargetUpdates={!isPlayableCameraMode} />
+        <MapController target={controllerTarget} applyTargetUpdates={shouldApplyCameraTargetUpdate} />
         <CameraZoomController />
         <HexInteractionPlane />
 
