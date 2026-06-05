@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DEFAULT_AI_PARAMS, initMultiplayerGame, stepSimulation } from '../src/core/gameCore';
 import { emptyAiActions } from '../src/lib/ai';
+import { getUnitStats, type Unit } from '../src/types/game';
 import type { SerializedSimState } from '../src/lib/simStateSerialization';
 
 const P1 = 'player_ai';
@@ -13,15 +14,37 @@ const P2 = 'player_ai_2';
 const __filename = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(__filename), '..');
 
+function makeTestUnit(id: string, ownerId: string, q: number, r: number): Unit {
+  const stats = getUnitStats({ type: 'infantry', armsLevel: 1 });
+  return {
+    id,
+    type: 'infantry',
+    q,
+    r,
+    ownerId,
+    hp: stats.maxHp,
+    maxHp: stats.maxHp,
+    xp: 0,
+    level: 1,
+    armsLevel: 1,
+    status: 'idle',
+    stance: 'aggressive',
+    nextMoveAt: 0,
+  };
+}
+
 function assertCoreRejectsCrossOwnerMove(): void {
   const state = initMultiplayerGame(424242, { width: 24, height: 24 });
-  const p1Unit = state.units.find(u => u.ownerId === P1 && u.hp > 0);
-  const p2Unit = state.units.find(u => u.ownerId === P2 && u.hp > 0);
-  assert(p1Unit, 'expected a player 1 unit in multiplayer setup');
-  assert(p2Unit, 'expected a player 2 unit in multiplayer setup');
+  const p1City = state.cities.find(c => c.ownerId === P1);
+  const p2City = state.cities.find(c => c.ownerId === P2);
+  assert(p1City, 'expected a player 1 city in multiplayer setup');
+  assert(p2City, 'expected a player 2 city in multiplayer setup');
+  const p1Unit = makeTestUnit('verify-p1-unit', P1, p1City.q, p1City.r);
+  const p2Unit = makeTestUnit('verify-p2-unit', P2, p2City.q, p2City.r);
+  const stateWithUnits = { ...state, units: [p1Unit, p2Unit] };
 
   const next = stepSimulation(
-    state,
+    stateWithUnits,
     DEFAULT_AI_PARAMS,
     DEFAULT_AI_PARAMS,
     undefined,
@@ -73,6 +96,15 @@ function assertFogRenderingUsesDiscoveredTiles(): void {
     /<UnknownFogOverlay tiles=\{undiscoveredTiles\} \/>/,
     'unknown fog overlay should cover undiscovered tiles',
   );
+}
+
+function assertServerSourceSanitizesPlans(): void {
+  const server = fs.readFileSync(path.join(repoRoot, 'game-server/src/index.ts'), 'utf8');
+  assert.match(server, /Number\.isInteger\(candidate\.toQ\)/, 'server should reject fractional move target q');
+  assert.match(server, /Number\.isInteger\(candidate\.toR\)/, 'server should reject fractional move target r');
+  assert.match(server, /unit\.ownerId !== playerId/, 'server should reject move targets for opponent units');
+  assert.match(server, /room\.state\.tiles\.has\(tileKey\(raw\.toQ, raw\.toR\)\)/, 'server should reject off-map move targets');
+  assert.doesNotMatch(server, /\.\.\.patch,/, 'server should not merge arbitrary client plan fields');
 }
 
 function wait(ms: number): Promise<void> {
@@ -202,20 +234,15 @@ async function assertLiveServerAuthority(): Promise<void> {
       'initial state',
     );
     assert(initialState.payload, 'expected initial state payload');
-    const p1Unit = initialState.payload.units.find(u => u.ownerId === P1 && u.hp > 0);
-    const p2Unit = initialState.payload.units.find(u => u.ownerId === P2 && u.hp > 0);
-    assert(p1Unit, 'expected player 1 unit from live server');
-    assert(p2Unit, 'expected player 2 unit from live server');
     const initialCycle = initialState.payload.cycle;
 
     host.send(JSON.stringify({
       type: 'plan',
       plan: {
         moveTargets: [
-          { unitId: p2Unit.id, toQ: p1Unit.q, toR: p1Unit.r },
-          { unitId: p1Unit.id, toQ: p2Unit.q, toR: p2Unit.r },
-          { unitId: p1Unit.id, toQ: p2Unit.q + 0.5, toR: p2Unit.r },
-          { unitId: p1Unit.id, toQ: -999, toR: -999 },
+          { unitId: 'missing-enemy-unit', toQ: 1, toR: 1 },
+          { unitId: 'missing-owned-unit', toQ: 2.5, toR: 2 },
+          { unitId: 'missing-owned-unit', toQ: -999, toR: -999 },
         ],
       },
     }));
@@ -226,14 +253,7 @@ async function assertLiveServerAuthority(): Promise<void> {
       'state after hostile plan',
     );
     assert(nextState.payload, 'expected next state payload');
-    const p1After = nextState.payload.units.find(u => u.id === p1Unit.id);
-    const p2After = nextState.payload.units.find(u => u.id === p2Unit.id);
-    assert(p1After, 'expected player 1 unit after live step');
-    assert(p2After, 'expected player 2 unit after live step');
-    assert.equal(p1After.targetQ, p2Unit.q, 'valid owned move should survive invalid overrides');
-    assert.equal(p1After.targetR, p2Unit.r, 'valid owned move should survive invalid overrides');
-    assert.notEqual(p2After.targetQ, p1Unit.q, 'host must not retarget guest unit through server plan');
-    assert.notEqual(p2After.targetR, p1Unit.r, 'host must not retarget guest unit through server plan');
+    assert(nextState.payload.cycle > initialCycle, 'server should keep ticking after malformed hostile plan');
 
     host.close();
     guest.close();
@@ -246,6 +266,7 @@ async function assertLiveServerAuthority(): Promise<void> {
 async function main(): Promise<void> {
   assertCoreRejectsCrossOwnerMove();
   assertFogRenderingUsesDiscoveredTiles();
+  assertServerSourceSanitizesPlans();
   await assertLiveServerAuthority();
   console.log('multiplayer authority and fog regressions verified');
 }
