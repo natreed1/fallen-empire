@@ -197,6 +197,7 @@ async function assertLiveServerAuthority(): Promise<void> {
       PORT: String(port),
       MULTIPLAYER_TICK_MS: '250',
     },
+    detached: true,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
@@ -259,7 +260,13 @@ async function assertLiveServerAuthority(): Promise<void> {
     guest.close();
     await wait(50);
   } finally {
-    if (!server.killed && server.exitCode == null) server.kill('SIGTERM');
+    if (server.pid && server.exitCode == null) {
+      try {
+        process.kill(-server.pid, 'SIGTERM');
+      } catch {
+        server.kill('SIGTERM');
+      }
+    }
   }
 }
 
