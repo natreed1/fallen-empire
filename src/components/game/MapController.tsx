@@ -32,12 +32,19 @@ export default function MapController({ target, applyTargetUpdates = true }: Map
 
   useEffect(() => {
     if (target && controlsRef.current) {
-      if (!applyTargetUpdates && appliedInitialTargetRef.current) return;
-      controlsRef.current.target.set(...target);
+      const controlsTarget = controlsRef.current.target as THREE.Vector3;
+      const targetAlreadyApplied =
+        Math.abs(controlsTarget.x - target[0]) < 1e-6 &&
+        Math.abs(controlsTarget.y - target[1]) < 1e-6 &&
+        Math.abs(controlsTarget.z - target[2]) < 1e-6;
+      if (!applyTargetUpdates && appliedInitialTargetRef.current && targetAlreadyApplied) {
+        return;
+      }
+      controlsTarget.set(...target);
       controlsRef.current.update();
       appliedInitialTargetRef.current = true;
     }
-  }, [target, applyTargetUpdates]);
+  }, [target, applyTargetUpdates, camera]);
 
   // Early: turn off MapControls while box-selecting (before controls.update applies pan).
   useFrame(() => {
