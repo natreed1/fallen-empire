@@ -120,41 +120,81 @@ function waitForMessage(ws: WebSocket, type: string): Promise<any> {
   });
 }
 
+function delay(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function closeSocket(ws: WebSocket): Promise<void> {
+  if (ws.readyState === WebSocket.CLOSED) return;
+  await new Promise<void>(resolve => {
+    ws.addEventListener('close', () => resolve(), { once: true });
+    ws.close();
+    setTimeout(resolve, 1000);
+  });
+}
+
+async function stopProcessGroup(proc: ChildProcessWithoutNullStreams): Promise<void> {
+  if (proc.exitCode !== null) return;
+  if (proc.pid !== undefined) {
+    try {
+      process.kill(-proc.pid, 'SIGTERM');
+    } catch {
+      proc.kill('SIGTERM');
+    }
+  } else {
+    proc.kill('SIGTERM');
+  }
+  const exited = await Promise.race([
+    once(proc, 'exit').then(() => true),
+    delay(2000).then(() => false),
+  ]);
+  if (!exited && proc.pid !== undefined) {
+    try {
+      process.kill(-proc.pid, 'SIGKILL');
+    } catch {
+      proc.kill('SIGKILL');
+    }
+    await once(proc, 'exit').catch(() => undefined);
+  }
+}
+
 async function testLiveServerRoleAndPlanValidation(): Promise<void> {
   const port = 34583;
+  const sockets: WebSocket[] = [];
   const proc = spawn('npm', ['run', 'game-server'], {
     cwd: process.cwd(),
     env: { ...process.env, PORT: String(port), MULTIPLAYER_TICK_MS: '200' },
+    detached: true,
   });
   try {
     await waitForServerReady(proc);
     const roomId = `authority-${Date.now()}`;
     const host = await openSocket(port);
+    sockets.push(host);
     host.send(JSON.stringify({ type: 'join', roomId, role: 'host' }));
     await waitForMessage(host, 'joined');
 
     host.send(JSON.stringify({ type: 'plan', plan: { moveTargets: 'not-an-array' } }));
 
     const duplicateHost = await openSocket(port);
+    sockets.push(duplicateHost);
     duplicateHost.send(JSON.stringify({ type: 'join', roomId, role: 'host' }));
     const duplicateHostError = await waitForMessage(duplicateHost, 'error');
     assert(/host slot/i.test(duplicateHostError.message), 'duplicate host should be rejected');
-    duplicateHost.close();
 
     const guest = await openSocket(port);
+    sockets.push(guest);
     guest.send(JSON.stringify({ type: 'join', roomId, role: 'guest' }));
     await waitForMessage(guest, 'joined');
 
     const duplicateGuest = await openSocket(port);
+    sockets.push(duplicateGuest);
     duplicateGuest.send(JSON.stringify({ type: 'join', roomId, role: 'guest' }));
     const duplicateGuestError = await waitForMessage(duplicateGuest, 'error');
     assert(/guest slot|full/i.test(duplicateGuestError.message), 'duplicate guest should be rejected');
-    duplicateGuest.close();
-    guest.close();
-    host.close();
   } finally {
-    if (!proc.killed) proc.kill('SIGTERM');
-    await once(proc, 'exit').catch(() => undefined);
+    await Promise.all(sockets.map(closeSocket));
+    await stopProcessGroup(proc);
   }
 }
 
