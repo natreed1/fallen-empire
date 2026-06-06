@@ -18,7 +18,8 @@ function testStepSimulationMoveOwnership(): void {
   const base = initMultiplayerGame(12345, { width: 24, height: 24 });
   const p1City = base.cities.find(c => c.ownerId === P1);
   const p2City = base.cities.find(c => c.ownerId === P2);
-  assert(p1City && p2City, 'expected both multiplayer capitals');
+  assert(p1City !== undefined, 'expected player 1 multiplayer capital');
+  assert(p2City !== undefined, 'expected player 2 multiplayer capital');
 
   const p1Unit: Unit = {
     id: 'p1-unit',
@@ -53,7 +54,7 @@ function testStepSimulationMoveOwnership(): void {
     ...emptyAiActions(),
     moveTargets: [
       { unitId: p2Unit.id, toQ: p1City.q, toR: p1City.r },
-      { unitId: p1Unit.id, toQ: p1City.q + 1, toR: p1City.r },
+      { unitId: p1Unit.id, toQ: p2City.q, toR: p2City.r },
     ],
   };
 
@@ -68,7 +69,7 @@ function testStepSimulationMoveOwnership(): void {
 
   const p1After = next.units.find(u => u.id === p1Unit.id);
   const p2After = next.units.find(u => u.id === p2Unit.id);
-  assert(p1After?.targetQ === p1City.q + 1 && p1After?.targetR === p1City.r, 'owned move target should apply');
+  assert(p1After?.targetQ === p2City.q && p1After?.targetR === p2City.r, 'owned move target should apply');
   assert(
     p2After?.targetQ !== p1City.q || p2After?.targetR !== p1City.r,
     'cross-owner move target must not apply',
