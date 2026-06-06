@@ -16,7 +16,7 @@ import {
   DEFAULT_AI_PARAMS,
   type SimState,
 } from '../../src/core/gameCore.ts';
-import { emptyAiActions, type AiActions } from '../../src/lib/ai.ts';
+import { emptyAiActions, type AiActions, type AiMoveAction } from '../../src/lib/ai.ts';
 import { serializeSimState, type SerializedSimState } from '../../src/lib/simStateSerialization.ts';
 import { MAX_MATCH_ECONOMY_CYCLES } from '../../src/types/game.ts';
 
@@ -98,13 +98,31 @@ function broadcastSimSettings(room: Room): void {
   });
 }
 
-function mergePlan(base: AiActions, patch: Partial<AiActions>): AiActions {
-  const mt = new Map<string, { unitId: string; toQ: number; toR: number }>();
+function sanitizeMoveTarget(m: unknown, ownedUnitIds: Set<string>): AiMoveAction | null {
+  if (!m || typeof m !== 'object') return null;
+  const candidate = m as Partial<AiMoveAction>;
+  if (
+    typeof candidate.unitId !== 'string' ||
+    !ownedUnitIds.has(candidate.unitId) ||
+    !Number.isInteger(candidate.toQ) ||
+    !Number.isInteger(candidate.toR)
+  ) {
+    return null;
+  }
+  return { unitId: candidate.unitId, toQ: candidate.toQ, toR: candidate.toR };
+}
+
+function mergePlan(base: AiActions, patch: Partial<AiActions>, ownedUnitIds: Set<string>): AiActions {
+  const mt = new Map<string, AiMoveAction>();
   for (const m of base.moveTargets) mt.set(m.unitId, m);
-  for (const m of patch.moveTargets ?? []) mt.set(m.unitId, m);
+  if (Array.isArray(patch.moveTargets)) {
+    for (const raw of patch.moveTargets) {
+      const m = sanitizeMoveTarget(raw, ownedUnitIds);
+      if (m) mt.set(m.unitId, m);
+    }
+  }
   return {
     ...base,
-    ...patch,
     moveTargets: Array.from(mt.values()),
   };
 }
@@ -223,12 +241,20 @@ wss.on('connection', (socket) => {
       if (room.clients.has(socket)) return;
 
       if (msg.role === 'host') {
+        if (Array.from(room.clients.values()).some(c => c.role === 'host')) {
+          socket.send(JSON.stringify({ type: 'error', message: 'Host slot is already occupied.' }));
+          return;
+        }
         if (!room.state) {
           const seed = Math.floor(Math.random() * 1e9);
           room.state = initMultiplayerGame(seed);
         }
         room.clients.set(socket, { socket, role: 'host', playerId: P1 });
       } else {
+        if (Array.from(room.clients.values()).some(c => c.role === 'guest')) {
+          socket.send(JSON.stringify({ type: 'error', message: 'Guest slot is already occupied.' }));
+          return;
+        }
         if (!room.state) {
           socket.send(JSON.stringify({ type: 'error', message: 'Room not created yet — host must join first.' }));
           return;
@@ -277,7 +303,12 @@ wss.on('connection', (socket) => {
         return;
       }
       const cur = found.pending[meta.playerId] ?? emptyAiActions();
-      found.pending[meta.playerId] = mergePlan(cur, msg.plan);
+      const ownedUnitIds = new Set(
+        (found.state?.units ?? [])
+          .filter(u => u.ownerId === meta.playerId && u.hp > 0)
+          .map(u => u.id),
+      );
+      found.pending[meta.playerId] = mergePlan(cur, msg.plan, ownedUnitIds);
       return;
     }
   });
