@@ -222,7 +222,7 @@ function verifyFogAndCameraSourceInvariants(): void {
   assert(!hexGrid.includes('opacity: 0.62'), 'Unknown fog opacity must not expose hidden terrain');
   assert(hexGrid.includes('opacity: 0.93'), 'Unknown fog overlay should be opaque');
   assert(
-    (hexGrid.match(/for \(const tile of discoveredTilesMap\.values\(\)\)/g) ?? []).length >= 2,
+    (hexGrid.match(/discoveredTilesMap\.values\(\)/g) ?? []).length >= 4,
     'Terrain and shoreline layers should render from discovered tiles only',
   );
   assert(hexGrid.includes('if (!tile) return null;'), 'City markers must skip undiscovered city tiles');
