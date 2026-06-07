@@ -32,7 +32,12 @@ export default function MapController({ target, applyTargetUpdates = true }: Map
 
   useEffect(() => {
     if (target && controlsRef.current) {
-      if (!applyTargetUpdates && appliedInitialTargetRef.current) return;
+      const controls = controlsRef.current;
+      const alreadyAtTarget =
+        Math.abs(controls.target.x - target[0]) < 0.001 &&
+        Math.abs(controls.target.y - target[1]) < 0.001 &&
+        Math.abs(controls.target.z - target[2]) < 0.001;
+      if (!applyTargetUpdates && appliedInitialTargetRef.current && alreadyAtTarget) return;
       controlsRef.current.target.set(...target);
       controlsRef.current.update();
       appliedInitialTargetRef.current = true;
