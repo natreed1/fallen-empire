@@ -1,6 +1,7 @@
-import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
+import { spawn, type ChildProcessByStdio } from 'child_process';
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
+import type { Readable } from 'stream';
 import { setTimeout as delay } from 'timers/promises';
 import {
   DEFAULT_AI_PARAMS,
@@ -13,6 +14,7 @@ import { getUnitStats, tileKey, type Tile, type Unit } from '../src/types/game';
 const P1 = 'player_ai';
 const P2 = 'player_ai_2';
 const ROOT = resolve(process.cwd());
+type ServerProcess = ChildProcessByStdio<null, Readable, Readable>;
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -106,7 +108,7 @@ function verifyMoveTargetsCannotCrossOwners(): void {
   );
 }
 
-function waitForServerReady(child: ChildProcessWithoutNullStreams): Promise<void> {
+function waitForServerReady(child: ServerProcess): Promise<void> {
   return new Promise((resolveReady, rejectReady) => {
     let output = '';
     let settled = false;
@@ -250,7 +252,7 @@ async function closeSocket(ws: WebSocket): Promise<void> {
   });
 }
 
-async function terminateChild(child: ChildProcessWithoutNullStreams): Promise<void> {
+async function terminateChild(child: ServerProcess): Promise<void> {
   if (child.exitCode !== null || child.signalCode !== null) return;
   child.kill();
   const exited = await Promise.race([
