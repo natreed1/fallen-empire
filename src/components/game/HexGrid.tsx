@@ -1383,7 +1383,7 @@ function UnknownFogOverlay({ tiles }: { tiles: Tile[] }) {
       new THREE.MeshBasicMaterial({
         color: '#06070d',
         transparent: true,
-        opacity: 0.62,
+        opacity: 0.93,
         depthWrite: false,
       }),
     [],
@@ -1577,7 +1577,8 @@ function CityMarkers({ cities, tiles, players }: { cities: City[]; tiles: Map<st
     <group>
       {cities.map(city => {
         const tile = tiles.get(tileKey(city.q, city.r));
-        const h = tile?.height ?? 0.3;
+        if (!tile) return null;
+        const h = tile.height;
         const [x, z] = axialToWorld(city.q, city.r, HEX_RADIUS);
         const isHuman = city.ownerId === PLAYER_HUMAN_ID;
         const factionColor = playerColorOrDefault(players, city.ownerId);
@@ -1675,7 +1676,8 @@ function BuildingMarkers({ cities, tiles }: { cities: City[]; tiles: Map<string,
     for (const city of cities) {
       for (const b of city.buildings) {
         const tile = tiles.get(tileKey(b.q, b.r));
-        const h = tile?.height ?? 0.3;
+        if (!tile) continue;
+        const h = tile.height;
         const [x, z] = axialToWorld(b.q, b.r, HEX_RADIUS);
         const yOff = BUILDING_Y_OFFSET[b.type] ?? 0.4;
         result.push({
@@ -3615,26 +3617,26 @@ export default function HexGrid() {
     const groups: Record<Biome, Tile[]> = {
       water: [], plains: [], forest: [], mountain: [], desert: [],
     };
-    for (const tile of tiles.values()) {
+    for (const tile of discoveredTilesMap.values()) {
       groups[tile.biome].push(tile);
     }
     return groups;
-  }, [tiles]);
+  }, [discoveredTilesMap]);
 
   const terrainShoreline = useMemo(() => {
     const coastalWater: Tile[] = [];
     const deepWater: Tile[] = [];
     const beachLand: Tile[] = [];
-    for (const t of tiles.values()) {
+    for (const t of discoveredTilesMap.values()) {
       if (t.biome === 'water') {
-        if (isCoastalWaterTile(t, tiles)) coastalWater.push(t);
+        if (isCoastalWaterTile(t, discoveredTilesMap)) coastalWater.push(t);
         else deepWater.push(t);
-      } else if (isBeachLandTile(t, tiles)) {
+      } else if (isBeachLandTile(t, discoveredTilesMap)) {
         beachLand.push(t);
       }
     }
     return { coastalWater, deepWater, beachLand };
-  }, [tiles]);
+  }, [discoveredTilesMap]);
 
   // Territory by player
   const territoryByPlayer = useMemo(() => {
@@ -3814,7 +3816,7 @@ export default function HexGrid() {
       <BeachSandLayer tiles={terrainShoreline.beachLand} />
       <MedievalHexOutlineLayer tiles={Array.from(discoveredTilesMap.values())} />
       <MapEdgeOutlineLayer tiles={mapEdgeOutlineTiles} />
-      <MountainSnowLayer tiles={terrainBiomeGroups.mountain} tilesMap={tiles} />
+      <MountainSnowLayer tiles={terrainBiomeGroups.mountain} tilesMap={discoveredTilesMap} />
 
       {/* Map features */}
       <RoadOverlay tiles={biomeGroups.roadTiles} />
