@@ -12,7 +12,7 @@ import { getUnitStats, tileKey, type Tile, type Unit } from '../src/types/game';
 
 const P1 = 'player_ai';
 const P2 = 'player_ai_2';
-const ROOT = resolve(__dirname, '..');
+const ROOT = resolve(process.cwd());
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -109,22 +109,31 @@ function verifyMoveTargetsCannotCrossOwners(): void {
 function waitForServerReady(child: ChildProcessWithoutNullStreams): Promise<void> {
   return new Promise((resolveReady, rejectReady) => {
     let output = '';
+    let settled = false;
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      child.stdout.off('data', onData);
+      child.stderr.off('data', onData);
+      child.off('exit', onExit);
+      fn();
+    };
     const timeout = setTimeout(() => {
-      rejectReady(new Error(`Timed out waiting for game server startup. Output:\n${output}`));
+      finish(() => rejectReady(new Error(`Timed out waiting for game server startup. Output:\n${output}`)));
     }, 15000);
     const onData = (chunk: Buffer) => {
       output += chunk.toString();
       if (output.includes('Fallen Empire game server listening')) {
-        clearTimeout(timeout);
-        resolveReady();
+        finish(resolveReady);
       }
+    };
+    const onExit = (code: number | null) => {
+      finish(() => rejectReady(new Error(`Game server exited before startup with code ${code}. Output:\n${output}`)));
     };
     child.stdout.on('data', onData);
     child.stderr.on('data', onData);
-    child.once('exit', code => {
-      clearTimeout(timeout);
-      rejectReady(new Error(`Game server exited before startup with code ${code}. Output:\n${output}`));
-    });
+    child.once('exit', onExit);
   });
 }
 
@@ -150,34 +159,47 @@ async function waitForMessage(
   label: string,
 ): Promise<any> {
   return new Promise((resolveMessage, rejectMessage) => {
-    const timeout = setTimeout(() => rejectMessage(new Error(`Timed out waiting for ${label}`)), 7000);
-    ws.addEventListener('message', event => {
-      const text = typeof event.data === 'string' ? event.data : String(event.data);
-      const parsed = JSON.parse(text);
-      if (predicate(parsed)) {
+    const onMessage = (event: MessageEvent) => {
+      try {
+        const text = typeof event.data === 'string' ? event.data : String(event.data);
+        const parsed = JSON.parse(text);
+        if (!predicate(parsed)) return;
         clearTimeout(timeout);
+        ws.removeEventListener('message', onMessage);
         resolveMessage(parsed);
+      } catch (err) {
+        clearTimeout(timeout);
+        ws.removeEventListener('message', onMessage);
+        rejectMessage(err);
       }
-    });
+    };
+    const timeout = setTimeout(() => {
+      ws.removeEventListener('message', onMessage);
+      rejectMessage(new Error(`Timed out waiting for ${label}`));
+    }, 7000);
+    ws.addEventListener('message', onMessage);
   });
 }
 
 async function verifyRoomSlotsRejectDuplicates(): Promise<void> {
   const port = 34620 + Math.floor(Math.random() * 1000);
-  const child = spawn('npm', ['run', 'game-server'], {
+  const child = spawn(resolve(ROOT, 'node_modules/.bin/tsx'), ['game-server/src/index.ts'], {
     cwd: ROOT,
     env: { ...process.env, PORT: String(port), MULTIPLAYER_TICK_MS: '250' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
+  const sockets: WebSocket[] = [];
 
   try {
     await waitForServerReady(child);
     const roomId = `verify-${Date.now()}`;
     const host = await openSocket(port);
+    sockets.push(host);
     host.send(JSON.stringify({ type: 'join', roomId, role: 'host' }));
     await waitForMessage(host, msg => msg.type === 'joined' && msg.role === 'host', 'host join');
 
     const duplicateHost = await openSocket(port);
+    sockets.push(duplicateHost);
     duplicateHost.send(JSON.stringify({ type: 'join', roomId, role: 'host' }));
     const duplicateHostError = await waitForMessage(
       duplicateHost,
@@ -187,10 +209,12 @@ async function verifyRoomSlotsRejectDuplicates(): Promise<void> {
     assert(duplicateHostError, 'Expected duplicate host rejection');
 
     const guest = await openSocket(port);
+    sockets.push(guest);
     guest.send(JSON.stringify({ type: 'join', roomId, role: 'guest' }));
     await waitForMessage(guest, msg => msg.type === 'joined' && msg.role === 'guest', 'guest join');
 
     const extraGuest = await openSocket(port);
+    sockets.push(extraGuest);
     extraGuest.send(JSON.stringify({ type: 'join', roomId, role: 'guest' }));
     const extraGuestError = await waitForMessage(
       extraGuest,
@@ -203,14 +227,37 @@ async function verifyRoomSlotsRejectDuplicates(): Promise<void> {
     assert(stateBeforeMalformedPlan.payload, 'Expected authoritative state before malformed plan');
     host.send(JSON.stringify({ type: 'plan', plan: { builds: 'crash', moveTargets: 'crash' } }));
     await waitForMessage(host, msg => msg.type === 'state' && msg.payload.cycle > stateBeforeMalformedPlan.payload.cycle, 'state after malformed plan');
-
-    host.close();
-    guest.close();
-    duplicateHost.close();
-    extraGuest.close();
   } finally {
-    child.kill();
-    await delay(100);
+    await Promise.all(sockets.map(closeSocket));
+    await terminateChild(child);
+  }
+}
+
+async function closeSocket(ws: WebSocket): Promise<void> {
+  if (ws.readyState === 3) return;
+  await new Promise<void>(resolveClose => {
+    const timeout = setTimeout(resolveClose, 500);
+    ws.addEventListener('close', () => {
+      clearTimeout(timeout);
+      resolveClose();
+    }, { once: true });
+    ws.close();
+  });
+}
+
+async function terminateChild(child: ChildProcessWithoutNullStreams): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  child.kill();
+  const exited = await Promise.race([
+    new Promise<boolean>(resolveExit => child.once('exit', () => resolveExit(true))),
+    delay(2000).then(() => false),
+  ]);
+  if (!exited) {
+    child.kill('SIGKILL');
+    await Promise.race([
+      new Promise<void>(resolveExit => child.once('exit', () => resolveExit())),
+      delay(500),
+    ]);
   }
 }
 
