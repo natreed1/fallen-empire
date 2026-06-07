@@ -117,6 +117,7 @@ function waitForServerReady(child: ChildProcessWithoutNullStreams): Promise<void
       child.stdout.off('data', onData);
       child.stderr.off('data', onData);
       child.off('exit', onExit);
+      child.off('error', onError);
       fn();
     };
     const timeout = setTimeout(() => {
@@ -131,9 +132,13 @@ function waitForServerReady(child: ChildProcessWithoutNullStreams): Promise<void
     const onExit = (code: number | null) => {
       finish(() => rejectReady(new Error(`Game server exited before startup with code ${code}. Output:\n${output}`)));
     };
+    const onError = (err: Error) => {
+      finish(() => rejectReady(err));
+    };
     child.stdout.on('data', onData);
     child.stderr.on('data', onData);
     child.once('exit', onExit);
+    child.once('error', onError);
   });
 }
 
@@ -183,7 +188,7 @@ async function waitForMessage(
 
 async function verifyRoomSlotsRejectDuplicates(): Promise<void> {
   const port = 34620 + Math.floor(Math.random() * 1000);
-  const child = spawn(resolve(ROOT, 'node_modules/.bin/tsx'), ['game-server/src/index.ts'], {
+  const child = spawn(resolve(ROOT, 'game-server/node_modules/.bin/tsx'), ['game-server/src/index.ts'], {
     cwd: ROOT,
     env: { ...process.env, PORT: String(port), MULTIPLAYER_TICK_MS: '250' },
     stdio: ['ignore', 'pipe', 'pipe'],
