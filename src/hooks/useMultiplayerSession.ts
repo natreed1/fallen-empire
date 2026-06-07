@@ -61,7 +61,10 @@ export function useMultiplayerSession(): MultiplayerSessionApi {
     if (!multiplayerActive || !room) return;
 
     const resolvedRole: 'host' | 'guest' = mp === 'join' || mp === 'guest' ? 'guest' : 'host';
-    const wsUrl = process.env.NEXT_PUBLIC_MULTIPLAYER_WS_URL ?? 'ws://127.0.0.1:3333';
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl =
+      process.env.NEXT_PUBLIC_MULTIPLAYER_WS_URL ??
+      `${wsProtocol}//${window.location.hostname || '127.0.0.1'}:3333`;
     setConnecting(true);
     setNetError(null);
     setPeerCount(null);
