@@ -32,7 +32,10 @@ export default function MapController({ target, applyTargetUpdates = true }: Map
 
   useEffect(() => {
     if (target && controlsRef.current) {
-      if (!applyTargetUpdates && appliedInitialTargetRef.current) return;
+      const currentTarget = controlsRef.current.target as THREE.Vector3;
+      const targetChanged =
+        currentTarget.distanceToSquared(new THREE.Vector3(target[0], target[1], target[2])) > 0.0001;
+      if (!applyTargetUpdates && appliedInitialTargetRef.current && !targetChanged) return;
       controlsRef.current.target.set(...target);
       controlsRef.current.update();
       appliedInitialTargetRef.current = true;

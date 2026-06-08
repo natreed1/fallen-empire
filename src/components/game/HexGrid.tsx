@@ -1383,7 +1383,7 @@ function UnknownFogOverlay({ tiles }: { tiles: Tile[] }) {
       new THREE.MeshBasicMaterial({
         color: '#06070d',
         transparent: true,
-        opacity: 0.62,
+        opacity: 0.93,
         depthWrite: false,
       }),
     [],
@@ -3615,17 +3615,17 @@ export default function HexGrid() {
     const groups: Record<Biome, Tile[]> = {
       water: [], plains: [], forest: [], mountain: [], desert: [],
     };
-    for (const tile of tiles.values()) {
+    for (const tile of discoveredTilesMap.values()) {
       groups[tile.biome].push(tile);
     }
     return groups;
-  }, [tiles]);
+  }, [discoveredTilesMap]);
 
   const terrainShoreline = useMemo(() => {
     const coastalWater: Tile[] = [];
     const deepWater: Tile[] = [];
     const beachLand: Tile[] = [];
-    for (const t of tiles.values()) {
+    for (const t of discoveredTilesMap.values()) {
       if (t.biome === 'water') {
         if (isCoastalWaterTile(t, tiles)) coastalWater.push(t);
         else deepWater.push(t);
@@ -3634,7 +3634,7 @@ export default function HexGrid() {
       }
     }
     return { coastalWater, deepWater, beachLand };
-  }, [tiles]);
+  }, [discoveredTilesMap, tiles]);
 
   // Territory by player
   const territoryByPlayer = useMemo(() => {
@@ -3814,7 +3814,7 @@ export default function HexGrid() {
       <BeachSandLayer tiles={terrainShoreline.beachLand} />
       <MedievalHexOutlineLayer tiles={Array.from(discoveredTilesMap.values())} />
       <MapEdgeOutlineLayer tiles={mapEdgeOutlineTiles} />
-      <MountainSnowLayer tiles={terrainBiomeGroups.mountain} tilesMap={tiles} />
+      <MountainSnowLayer tiles={terrainBiomeGroups.mountain} tilesMap={discoveredTilesMap} />
 
       {/* Map features */}
       <RoadOverlay tiles={biomeGroups.roadTiles} />
@@ -3956,17 +3956,17 @@ export default function HexGrid() {
 
       {/* Mine deposit highlights (builder build mode) */}
       {uiMode === 'build_mine' && (
-        <DepositHighlightOverlay tiles={tiles} cities={cities} constructions={constructions} depositType="mine" />
+        <DepositHighlightOverlay tiles={discoveredTilesMap} cities={cities} constructions={constructions} depositType="mine" />
       )}
       {/* Quarry deposit highlights (builder build mode) */}
       {uiMode === 'build_quarry' && (
-        <DepositHighlightOverlay tiles={tiles} cities={cities} constructions={constructions} depositType="quarry" />
+        <DepositHighlightOverlay tiles={discoveredTilesMap} cities={cities} constructions={constructions} depositType="quarry" />
       )}
       {uiMode === 'build_gold_mine' && (
-        <DepositHighlightOverlay tiles={tiles} cities={cities} constructions={constructions} depositType="gold_mine" />
+        <DepositHighlightOverlay tiles={discoveredTilesMap} cities={cities} constructions={constructions} depositType="gold_mine" />
       )}
       {uiMode === 'build_logging_hut' && (
-        <DepositHighlightOverlay tiles={tiles} cities={cities} constructions={constructions} depositType="logging_hut" />
+        <DepositHighlightOverlay tiles={discoveredTilesMap} cities={cities} constructions={constructions} depositType="logging_hut" />
       )}
       {/* Road path preview (builder build mode) */}
       {uiMode === 'build_road' && roadPathSelection.length > 0 && (
