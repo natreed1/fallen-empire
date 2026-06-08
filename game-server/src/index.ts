@@ -18,7 +18,7 @@ import {
 } from '../../src/core/gameCore.ts';
 import { emptyAiActions, type AiActions } from '../../src/lib/ai.ts';
 import { serializeSimState, type SerializedSimState } from '../../src/lib/simStateSerialization.ts';
-import { MAX_MATCH_ECONOMY_CYCLES } from '../../src/types/game.ts';
+import { MAX_MATCH_ECONOMY_CYCLES, tileKey } from '../../src/types/game.ts';
 
 const PORT = Number(process.env.PORT ?? 3333);
 const TICK_MS = Number(process.env.MULTIPLAYER_TICK_MS ?? 4000);
@@ -98,10 +98,40 @@ function broadcastSimSettings(room: Room): void {
   });
 }
 
+function hasClientRole(room: Room, role: ClientMeta['role']): boolean {
+  for (const client of room.clients.values()) {
+    if (client.role === role) return true;
+  }
+  return false;
+}
+
+function sanitizeClientPlan(
+  room: Room,
+  playerId: typeof P1 | typeof P2,
+  patch: unknown,
+): Partial<AiActions> {
+  if (!room.state || typeof patch !== 'object' || patch === null) return {};
+  const rawMoveTargets = (patch as { moveTargets?: unknown }).moveTargets;
+  if (!Array.isArray(rawMoveTargets)) return {};
+
+  const moveTargets: AiActions['moveTargets'] = [];
+  for (const raw of rawMoveTargets) {
+    if (typeof raw !== 'object' || raw === null) continue;
+    const { unitId, toQ, toR } = raw as { unitId?: unknown; toQ?: unknown; toR?: unknown };
+    if (typeof unitId !== 'string' || !Number.isInteger(toQ) || !Number.isInteger(toR)) continue;
+    if (!room.state.tiles.has(tileKey(toQ, toR))) continue;
+    const unit = room.state.units.find(u => u.id === unitId && u.ownerId === playerId);
+    if (!unit) continue;
+    moveTargets.push({ unitId, toQ, toR });
+  }
+  return { moveTargets };
+}
+
 function mergePlan(base: AiActions, patch: Partial<AiActions>): AiActions {
   const mt = new Map<string, { unitId: string; toQ: number; toR: number }>();
   for (const m of base.moveTargets) mt.set(m.unitId, m);
-  for (const m of patch.moveTargets ?? []) mt.set(m.unitId, m);
+  const patchMoveTargets = Array.isArray(patch.moveTargets) ? patch.moveTargets : [];
+  for (const m of patchMoveTargets) mt.set(m.unitId, m);
   return {
     ...base,
     ...patch,
@@ -218,11 +248,15 @@ wss.on('connection', (socket) => {
       return;
     }
 
-    if (msg.type === 'join' && msg.roomId && msg.role) {
+    if (msg.type === 'join' && msg.roomId && (msg.role === 'host' || msg.role === 'guest')) {
       const room = getOrCreateRoom(msg.roomId);
       if (room.clients.has(socket)) return;
 
       if (msg.role === 'host') {
+        if (hasClientRole(room, 'host')) {
+          socket.send(JSON.stringify({ type: 'error', message: 'Host slot is already occupied.' }));
+          return;
+        }
         if (!room.state) {
           const seed = Math.floor(Math.random() * 1e9);
           room.state = initMultiplayerGame(seed);
@@ -235,6 +269,10 @@ wss.on('connection', (socket) => {
         }
         if (room.clients.size >= 2) {
           socket.send(JSON.stringify({ type: 'error', message: 'Room is full.' }));
+          return;
+        }
+        if (hasClientRole(room, 'guest')) {
+          socket.send(JSON.stringify({ type: 'error', message: 'Guest slot is already occupied.' }));
           return;
         }
         room.clients.set(socket, { socket, role: 'guest', playerId: P2 });
@@ -277,7 +315,7 @@ wss.on('connection', (socket) => {
         return;
       }
       const cur = found.pending[meta.playerId] ?? emptyAiActions();
-      found.pending[meta.playerId] = mergePlan(cur, msg.plan);
+      found.pending[meta.playerId] = mergePlan(cur, sanitizeClientPlan(found, meta.playerId, msg.plan));
       return;
     }
   });
