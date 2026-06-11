@@ -4,10 +4,15 @@ import {
   SITE_AUTH_COOKIE,
   getResolvedCookieSecret,
   isSiteAuthConfigured,
+  isProductionSiteAuthMisconfigured,
   verifySiteAuthToken,
 } from '@/lib/siteAuth';
 
 export async function middleware(request: NextRequest) {
+  if (isProductionSiteAuthMisconfigured()) {
+    return new NextResponse('Site auth is misconfigured.', { status: 503 });
+  }
+
   if (!isSiteAuthConfigured()) {
     return NextResponse.next();
   }
