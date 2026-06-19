@@ -4,6 +4,7 @@
  */
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
 import { readFileSync } from 'fs';
+import WebSocket, { type RawData } from 'ws';
 import { initMultiplayerGame, stepSimulation, DEFAULT_AI_PARAMS } from '../src/core/gameCore';
 import { emptyAiActions } from '../src/lib/ai';
 import type { SerializedSimState } from '../src/lib/simStateSerialization';
@@ -19,6 +20,8 @@ function delay(ms: number): Promise<void> {
 
 function parsePayload(data: unknown): unknown {
   if (typeof data === 'string') return JSON.parse(data);
+  if (Buffer.isBuffer(data)) return JSON.parse(data.toString('utf8'));
+  if (Array.isArray(data)) return JSON.parse(Buffer.concat(data).toString('utf8'));
   if (data instanceof ArrayBuffer) return JSON.parse(Buffer.from(data).toString('utf8'));
   if (ArrayBuffer.isView(data)) {
     return JSON.parse(Buffer.from(data.buffer, data.byteOffset, data.byteLength).toString('utf8'));
@@ -37,14 +40,21 @@ async function connect(port: number): Promise<WebSocket> {
           ws.close();
           reject(new Error('WebSocket connect timeout'));
         }, 500);
-        ws.addEventListener('open', () => {
-          clearTimeout(timer);
+        const onOpen = () => {
+          cleanup();
           resolve();
-        }, { once: true });
-        ws.addEventListener('error', ev => {
+        };
+        const onError = (err: Error) => {
+          cleanup();
+          reject(err);
+        };
+        const cleanup = () => {
           clearTimeout(timer);
-          reject(ev);
-        }, { once: true });
+          ws.off('open', onOpen);
+          ws.off('error', onError);
+        };
+        ws.once('open', onOpen);
+        ws.once('error', onError);
       });
       return ws;
     } catch (err) {
@@ -65,8 +75,8 @@ function waitForMessage<T = any>(
       cleanup();
       reject(new Error('Timed out waiting for WebSocket message'));
     }, timeoutMs);
-    const onMessage = (event: MessageEvent) => {
-      const msg = parsePayload(event.data) as T;
+    const onMessage = (data: RawData) => {
+      const msg = parsePayload(data) as T;
       if (!predicate(msg)) return;
       cleanup();
       resolve(msg);
@@ -77,11 +87,11 @@ function waitForMessage<T = any>(
     };
     const cleanup = () => {
       clearTimeout(timer);
-      ws.removeEventListener('message', onMessage);
-      ws.removeEventListener('error', onError);
+      ws.off('message', onMessage);
+      ws.off('error', onError);
     };
-    ws.addEventListener('message', onMessage);
-    ws.addEventListener('error', onError);
+    ws.on('message', onMessage);
+    ws.on('error', onError);
   });
 }
 
