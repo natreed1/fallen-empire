@@ -8206,6 +8206,8 @@ export const useGameStore = create<GameState>((set, get) => ({
     const raw = deserializeSimState(data);
     const remapped = remapSimStateForClient(raw, role);
     get().stopRealTimeLoop();
+    const prev = get();
+    const resetFogForSnapshot = prev.gameMode !== 'multiplayer' || prev.config.seed !== remapped.config.seed;
     const now = Date.now();
     set({
       gameMode: 'multiplayer',
@@ -8261,6 +8263,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       movementTickInCycle: remapped.globalMovementTick % MOVEMENT_TICKS_PER_ECONOMY_CYCLE,
       globalMovementTick: remapped.globalMovementTick,
       simTimeMs: remapped.simTimeMs,
+      ...(resetFogForSnapshot ? { visibleHexes: new Set<string>(), exploredHexes: new Set<string>() } : {}),
     });
     get().recomputeVision();
   },
