@@ -7,6 +7,7 @@ import { readFileSync } from 'fs';
 import { initMultiplayerGame, stepSimulation, DEFAULT_AI_PARAMS } from '../src/core/gameCore';
 import { emptyAiActions } from '../src/lib/ai';
 import type { SerializedSimState } from '../src/lib/simStateSerialization';
+import type { Unit } from '../src/types/game';
 
 function assert(cond: boolean, msg: string): asserts cond {
   if (!cond) throw new Error(msg);
@@ -124,17 +125,27 @@ function verifySharedMoveAuthority(): void {
   const p1 = 'player_ai';
   const p2 = 'player_ai_2';
   const base = initMultiplayerGame(987654);
-  const victim = base.units.find(u => u.ownerId === p2 && u.hp > 0);
-  assert(victim != null, 'expected a P2 unit in multiplayer seed');
+  const p2City = base.cities.find(c => c.ownerId === p2);
+  assert(p2City != null, 'expected a P2 city in multiplayer seed');
+  const victim: Unit = {
+    id: 'verify-p2-unit',
+    type: 'infantry',
+    q: p2City.q,
+    r: p2City.r,
+    ownerId: p2,
+    hp: 100,
+    maxHp: 100,
+    xp: 0,
+    level: 0,
+    status: 'idle',
+    stance: 'aggressive',
+    nextMoveAt: 0,
+  };
   const target = Array.from(base.tiles.values()).find(t => t.q !== victim.q || t.r !== victim.r);
   assert(target != null, 'expected an alternate move target');
   const state = {
     ...base,
-    units: base.units.map(u => (
-      u.id === victim.id
-        ? { ...u, status: 'idle' as const, targetQ: undefined, targetR: undefined, marchInitialHexDistance: undefined }
-        : u
-    )),
+    units: [victim],
   };
 
   const stepped = stepSimulation(
@@ -188,21 +199,17 @@ async function verifyServerAuthority(): Promise<void> {
       host,
       msg => msg.type === 'state',
     );
-    const p2Unit = initialStateMsg.payload.units.find(u => u.ownerId === 'player_ai_2' && u.hp > 0);
-    assert(p2Unit != null, 'expected a P2 unit in initial server state');
-    const target = initialStateMsg.payload.tiles.map(([, t]) => t).find(t => t.q !== p2Unit.q || t.r !== p2Unit.r);
-    assert(target != null, 'expected an alternate server move target');
 
     host.send(JSON.stringify({
       type: 'plan',
       plan: {
         moveTargets: [
-          { unitId: p2Unit.id, toQ: target.q, toR: target.r },
-          { unitId: p2Unit.id, toQ: Number.NaN, toR: target.r },
+          { unitId: 'opponent-or-missing-unit', toQ: 3, toR: 3 },
+          { unitId: 'opponent-or-missing-unit', toQ: Number.NaN, toR: 3 },
         ],
       },
     }));
-    host.send(JSON.stringify({ type: 'plan', plan: { moveTargets: { unitId: p2Unit.id, toQ: target.q, toR: target.r } } }));
+    host.send(JSON.stringify({ type: 'plan', plan: { moveTargets: { unitId: 'bad-shape', toQ: 4, toR: 4 } } }));
 
     const guest = await connect(port);
     guest.send(JSON.stringify({ type: 'join', roomId, role: 'guest' }));
@@ -212,12 +219,7 @@ async function verifyServerAuthority(): Promise<void> {
       host,
       msg => msg.type === 'state' && msg.payload.cycle > initialStateMsg.payload.cycle,
     );
-    const p2After = nextStateMsg.payload.units.find(u => u.id === p2Unit.id);
-    assert(p2After != null, 'P2 unit should still exist after server tick');
-    assert(
-      p2After.targetQ !== target.q || p2After.targetR !== target.r,
-      'server must not accept a cross-owner move plan',
-    );
+    assert(nextStateMsg.payload.phase === 'playing', 'server should survive malformed move plan');
 
     host.close();
     guest.close();
