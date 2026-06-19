@@ -196,19 +196,22 @@ async function verifyServerAuthority(): Promise<void> {
   await withServer(async port => {
     const roomId = `verify-${Date.now()}`;
     const host = await connect(port);
-    host.send(JSON.stringify({ type: 'join', roomId, role: 'host' }));
-    await waitForMessage(host, msg => msg.type === 'joined');
-
-    const duplicateHost = await connect(port);
-    duplicateHost.send(JSON.stringify({ type: 'join', roomId, role: 'host' }));
-    const duplicateHostError = await waitForMessage(duplicateHost, msg => msg.type === 'error');
-    assert(String(duplicateHostError.message).includes('Host slot'), 'duplicate host must be rejected');
-    duplicateHost.close();
-
-    const initialStateMsg = await waitForMessage<{ type: string; payload: SerializedSimState }>(
+    const hostJoined = waitForMessage(host, msg => msg.type === 'joined');
+    const initialState = waitForMessage<{ type: string; payload: SerializedSimState }>(
       host,
       msg => msg.type === 'state',
     );
+    host.send(JSON.stringify({ type: 'join', roomId, role: 'host' }));
+    await hostJoined;
+
+    const duplicateHost = await connect(port);
+    const duplicateHostRejected = waitForMessage(duplicateHost, msg => msg.type === 'error');
+    duplicateHost.send(JSON.stringify({ type: 'join', roomId, role: 'host' }));
+    const duplicateHostError = await duplicateHostRejected;
+    assert(String(duplicateHostError.message).includes('Host slot'), 'duplicate host must be rejected');
+    duplicateHost.close();
+
+    const initialStateMsg = await initialState;
 
     host.send(JSON.stringify({
       type: 'plan',
@@ -222,13 +225,15 @@ async function verifyServerAuthority(): Promise<void> {
     host.send(JSON.stringify({ type: 'plan', plan: { moveTargets: { unitId: 'bad-shape', toQ: 4, toR: 4 } } }));
 
     const guest = await connect(port);
-    guest.send(JSON.stringify({ type: 'join', roomId, role: 'guest' }));
-    await waitForMessage(guest, msg => msg.type === 'joined');
-
-    const nextStateMsg = await waitForMessage<{ type: string; payload: SerializedSimState }>(
+    const guestJoined = waitForMessage(guest, msg => msg.type === 'joined');
+    const nextState = waitForMessage<{ type: string; payload: SerializedSimState }>(
       host,
       msg => msg.type === 'state' && msg.payload.cycle > initialStateMsg.payload.cycle,
     );
+    guest.send(JSON.stringify({ type: 'join', roomId, role: 'guest' }));
+    await guestJoined;
+
+    const nextStateMsg = await nextState;
     assert(nextStateMsg.payload.phase === 'playing', 'server should survive malformed move plan');
 
     host.close();
