@@ -2,7 +2,7 @@
  * Regression checks for multiplayer authority and fog-of-war rendering.
  * Run with: npm exec --yes tsx -- scripts/verify-multiplayer-authority.ts
  */
-import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
+import { spawn, type ChildProcess } from 'child_process';
 import { readFileSync } from 'fs';
 import WebSocket, { type RawData } from 'ws';
 import { initMultiplayerGame, stepSimulation, DEFAULT_AI_PARAMS } from '../src/core/gameCore';
@@ -109,8 +109,8 @@ async function withServer<T>(fn: (port: number) => Promise<T>): Promise<T> {
   });
 
   let output = '';
-  child.stdout.on('data', chunk => { output += String(chunk); });
-  child.stderr.on('data', chunk => { output += String(chunk); });
+  child.stdout?.on('data', chunk => { output += String(chunk); });
+  child.stderr?.on('data', chunk => { output += String(chunk); });
 
   try {
     return await fn(port);
@@ -121,7 +121,7 @@ async function withServer<T>(fn: (port: number) => Promise<T>): Promise<T> {
   }
 }
 
-async function stopChild(child: ChildProcessWithoutNullStreams): Promise<void> {
+async function stopChild(child: ChildProcess): Promise<void> {
   if (child.exitCode !== null) return;
   if (child.pid) {
     try {
@@ -201,7 +201,7 @@ function verifyFogRenderingSources(): void {
   const hexGrid = readFileSync('src/components/game/HexGrid.tsx', 'utf8');
   assert(hexGrid.includes('opacity: 0.93'), 'unknown fog overlay should stay nearly opaque');
   assert(
-    /for \(const tile of discoveredTilesMap\.values\(\)\) \{\s*groups\[tile\.biome\]\.push\(tile\);/s.test(hexGrid),
+    /for \(const tile of discoveredTilesMap\.values\(\)\) \{[\s\S]*groups\[tile\.biome\]\.push\(tile\);/.test(hexGrid),
     'terrain biome groups must be built from discovered tiles',
   );
   assert(
