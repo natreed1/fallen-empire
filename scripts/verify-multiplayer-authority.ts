@@ -104,6 +104,7 @@ async function withServer<T>(fn: (port: number) => Promise<T>): Promise<T> {
       PORT: String(port),
       MULTIPLAYER_TICK_MS: '250',
     },
+    detached: true,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
@@ -122,11 +123,28 @@ async function withServer<T>(fn: (port: number) => Promise<T>): Promise<T> {
 
 async function stopChild(child: ChildProcessWithoutNullStreams): Promise<void> {
   if (child.exitCode !== null) return;
-  child.kill('SIGTERM');
+  if (child.pid) {
+    try {
+      process.kill(-child.pid, 'SIGTERM');
+    } catch {
+      child.kill('SIGTERM');
+    }
+  } else {
+    child.kill('SIGTERM');
+  }
   await Promise.race([
     new Promise<void>(resolve => child.once('exit', () => resolve())),
     delay(1500).then(() => {
-      if (child.exitCode === null) child.kill('SIGKILL');
+      if (child.exitCode !== null) return;
+      if (child.pid) {
+        try {
+          process.kill(-child.pid, 'SIGKILL');
+        } catch {
+          child.kill('SIGKILL');
+        }
+      } else {
+        child.kill('SIGKILL');
+      }
     }),
   ]);
 }
@@ -194,50 +212,54 @@ function verifyFogRenderingSources(): void {
 
 async function verifyServerAuthority(): Promise<void> {
   await withServer(async port => {
-    const roomId = `verify-${Date.now()}`;
-    const host = await connect(port);
-    const hostJoined = waitForMessage(host, msg => msg.type === 'joined');
-    const initialState = waitForMessage<{ type: string; payload: SerializedSimState }>(
-      host,
-      msg => msg.type === 'state',
-    );
-    host.send(JSON.stringify({ type: 'join', roomId, role: 'host' }));
-    await hostJoined;
+    const sockets: WebSocket[] = [];
+    try {
+      const roomId = `verify-${Date.now()}`;
+      const host = await connect(port);
+      sockets.push(host);
+      const hostJoined = waitForMessage(host, msg => msg.type === 'joined');
+      const initialState = waitForMessage<{ type: string; payload: SerializedSimState }>(
+        host,
+        msg => msg.type === 'state',
+      );
+      host.send(JSON.stringify({ type: 'join', roomId, role: 'host' }));
+      await hostJoined;
 
-    const duplicateHost = await connect(port);
-    const duplicateHostRejected = waitForMessage(duplicateHost, msg => msg.type === 'error');
-    duplicateHost.send(JSON.stringify({ type: 'join', roomId, role: 'host' }));
-    const duplicateHostError = await duplicateHostRejected;
-    assert(String(duplicateHostError.message).includes('Host slot'), 'duplicate host must be rejected');
-    duplicateHost.close();
+      const duplicateHost = await connect(port);
+      sockets.push(duplicateHost);
+      const duplicateHostRejected = waitForMessage(duplicateHost, msg => msg.type === 'error');
+      duplicateHost.send(JSON.stringify({ type: 'join', roomId, role: 'host' }));
+      const duplicateHostError = await duplicateHostRejected;
+      assert(String(duplicateHostError.message).includes('Host slot'), 'duplicate host must be rejected');
 
-    const initialStateMsg = await initialState;
+      const initialStateMsg = await initialState;
 
-    host.send(JSON.stringify({
-      type: 'plan',
-      plan: {
-        moveTargets: [
-          { unitId: 'opponent-or-missing-unit', toQ: 3, toR: 3 },
-          { unitId: 'opponent-or-missing-unit', toQ: Number.NaN, toR: 3 },
-        ],
-      },
-    }));
-    host.send(JSON.stringify({ type: 'plan', plan: { moveTargets: { unitId: 'bad-shape', toQ: 4, toR: 4 } } }));
+      host.send(JSON.stringify({
+        type: 'plan',
+        plan: {
+          moveTargets: [
+            { unitId: 'opponent-or-missing-unit', toQ: 3, toR: 3 },
+            { unitId: 'opponent-or-missing-unit', toQ: Number.NaN, toR: 3 },
+          ],
+        },
+      }));
+      host.send(JSON.stringify({ type: 'plan', plan: { moveTargets: { unitId: 'bad-shape', toQ: 4, toR: 4 } } }));
 
-    const guest = await connect(port);
-    const guestJoined = waitForMessage(guest, msg => msg.type === 'joined');
-    const nextState = waitForMessage<{ type: string; payload: SerializedSimState }>(
-      host,
-      msg => msg.type === 'state' && msg.payload.cycle > initialStateMsg.payload.cycle,
-    );
-    guest.send(JSON.stringify({ type: 'join', roomId, role: 'guest' }));
-    await guestJoined;
+      const guest = await connect(port);
+      sockets.push(guest);
+      const guestJoined = waitForMessage(guest, msg => msg.type === 'joined');
+      const nextState = waitForMessage<{ type: string; payload: SerializedSimState }>(
+        host,
+        msg => msg.type === 'state' && msg.payload.cycle > initialStateMsg.payload.cycle,
+      );
+      guest.send(JSON.stringify({ type: 'join', roomId, role: 'guest' }));
+      await guestJoined;
 
-    const nextStateMsg = await nextState;
-    assert(nextStateMsg.payload.phase === 'playing', 'server should survive malformed move plan');
-
-    host.close();
-    guest.close();
+      const nextStateMsg = await nextState;
+      assert(nextStateMsg.payload.phase === 'playing', 'server should survive malformed move plan');
+    } finally {
+      for (const socket of sockets) socket.terminate();
+    }
   });
 }
 
