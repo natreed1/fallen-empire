@@ -157,6 +157,38 @@ function waitForServerReady(proc: ChildProcessWithoutNullStreams): Promise<void>
   });
 }
 
+function stopServer(proc: ChildProcessWithoutNullStreams): Promise<void> {
+  return new Promise(resolve => {
+    if (proc.exitCode !== null) {
+      resolve();
+      return;
+    }
+
+    const timeout = setTimeout(() => {
+      try {
+        if (proc.pid && process.platform !== 'win32') process.kill(-proc.pid, 'SIGKILL');
+        else proc.kill('SIGKILL');
+      } catch {
+        // Already gone.
+      }
+      resolve();
+    }, 2_000);
+
+    proc.once('exit', () => {
+      clearTimeout(timeout);
+      resolve();
+    });
+
+    try {
+      if (proc.pid && process.platform !== 'win32') process.kill(-proc.pid, 'SIGTERM');
+      else proc.kill('SIGTERM');
+    } catch {
+      clearTimeout(timeout);
+      resolve();
+    }
+  });
+}
+
 function openSocket(port: number): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
     const socket = new WebSocket(`ws://127.0.0.1:${port}`);
@@ -185,24 +217,27 @@ async function verifyDuplicateHostRejected(): Promise<void> {
   const proc = spawn('npm', ['run', 'game-server'], {
     cwd: process.cwd(),
     env: { ...process.env, PORT: String(port), MULTIPLAYER_TICK_MS: '60000' },
+    detached: process.platform !== 'win32',
+    stdio: ['ignore', 'pipe', 'pipe'],
   });
+  let hostA: WebSocket | undefined;
+  let hostB: WebSocket | undefined;
   try {
     await waitForServerReady(proc);
     const roomId = `authority-${Date.now()}`;
-    const hostA = await openSocket(port);
+    hostA = await openSocket(port);
     hostA.send(JSON.stringify({ type: 'join', roomId, role: 'host' }));
     const joined = await waitForMessage(hostA, 'joined');
     assert.equal(joined.playerSlot, P1, 'first host should receive P1');
 
-    const hostB = await openSocket(port);
+    hostB = await openSocket(port);
     hostB.send(JSON.stringify({ type: 'join', roomId, role: 'host' }));
     const error = await waitForMessage(hostB, 'error');
     assert.match(String(error.message), /host slot|room is full/i, 'duplicate host must be rejected');
-
-    hostA.close();
-    hostB.close();
   } finally {
-    proc.kill('SIGTERM');
+    hostA?.terminate();
+    hostB?.terminate();
+    await stopServer(proc);
   }
 }
 
