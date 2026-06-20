@@ -1,5 +1,5 @@
 import assert from 'assert';
-import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
+import { spawn, type ChildProcess } from 'child_process';
 import { readFileSync } from 'fs';
 import WebSocket from 'ws';
 import { initMultiplayerGame, stepSimulation, DEFAULT_AI_PARAMS } from '../src/core/gameCore';
@@ -137,8 +137,12 @@ function verifyFogAndCameraStaticGuards(): void {
   );
 }
 
-function waitForServerReady(proc: ChildProcessWithoutNullStreams): Promise<void> {
+function waitForServerReady(proc: ChildProcess): Promise<void> {
   return new Promise((resolve, reject) => {
+    if (!proc.stdout || !proc.stderr) {
+      reject(new Error('Server process did not expose stdout/stderr'));
+      return;
+    }
     let output = '';
     const timeout = setTimeout(() => reject(new Error(`Server did not become ready. Output:\n${output}`)), 10_000);
     const onData = (data: Buffer) => {
@@ -157,7 +161,7 @@ function waitForServerReady(proc: ChildProcessWithoutNullStreams): Promise<void>
   });
 }
 
-function stopServer(proc: ChildProcessWithoutNullStreams): Promise<void> {
+function stopServer(proc: ChildProcess): Promise<void> {
   return new Promise(resolve => {
     if (proc.exitCode !== null) {
       resolve();
