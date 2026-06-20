@@ -5,7 +5,7 @@ import WebSocket from 'ws';
 import { initMultiplayerGame, stepSimulation, DEFAULT_AI_PARAMS } from '../src/core/gameCore';
 import { emptyAiActions } from '../src/lib/ai';
 import { remapSimStateForClient } from '../src/lib/multiplayerRemap';
-import { tileKey } from '../src/types/game';
+import { tileKey, type Unit } from '../src/types/game';
 
 const P1 = 'player_ai';
 const P2 = 'player_ai_2';
@@ -19,8 +19,34 @@ function findReachableTarget(state: ReturnType<typeof initMultiplayerGame>, q: n
   throw new Error('No reachable target tile found');
 }
 
+function makeTestUnit(id: string, ownerId: string, q: number, r: number): Unit {
+  return {
+    id,
+    ownerId,
+    q,
+    r,
+    type: 'infantry',
+    hp: 20,
+    maxHp: 20,
+    xp: 0,
+    level: 1,
+    status: 'idle',
+    stance: 'aggressive',
+    nextMoveAt: 0,
+  };
+}
+
 function verifyStepSimulationMoveOwnership(): void {
   const state = initMultiplayerGame(4242, { width: 32, height: 32 });
+  const p1City = state.cities.find(c => c.ownerId === P1);
+  const p2City = state.cities.find(c => c.ownerId === P2);
+  assert(p1City, 'expected a P1 starting city');
+  assert(p2City, 'expected a P2 starting city');
+  state.units = [
+    makeTestUnit('test-p1-unit', P1, p1City.q, p1City.r),
+    makeTestUnit('test-p2-unit', P2, p2City.q, p2City.r),
+  ];
+
   const p1Unit = state.units.find(u => u.ownerId === P1 && u.hp > 0);
   const p2Unit = state.units.find(u => u.ownerId === P2 && u.hp > 0);
   assert(p1Unit, 'expected a living P1 starting unit');
