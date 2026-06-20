@@ -490,6 +490,10 @@ export default function GameScene() {
       return;
     }
     if (isPlayableCameraMode) {
+      const enteredPlaying = prevPhaseForCameraRef.current !== 'playing' && phase === 'playing';
+      if (phase !== 'playing' || enteredPlaying) {
+        setMapTarget(liveTarget);
+      }
       prevPhaseForCameraRef.current = phase;
       return;
     }

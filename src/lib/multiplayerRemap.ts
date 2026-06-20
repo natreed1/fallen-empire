@@ -55,6 +55,15 @@ export function remapSimStateForClient(state: SimState, role: 'host' | 'guest'):
     if (arr?.length) scrollRegionClaimed[region] = arr.map(mp);
   }
 
+  const combatMoraleState = new Map(
+    Array.from(state.combatMoraleState.entries()).map(([key, value]) => {
+      const sep = key.lastIndexOf(':');
+      if (sep < 0) return [key, { ...value, ownerId: mp(value.ownerId) }] as const;
+      const ownerId = mp(key.slice(sep + 1));
+      return [`${key.slice(0, sep)}:${ownerId}`, { ...value, ownerId }] as const;
+    }),
+  );
+
   return {
     ...state,
     players,
@@ -81,6 +90,7 @@ export function remapSimStateForClient(state: SimState, role: 'host' | 'guest'):
       Object.entries(state.cityCaptureHold).map(([cid, h]) => [cid, { ...h, attackerId: mp(h.attackerId) }]),
     ),
     scrollAttachments: state.scrollAttachments.map(a => ({ ...a, ownerId: mp(a.ownerId) })),
+    combatMoraleState,
   };
 }
 
