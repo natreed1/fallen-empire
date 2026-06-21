@@ -2,11 +2,11 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
 import { readFileSync } from 'fs';
 import { setTimeout as delay } from 'timers/promises';
 
-import { initMultiplayerGame, stepSimulation, DEFAULT_AI_PARAMS } from '../src/core/gameCore.ts';
-import { emptyAiActions } from '../src/lib/ai.ts';
-import { remapSimStateForClient } from '../src/lib/multiplayerRemap.ts';
-import { mergeClientPlan } from '../game-server/src/clientPlans.ts';
-import type { Unit } from '../src/types/game.ts';
+import { initMultiplayerGame, stepSimulation, DEFAULT_AI_PARAMS } from '../src/core/gameCore';
+import { emptyAiActions } from '../src/lib/ai';
+import { remapSimStateForClient } from '../src/lib/multiplayerRemap';
+import { mergeClientPlan } from '../game-server/src/clientPlans';
+import type { Unit } from '../src/types/game';
 
 const P1 = 'player_ai';
 const P2 = 'player_ai_2';
