@@ -1383,7 +1383,7 @@ function UnknownFogOverlay({ tiles }: { tiles: Tile[] }) {
       new THREE.MeshBasicMaterial({
         color: '#06070d',
         transparent: true,
-        opacity: 0.62,
+        opacity: 0.93,
         depthWrite: false,
       }),
     [],
@@ -1577,7 +1577,8 @@ function CityMarkers({ cities, tiles, players }: { cities: City[]; tiles: Map<st
     <group>
       {cities.map(city => {
         const tile = tiles.get(tileKey(city.q, city.r));
-        const h = tile?.height ?? 0.3;
+        if (!tile) return null;
+        const h = tile.height;
         const [x, z] = axialToWorld(city.q, city.r, HEX_RADIUS);
         const isHuman = city.ownerId === PLAYER_HUMAN_ID;
         const factionColor = playerColorOrDefault(players, city.ownerId);
@@ -1675,7 +1676,8 @@ function BuildingMarkers({ cities, tiles }: { cities: City[]; tiles: Map<string,
     for (const city of cities) {
       for (const b of city.buildings) {
         const tile = tiles.get(tileKey(b.q, b.r));
-        const h = tile?.height ?? 0.3;
+        if (!tile) continue;
+        const h = tile.height;
         const [x, z] = axialToWorld(b.q, b.r, HEX_RADIUS);
         const yOff = BUILDING_Y_OFFSET[b.type] ?? 0.4;
         result.push({
@@ -3615,26 +3617,26 @@ export default function HexGrid() {
     const groups: Record<Biome, Tile[]> = {
       water: [], plains: [], forest: [], mountain: [], desert: [],
     };
-    for (const tile of tiles.values()) {
+    for (const tile of discoveredTilesMap.values()) {
       groups[tile.biome].push(tile);
     }
     return groups;
-  }, [tiles]);
+  }, [discoveredTilesMap]);
 
   const terrainShoreline = useMemo(() => {
     const coastalWater: Tile[] = [];
     const deepWater: Tile[] = [];
     const beachLand: Tile[] = [];
-    for (const t of tiles.values()) {
+    for (const t of discoveredTilesMap.values()) {
       if (t.biome === 'water') {
-        if (isCoastalWaterTile(t, tiles)) coastalWater.push(t);
+        if (isCoastalWaterTile(t, discoveredTilesMap)) coastalWater.push(t);
         else deepWater.push(t);
-      } else if (isBeachLandTile(t, tiles)) {
+      } else if (isBeachLandTile(t, discoveredTilesMap)) {
         beachLand.push(t);
       }
     }
     return { coastalWater, deepWater, beachLand };
-  }, [tiles]);
+  }, [discoveredTilesMap]);
 
   // Territory by player
   const territoryByPlayer = useMemo(() => {
@@ -3687,10 +3689,10 @@ export default function HexGrid() {
   const tacticalIncorporateHintTiles = useMemo(() => {
     if (assigningTacticalForSelectedStacks?.orderType !== 'incorporate_village') return [];
     const cityHex = new Set(cities.map(c => tileKey(c.q, c.r)));
-    return Array.from(tiles.values()).filter(
+    return Array.from(discoveredTilesMap.values()).filter(
       t => t.hasVillage && t.biome !== 'water' && !cityHex.has(tileKey(t.q, t.r)),
     );
-  }, [assigningTacticalForSelectedStacks, tiles, cities]);
+  }, [assigningTacticalForSelectedStacks, discoveredTilesMap, cities]);
 
   const tacticalPendingIncorporateTiles = useMemo(() => {
     if (!pendingTacticalOrders) return [];
@@ -3701,19 +3703,19 @@ export default function HexGrid() {
       const k = tileKey(o.toQ, o.toR);
       if (seen.has(k)) continue;
       seen.add(k);
-      const t = tiles.get(k);
+      const t = discoveredTilesMap.get(k);
       if (t) out.push(t);
     }
     return out;
-  }, [pendingTacticalOrders, tiles]);
+  }, [pendingTacticalOrders, discoveredTilesMap]);
 
   const tacticalAttackHintTiles = useMemo(() => {
     if (assigningTacticalForSelectedStacks?.orderType !== 'attack_city') return [];
     return cities
       .filter(c => c.ownerId !== PLAYER_HUMAN_ID)
-      .map(c => tiles.get(tileKey(c.q, c.r)))
+      .map(c => discoveredTilesMap.get(tileKey(c.q, c.r)))
       .filter((t): t is Tile => !!t);
-  }, [assigningTacticalForSelectedStacks, cities, tiles]);
+  }, [assigningTacticalForSelectedStacks, cities, discoveredTilesMap]);
 
   const tacticalRaidBuildingHintTiles = useMemo(() => {
     if (assigningTacticalForSelectedStacks?.orderType !== 'attack_building_pick') return [];
@@ -3726,12 +3728,12 @@ export default function HexGrid() {
         const k = tileKey(b.q, b.r);
         if (seen.has(k)) continue;
         seen.add(k);
-        const t = tiles.get(k);
+        const t = discoveredTilesMap.get(k);
         if (t && t.biome !== 'water') out.push(t);
       }
     }
     return out;
-  }, [assigningTacticalForSelectedStacks, cities, tiles]);
+  }, [assigningTacticalForSelectedStacks, cities, discoveredTilesMap]);
 
   const tacticalPendingAttackTiles = useMemo(() => {
     if (!pendingTacticalOrders) return [];
@@ -3744,31 +3746,31 @@ export default function HexGrid() {
       const k = tileKey(c.q, c.r);
       if (seen.has(k)) continue;
       seen.add(k);
-      const t = tiles.get(k);
+      const t = discoveredTilesMap.get(k);
       if (t) out.push(t);
     }
     return out;
-  }, [pendingTacticalOrders, cities, tiles]);
+  }, [pendingTacticalOrders, cities, discoveredTilesMap]);
 
   const tacticalDefendHintTiles = useMemo(() => {
     const ot = assigningTacticalForSelectedStacks?.orderType;
     if (ot !== 'defend_pick' && ot !== 'city_defense_pick') return [];
     return cities
       .filter(c => c.ownerId === PLAYER_HUMAN_ID)
-      .map(c => tiles.get(tileKey(c.q, c.r)))
+      .map(c => discoveredTilesMap.get(tileKey(c.q, c.r)))
       .filter((t): t is Tile => !!t);
-  }, [assigningTacticalForSelectedStacks, cities, tiles]);
+  }, [assigningTacticalForSelectedStacks, cities, discoveredTilesMap]);
 
   const tacticalPatrolPaintTiles = useMemo(() => {
     const keys = tacticalPatrolPaintHexKeys ?? [];
     if (keys.length === 0) return [];
     const out: Tile[] = [];
     for (const k of keys) {
-      const t = tiles.get(k);
+      const t = discoveredTilesMap.get(k);
       if (t) out.push(t);
     }
     return out;
-  }, [tacticalPatrolPaintHexKeys, tiles]);
+  }, [tacticalPatrolPaintHexKeys, discoveredTilesMap]);
 
   const tacticalPendingDefendTiles = useMemo(() => {
     if (!pendingTacticalOrders) return [];
@@ -3783,11 +3785,11 @@ export default function HexGrid() {
       const k = tileKey(c.q, c.r);
       if (seen.has(k)) continue;
       seen.add(k);
-      const t = tiles.get(k);
+      const t = discoveredTilesMap.get(k);
       if (t) out.push(t);
     }
     return out;
-  }, [pendingTacticalOrders, cities, tiles]);
+  }, [pendingTacticalOrders, cities, discoveredTilesMap]);
 
   const selectedDefenseInstallation = useMemo(() => {
     if (!selectedHex || (phase !== 'playing' && phase !== 'starting_game')) return null;
@@ -3814,7 +3816,7 @@ export default function HexGrid() {
       <BeachSandLayer tiles={terrainShoreline.beachLand} />
       <MedievalHexOutlineLayer tiles={Array.from(discoveredTilesMap.values())} />
       <MapEdgeOutlineLayer tiles={mapEdgeOutlineTiles} />
-      <MountainSnowLayer tiles={terrainBiomeGroups.mountain} tilesMap={tiles} />
+      <MountainSnowLayer tiles={terrainBiomeGroups.mountain} tilesMap={discoveredTilesMap} />
 
       {/* Map features */}
       <RoadOverlay tiles={biomeGroups.roadTiles} />
@@ -3898,31 +3900,31 @@ export default function HexGrid() {
 
       {/* Move range highlight when unit is selected */}
       {uiMode === 'move' && selectedHex && !assigningTacticalForStack && (
-        <MoveRangeOverlay fromQ={selectedHex.q} fromR={selectedHex.r} tiles={tiles} naval={moveRangeNaval} />
+        <MoveRangeOverlay fromQ={selectedHex.q} fromR={selectedHex.r} tiles={discoveredTilesMap} naval={moveRangeNaval} />
       )}
       {/* Tactical: valid destination hexes when assigning move/intercept for a stack */}
       {assigningTacticalForStack && (() => {
         const [tq, tr] = parseTileKey(assigningTacticalForStack);
-        return <MoveRangeOverlay fromQ={tq} fromR={tr} tiles={tiles} color="#e4b44c" />;
+        return <MoveRangeOverlay fromQ={tq} fromR={tr} tiles={discoveredTilesMap} color="#e4b44c" />;
       })()}
       {assigningTacticalForSelectedStacks?.orderType === 'move' && (
         <MultiStackMoveRangeOverlay
           stackKeys={assigningTacticalForSelectedStacks.stackKeys}
-          tiles={tiles}
+          tiles={discoveredTilesMap}
           color="#5ddf8c"
         />
       )}
       {assigningTacticalForSelectedStacks?.orderType === 'intercept' && (
         <MultiStackMoveRangeOverlay
           stackKeys={assigningTacticalForSelectedStacks.stackKeys}
-          tiles={tiles}
+          tiles={discoveredTilesMap}
           color="#e4b44c"
         />
       )}
       {assigningTacticalForSelectedStacks?.orderType === 'attack_building_pick' && (
         <MultiStackMoveRangeOverlay
           stackKeys={assigningTacticalForSelectedStacks.stackKeys}
-          tiles={tiles}
+          tiles={discoveredTilesMap}
           color="#fb923c"
         />
       )}
@@ -3956,17 +3958,17 @@ export default function HexGrid() {
 
       {/* Mine deposit highlights (builder build mode) */}
       {uiMode === 'build_mine' && (
-        <DepositHighlightOverlay tiles={tiles} cities={cities} constructions={constructions} depositType="mine" />
+        <DepositHighlightOverlay tiles={discoveredTilesMap} cities={cities} constructions={constructions} depositType="mine" />
       )}
       {/* Quarry deposit highlights (builder build mode) */}
       {uiMode === 'build_quarry' && (
-        <DepositHighlightOverlay tiles={tiles} cities={cities} constructions={constructions} depositType="quarry" />
+        <DepositHighlightOverlay tiles={discoveredTilesMap} cities={cities} constructions={constructions} depositType="quarry" />
       )}
       {uiMode === 'build_gold_mine' && (
-        <DepositHighlightOverlay tiles={tiles} cities={cities} constructions={constructions} depositType="gold_mine" />
+        <DepositHighlightOverlay tiles={discoveredTilesMap} cities={cities} constructions={constructions} depositType="gold_mine" />
       )}
       {uiMode === 'build_logging_hut' && (
-        <DepositHighlightOverlay tiles={tiles} cities={cities} constructions={constructions} depositType="logging_hut" />
+        <DepositHighlightOverlay tiles={discoveredTilesMap} cities={cities} constructions={constructions} depositType="logging_hut" />
       )}
       {/* Road path preview (builder build mode) */}
       {uiMode === 'build_road' && roadPathSelection.length > 0 && (

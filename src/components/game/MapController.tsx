@@ -28,14 +28,17 @@ interface MapControllerProps {
 export default function MapController({ target, applyTargetUpdates = true }: MapControllerProps) {
   const controlsRef = useRef<any>(null);
   const appliedInitialTargetRef = useRef(false);
+  const lastAppliedTargetKeyRef = useRef<string | null>(null);
   const { camera } = useThree();
 
   useEffect(() => {
     if (target && controlsRef.current) {
-      if (!applyTargetUpdates && appliedInitialTargetRef.current) return;
+      const targetKey = target.join(',');
+      if (!applyTargetUpdates && appliedInitialTargetRef.current && lastAppliedTargetKeyRef.current === targetKey) return;
       controlsRef.current.target.set(...target);
       controlsRef.current.update();
       appliedInitialTargetRef.current = true;
+      lastAppliedTargetKeyRef.current = targetKey;
     }
   }, [target, applyTargetUpdates]);
 
