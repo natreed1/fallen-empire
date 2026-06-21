@@ -474,6 +474,16 @@ export default function GameScene() {
   const isGenerated = useGameStore(s => s.isGenerated);
   const phase = useGameStore(s => s.phase);
   const gameMode = useGameStore(s => s.gameMode);
+  const playableCameraAnchorKey = useGameStore(s => {
+    const humanCity = s.cities.find(c => c.ownerId.includes('human'));
+    if (humanCity) return `city:${humanCity.q},${humanCity.r}`;
+    const firstCity = s.cities[0];
+    if (firstCity) return `city:${firstCity.q},${firstCity.r}`;
+    const humanUnit = s.units.find(u => u.ownerId.includes('human'));
+    if (humanUnit) return `unit:${humanUnit.q},${humanUnit.r}`;
+    if (s.pendingCityHex) return `pending:${s.pendingCityHex.q},${s.pendingCityHex.r}`;
+    return null;
+  });
   const liveTarget = useCameraTarget();
   const isBotWatch =
     gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4' || gameMode === 'spectate';
@@ -482,14 +492,23 @@ export default function GameScene() {
   const [mapTarget, setMapTarget] = useState(liveTarget);
   const [aiParamsLoadAttempted, setAiParamsLoadAttempted] = useState(false);
   const prevPhaseForCameraRef = useRef(phase);
+  const playableInitialSnapRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (isBotWatch) {
       setMapTarget(liveTarget);
       prevPhaseForCameraRef.current = phase;
+      playableInitialSnapRef.current = null;
       return;
     }
     if (isPlayableCameraMode) {
+      if (phase !== 'playing') {
+        setMapTarget(liveTarget);
+        playableInitialSnapRef.current = null;
+      } else if (playableCameraAnchorKey && playableInitialSnapRef.current == null) {
+        setMapTarget(liveTarget);
+        playableInitialSnapRef.current = playableCameraAnchorKey;
+      }
       prevPhaseForCameraRef.current = phase;
       return;
     }
@@ -499,7 +518,7 @@ export default function GameScene() {
       setMapTarget(liveTarget);
     }
     prevPhaseForCameraRef.current = phase;
-  }, [liveTarget, phase, isBotWatch, isPlayableCameraMode]);
+  }, [liveTarget, phase, isBotWatch, isPlayableCameraMode, playableCameraAnchorKey]);
 
   useEscapeKey();
 

@@ -76,6 +76,12 @@ export function remapSimStateForClient(state: SimState, role: 'host' | 'guest'):
     })),
     unitStacks: state.unitStacks.map(s => ({ ...s, ownerId: mp(s.ownerId) })),
     operationalArmies: state.operationalArmies.map(o => ({ ...o, ownerId: mp(o.ownerId) })),
+    combatMoraleState: new Map(
+      Array.from(state.combatMoraleState.entries()).map(([key, value]) => [
+        key,
+        { ...value, ownerId: mp(value.ownerId) },
+      ]),
+    ),
     pendingRecruits: state.pendingRecruits.map(pr => ({ ...pr, playerId: mp(pr.playerId) })),
     cityCaptureHold: Object.fromEntries(
       Object.entries(state.cityCaptureHold).map(([cid, h]) => [cid, { ...h, attackerId: mp(h.attackerId) }]),
