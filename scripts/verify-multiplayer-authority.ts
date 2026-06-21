@@ -43,6 +43,7 @@ function verifySharedSimulationAuthority(): void {
     makeUnit('p1_unit', P1, p1City.q, p1City.r),
     makeUnit('p2_unit', P2, p2City.q, p2City.r),
   ];
+  const p1Target = { q: p2City.q, r: p2City.r };
 
   const next = stepSimulation(
     state,
@@ -55,8 +56,8 @@ function verifySharedSimulationAuthority(): void {
         [P1]: {
           ...emptyAiActions(),
           moveTargets: [
-            { unitId: 'p2_unit', toQ: p1City.q, toR: p1City.r },
-            { unitId: 'p1_unit', toQ: p1City.q, toR: p1City.r },
+            { unitId: 'p2_unit', toQ: p1Target.q, toR: p1Target.r },
+            { unitId: 'p1_unit', toQ: p1Target.q, toR: p1Target.r },
           ],
         },
         [P2]: emptyAiActions(),
@@ -66,7 +67,7 @@ function verifySharedSimulationAuthority(): void {
 
   const p1Unit = next.units.find(u => u.id === 'p1_unit');
   const p2Unit = next.units.find(u => u.id === 'p2_unit');
-  assert(p1Unit?.targetQ === p1City.q && p1Unit.targetR === p1City.r, 'owned move target should apply');
+  assert(p1Unit?.targetQ === p1Target.q && p1Unit.targetR === p1Target.r, 'owned move target should apply');
   assert(p2Unit?.targetQ === undefined && p2Unit?.targetR === undefined, 'cross-owner move target must be ignored');
 }
 
@@ -175,7 +176,8 @@ async function waitForServer(proc: ChildProcessWithoutNullStreams): Promise<void
 async function verifyLiveRoomSlots(): Promise<void> {
   assert(typeof WebSocket !== 'undefined', 'Node runtime must provide WebSocket for live room test');
   const port = 36000 + Math.floor(Math.random() * 1000);
-  const proc = spawn('npm', ['start'], {
+  const clients: WebSocket[] = [];
+  const proc = spawn('./node_modules/.bin/tsx', ['--tsconfig', 'tsconfig.json', 'src/index.ts'], {
     cwd: 'game-server',
     env: { ...process.env, PORT: String(port), MULTIPLAYER_TICK_MS: '60000' },
   });
@@ -185,27 +187,40 @@ async function verifyLiveRoomSlots(): Promise<void> {
     const roomId = `verify-${Date.now()}`;
 
     const host = await openClient(port);
+    clients.push(host);
     host.send(JSON.stringify({ type: 'join', roomId, role: 'host' }));
     await onceMessage(host, msg => msg.type === 'joined' && msg.role === 'host');
 
     const duplicateHost = await openClient(port);
+    clients.push(duplicateHost);
     duplicateHost.send(JSON.stringify({ type: 'join', roomId, role: 'host' }));
     await onceMessage(duplicateHost, msg => msg.type === 'error' && /Host slot/.test(msg.message));
 
     const guest = await openClient(port);
+    clients.push(guest);
     guest.send(JSON.stringify({ type: 'join', roomId, role: 'guest' }));
     await onceMessage(guest, msg => msg.type === 'joined' && msg.role === 'guest');
 
     const duplicateGuest = await openClient(port);
+    clients.push(duplicateGuest);
     duplicateGuest.send(JSON.stringify({ type: 'join', roomId, role: 'guest' }));
     await onceMessage(duplicateGuest, msg => msg.type === 'error' && /Guest slot/.test(msg.message));
-
-    host.close();
-    duplicateHost.close();
-    guest.close();
-    duplicateGuest.close();
   } finally {
-    proc.kill();
+    for (const client of clients) {
+      try {
+        client.close();
+      } catch {
+        // Best-effort cleanup for failed test paths.
+      }
+    }
+    await delay(100);
+    if (proc.exitCode == null) proc.kill('SIGTERM');
+    await Promise.race([
+      new Promise(resolve => proc.once('exit', resolve)),
+      delay(2000).then(() => {
+        if (proc.exitCode == null) proc.kill('SIGKILL');
+      }),
+    ]);
   }
 }
 
