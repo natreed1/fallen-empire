@@ -68,6 +68,7 @@ export function remapSimStateForClient(state: SimState, role: 'host' | 'guest'):
     scrollRegionClaimed,
     commanders: state.commanders.map(c => ({ ...c, ownerId: mp(c.ownerId) })),
     scoutMissions: state.scoutMissions.map(m => ({ ...m })),
+    scoutTowers: state.scoutTowers.map(t => ({ ...t, ownerId: mp(t.ownerId) })),
     constructions: state.constructions.map(c => ({ ...c, ownerId: mp(c.ownerId) })),
     wallSections: state.wallSections.map(w => ({ ...w, ownerId: mp(w.ownerId) })),
     defenseInstallations: state.defenseInstallations.map(d => ({
@@ -81,6 +82,12 @@ export function remapSimStateForClient(state: SimState, role: 'host' | 'guest'):
       Object.entries(state.cityCaptureHold).map(([cid, h]) => [cid, { ...h, attackerId: mp(h.attackerId) }]),
     ),
     scrollAttachments: state.scrollAttachments.map(a => ({ ...a, ownerId: mp(a.ownerId) })),
+    combatMoraleState: new Map(
+      Array.from(state.combatMoraleState.entries()).map(([unitId, morale]) => [
+        unitId,
+        { ...morale, ownerId: mp(morale.ownerId) },
+      ]),
+    ),
   };
 }
 
