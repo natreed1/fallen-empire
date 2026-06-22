@@ -1,6 +1,6 @@
-import { emptyAiActions, type AiActions } from '../../src/lib/ai.ts';
-import type { SimState } from '../../src/core/gameCore.ts';
-import { tileKey } from '../../src/types/game.ts';
+import { emptyAiActions, type AiActions } from '../../src/lib/ai';
+import type { SimState } from '../../src/core/gameCore';
+import { tileKey } from '../../src/types/game';
 
 type MoveTarget = AiActions['moveTargets'][number];
 
