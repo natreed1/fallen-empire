@@ -19,6 +19,46 @@ function findLandUnit(state: SimState, ownerId: string): Unit {
   return unit;
 }
 
+function stateWithSeedUnits(seed: number): SimState {
+  const state = initMultiplayerGame(seed);
+  const city1 = state.cities.find(c => c.ownerId === P1);
+  const city2 = state.cities.find(c => c.ownerId === P2);
+  assert(city1 && city2, 'missing multiplayer capitals');
+  return {
+    ...state,
+    units: [
+      {
+        id: 'unit_p1',
+        type: 'infantry',
+        q: city1.q,
+        r: city1.r,
+        ownerId: P1,
+        hp: 100,
+        maxHp: 100,
+        xp: 0,
+        level: 0,
+        status: 'idle',
+        stance: 'aggressive',
+        nextMoveAt: 0,
+      },
+      {
+        id: 'unit_p2',
+        type: 'infantry',
+        q: city2.q,
+        r: city2.r,
+        ownerId: P2,
+        hp: 100,
+        maxHp: 100,
+        xp: 0,
+        level: 0,
+        status: 'idle',
+        stance: 'aggressive',
+        nextMoveAt: 0,
+      },
+    ],
+  };
+}
+
 function findDistantLandTile(state: SimState, unit: Unit): Tile {
   const target = Array.from(state.tiles.values()).find(
     t => t.biome !== 'water' && hexDistance(unit.q, unit.r, t.q, t.r) >= 4,
@@ -32,7 +72,7 @@ function planWithMoves(moveTargets: AiActions['moveTargets']): AiActions {
 }
 
 function verifyStepSimulationAuthority(): void {
-  const state = initMultiplayerGame(424242);
+  const state = stateWithSeedUnits(424242);
   const own = findLandUnit(state, P1);
   const enemy = findLandUnit(state, P2);
   const ownTarget = findDistantLandTile(state, own);
@@ -65,7 +105,7 @@ function verifyStepSimulationAuthority(): void {
 }
 
 function verifyServerPlanSanitizer(): void {
-  const state = initMultiplayerGame(515151);
+  const state = stateWithSeedUnits(515151);
   const own = findLandUnit(state, P1);
   const enemy = findLandUnit(state, P2);
   const ownTarget = findDistantLandTile(state, own);
@@ -94,7 +134,7 @@ function verifyServerPlanSanitizer(): void {
 }
 
 function verifyMultiplayerRemap(): void {
-  const state = initMultiplayerGame(616161);
+  const state = stateWithSeedUnits(616161);
   const guestUnit = findLandUnit(state, P2);
   const withGuestState: SimState = {
     ...state,
