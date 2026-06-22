@@ -35,6 +35,8 @@
     "remark-gfm": "^4.0.1",
     "simplex-noise": "^4.0.1",
     "three": "^0.165.0",
+    "tsx": "^4.22.4",
+    "ws": "^8.21.0",
     "zustand": "^4.5.0"
   },
   "devDependencies": {
@@ -42,6 +44,7 @@
     "@types/react": "^18.3.0",
     "@types/react-dom": "^18.3.0",
     "@types/three": "^0.165.0",
+    "@types/ws": "^8.18.1",
     "autoprefixer": "^10.4.21",
     "eslint": "^8.57.0",
     "eslint-config-next": "^14.2.0",
