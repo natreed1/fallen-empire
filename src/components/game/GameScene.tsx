@@ -474,6 +474,11 @@ export default function GameScene() {
   const isGenerated = useGameStore(s => s.isGenerated);
   const phase = useGameStore(s => s.phase);
   const gameMode = useGameStore(s => s.gameMode);
+  const hasLocalCameraAnchor = useGameStore(s =>
+    s.gameMode === 'battle_test'
+      ? s.units.some(u => u.ownerId.includes('human'))
+      : s.cities.some(c => c.ownerId.includes('human')),
+  );
   const liveTarget = useCameraTarget();
   const isBotWatch =
     gameMode === 'bot_vs_bot' || gameMode === 'bot_vs_bot_4' || gameMode === 'spectate';
@@ -482,24 +487,34 @@ export default function GameScene() {
   const [mapTarget, setMapTarget] = useState(liveTarget);
   const [aiParamsLoadAttempted, setAiParamsLoadAttempted] = useState(false);
   const prevPhaseForCameraRef = useRef(phase);
+  const playableCameraTargetAppliedRef = useRef(false);
 
   useEffect(() => {
     if (isBotWatch) {
       setMapTarget(liveTarget);
       prevPhaseForCameraRef.current = phase;
-      return;
-    }
-    if (isPlayableCameraMode) {
-      prevPhaseForCameraRef.current = phase;
+      playableCameraTargetAppliedRef.current = false;
       return;
     }
     const enteredPlaying = prevPhaseForCameraRef.current !== 'playing' && phase === 'playing';
+    if (isPlayableCameraMode) {
+      if (phase !== 'playing') {
+        setMapTarget(liveTarget);
+        playableCameraTargetAppliedRef.current = false;
+      } else if ((enteredPlaying || !playableCameraTargetAppliedRef.current) && hasLocalCameraAnchor) {
+        setMapTarget(liveTarget);
+        playableCameraTargetAppliedRef.current = true;
+      }
+      prevPhaseForCameraRef.current = phase;
+      return;
+    }
+    playableCameraTargetAppliedRef.current = false;
     // Keep syncing while not in the match (menus / placement); on first frame of play, snap to capital / live target
     if (phase !== 'playing' || enteredPlaying) {
       setMapTarget(liveTarget);
     }
     prevPhaseForCameraRef.current = phase;
-  }, [liveTarget, phase, isBotWatch, isPlayableCameraMode]);
+  }, [liveTarget, phase, isBotWatch, isPlayableCameraMode, hasLocalCameraAnchor]);
 
   useEscapeKey();
 
