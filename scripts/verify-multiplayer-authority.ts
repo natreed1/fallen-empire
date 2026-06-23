@@ -252,6 +252,13 @@ async function verifyLiveServerAuthority(): Promise<void> {
   }
 }
 
-await verifyLiveServerAuthority();
-verifyDirectSimulationAuthority();
-console.log('verify-multiplayer-authority: ok');
+async function main(): Promise<void> {
+  await verifyLiveServerAuthority();
+  verifyDirectSimulationAuthority();
+  console.log('verify-multiplayer-authority: ok');
+}
+
+main().catch(err => {
+  console.error(err);
+  process.exit(1);
+});
