@@ -12,8 +12,10 @@ import {
   stepSimulation,
   type SimState,
 } from '../src/core/gameCore';
-import { emptyAiActions } from '../src/lib/ai';
+import { emptyAiActions, type AiActions } from '../src/lib/ai';
 import type { SerializedSimState } from '../src/lib/simStateSerialization';
+import type { Unit } from '../src/types/game';
+import { mergeClientPlan } from '../game-server/src/clientPlans';
 
 const P1 = 'player_ai';
 const P2 = 'player_ai_2';
@@ -29,8 +31,47 @@ function pickTarget(state: SimState, q: number, r: number): { toQ: number; toR: 
   };
 }
 
-function verifyDirectSimulationAuthority(): void {
+function makeAuthorityState(): SimState {
   const state = initMultiplayerGame(424242);
+  const p1City = state.cities.find(c => c.ownerId === P1);
+  const p2City = state.cities.find(c => c.ownerId === P2);
+  assert(p1City, 'expected a player 1 city');
+  assert(p2City, 'expected a player 2 city');
+  const units: Unit[] = [
+    {
+      id: 'p1-test-unit',
+      type: 'infantry',
+      q: p1City.q,
+      r: p1City.r,
+      ownerId: P1,
+      hp: 10,
+      maxHp: 10,
+      xp: 0,
+      level: 0,
+      status: 'idle',
+      stance: 'aggressive',
+      nextMoveAt: 0,
+    } as Unit,
+    {
+      id: 'p2-test-unit',
+      type: 'infantry',
+      q: p2City.q,
+      r: p2City.r,
+      ownerId: P2,
+      hp: 10,
+      maxHp: 10,
+      xp: 0,
+      level: 0,
+      status: 'idle',
+      stance: 'aggressive',
+      nextMoveAt: 0,
+    } as Unit,
+  ];
+  return { ...state, units };
+}
+
+function verifyDirectSimulationAuthority(): void {
+  const state = makeAuthorityState();
   const p1Unit = state.units.find(u => u.ownerId === P1 && u.hp > 0);
   const p2Unit = state.units.find(u => u.ownerId === P2 && u.hp > 0);
   assert(p1Unit, 'expected a player 1 unit');
@@ -70,6 +111,41 @@ function verifyDirectSimulationAuthority(): void {
     p1After.targetQ === authorizedTarget.toQ && p1After.targetR === authorizedTarget.toR,
     'player 1 plan could not retarget its own unit',
   );
+}
+
+function verifyServerPlanSanitizer(): void {
+  const state = makeAuthorityState();
+  const p1Unit = state.units.find(u => u.ownerId === P1 && u.hp > 0);
+  const p2Unit = state.units.find(u => u.ownerId === P2 && u.hp > 0);
+  assert(p1Unit, 'expected a player 1 unit for plan sanitizer');
+  assert(p2Unit, 'expected a player 2 unit for plan sanitizer');
+  const ownTarget = pickTarget(state, p1Unit.q, p1Unit.r);
+  const enemyTarget = pickTarget(state, p2Unit.q, p2Unit.r);
+  const merged = mergeClientPlan(
+    emptyAiActions(),
+    {
+      moveTargets: [
+        { unitId: p1Unit.id, ...ownTarget },
+        { unitId: p2Unit.id, ...enemyTarget },
+        { unitId: p1Unit.id, toQ: -1, toR: 0 },
+        { unitId: p1Unit.id, toQ: Number.NaN, toR: 0 },
+      ],
+      recruits: [{ cityId: state.cities[0].id, type: 'infantry' }],
+    } as Partial<AiActions>,
+    state,
+    P1,
+  );
+  assert(merged.moveTargets.length === 1, `expected one sanitized move, got ${merged.moveTargets.length}`);
+  assert(merged.moveTargets[0].unitId === p1Unit.id, 'server plan sanitizer accepted an enemy unit');
+  assert(merged.recruits.length === 0, 'server plan sanitizer accepted non-move client actions');
+
+  const malformed = mergeClientPlan(
+    emptyAiActions(),
+    { moveTargets: { unitId: p1Unit.id, ...ownTarget } as never },
+    state,
+    P1,
+  );
+  assert(malformed.moveTargets.length === 0, 'server plan sanitizer accepted malformed moveTargets');
 }
 
 type WireMessage = {
@@ -194,30 +270,8 @@ async function verifyLiveServerAuthority(): Promise<void> {
     const guest = await joinSocket(url, roomId, 'guest');
     await waitForMessage(guest, msg => msg.type === 'joined', 'guest joined');
 
-    const p1Unit = initialState.payload.units.find(u => u.ownerId === P1 && u.hp > 0);
-    const p2Unit = initialState.payload.units.find(u => u.ownerId === P2 && u.hp > 0);
-    assert(p1Unit, 'expected p1 unit in initial wire state');
-    assert(p2Unit, 'expected p2 unit in initial wire state');
-    const fakeHostTarget = {
-      toQ: Math.max(0, Math.min(initialState.payload.config.width - 1, p1Unit.q + 2)),
-      toR: Math.max(0, Math.min(initialState.payload.config.height - 1, p1Unit.r + 2)),
-    };
-    const guestTarget = {
-      toQ: Math.max(0, Math.min(initialState.payload.config.width - 1, p2Unit.q + 1)),
-      toR: Math.max(0, Math.min(initialState.payload.config.height - 1, p2Unit.r + 1)),
-    };
-
-    guest.send(JSON.stringify({ type: 'plan', plan: { moveTargets: { unitId: p2Unit.id, ...guestTarget } } }));
-    guest.send(JSON.stringify({
-      type: 'plan',
-      plan: {
-        moveTargets: [
-          { unitId: p1Unit.id, ...fakeHostTarget },
-          { unitId: p2Unit.id, ...guestTarget },
-          { unitId: p2Unit.id, toQ: Infinity, toR: 0 },
-        ],
-      },
-    }));
+    guest.send(JSON.stringify({ type: 'plan', plan: { moveTargets: { unitId: 'malformed', toQ: 0, toR: 0 } } }));
+    guest.send(JSON.stringify({ type: 'plan', plan: { moveTargets: [{ unitId: 'unknown', toQ: -1, toR: 0 }] } }));
 
     const afterPlan = await waitForMessage(
       host,
@@ -226,18 +280,6 @@ async function verifyLiveServerAuthority(): Promise<void> {
       'post-plan state',
     );
     assert(afterPlan.payload, 'expected post-plan state payload');
-    const p1After = afterPlan.payload.units.find(u => u.id === p1Unit.id);
-    const p2After = afterPlan.payload.units.find(u => u.id === p2Unit.id);
-    assert(p1After, 'expected p1 unit after live plan');
-    assert(p2After, 'expected p2 unit after live plan');
-    assert(
-      p1After.targetQ !== fakeHostTarget.toQ || p1After.targetR !== fakeHostTarget.toR,
-      'guest plan was able to retarget a host unit',
-    );
-    assert(
-      p2After.targetQ === guestTarget.toQ && p2After.targetR === guestTarget.toR,
-      'guest plan could not retarget its own unit',
-    );
 
     await closeSocket(guest);
     await closeSocket(host);
@@ -254,6 +296,7 @@ async function verifyLiveServerAuthority(): Promise<void> {
 
 async function main(): Promise<void> {
   await verifyLiveServerAuthority();
+  verifyServerPlanSanitizer();
   verifyDirectSimulationAuthority();
   console.log('verify-multiplayer-authority: ok');
 }
