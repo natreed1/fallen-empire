@@ -4,7 +4,7 @@
  * Run with:
  *   npm exec --yes tsx -- scripts/verify-multiplayer-authority.ts
  */
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
   DEFAULT_AI_PARAMS,
@@ -20,7 +20,7 @@ import { mergeClientPlan } from '../game-server/src/clientPlans';
 const P1 = 'player_ai';
 const P2 = 'player_ai_2';
 
-function assert(cond: boolean, msg: string): asserts cond {
+function assert(cond: unknown, msg: string): asserts cond {
   if (!cond) throw new Error(msg);
 }
 
@@ -154,7 +154,7 @@ type WireMessage = {
   payload?: SerializedSimState;
 };
 
-function waitForServerReady(server: ChildProcessWithoutNullStreams): Promise<void> {
+function waitForServerReady(server: ChildProcess): Promise<void> {
   return new Promise((resolve, reject) => {
     let output = '';
     const timer = setTimeout(() => {
@@ -167,8 +167,8 @@ function waitForServerReady(server: ChildProcessWithoutNullStreams): Promise<voi
         resolve();
       }
     };
-    server.stdout.on('data', onData);
-    server.stderr.on('data', onData);
+    server.stdout?.on('data', onData);
+    server.stderr?.on('data', onData);
     server.once('exit', code => {
       clearTimeout(timer);
       reject(new Error(`game server exited before ready (${code}):\n${output}`));
