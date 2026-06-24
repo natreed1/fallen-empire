@@ -1,5 +1,5 @@
 import assert from 'assert/strict';
-import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
+import { spawn, type ChildProcess } from 'child_process';
 import WebSocket from 'ws';
 
 import {
@@ -112,8 +112,12 @@ function testGuestRemap(): void {
   assert.equal(guestView.combatMoraleState.get('stack-p2')?.ownerId, LOCAL, 'guest morale owner must remap to local player');
 }
 
-function waitForServer(proc: ChildProcessWithoutNullStreams): Promise<void> {
+function waitForServer(proc: ChildProcess): Promise<void> {
   return new Promise((resolve, reject) => {
+    if (!proc.stdout || !proc.stderr) {
+      reject(new Error('game server stdio was not captured'));
+      return;
+    }
     const timeout = setTimeout(() => reject(new Error('game server did not start')), 15_000);
     const onData = (data: Buffer) => {
       const text = data.toString();
@@ -205,7 +209,7 @@ async function testLiveServerRoleGuards(): Promise<void> {
   }
 }
 
-function stopProcess(proc: ChildProcessWithoutNullStreams): Promise<void> {
+function stopProcess(proc: ChildProcess): Promise<void> {
   return new Promise(resolve => {
     if (proc.exitCode !== null || proc.killed) {
       resolve();
