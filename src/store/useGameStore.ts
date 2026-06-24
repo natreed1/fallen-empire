@@ -3396,7 +3396,15 @@ export const useGameStore = create<GameState>((set, get) => ({
 
       for (const mt of aiPlan.moveTargets) {
         const unit = units.find(u => u.id === mt.unitId);
-        if (unit && unit.hp > 0 && unit.status !== 'fighting') {
+        if (
+          unit &&
+          unit.ownerId === aiPlayerId &&
+          unit.hp > 0 &&
+          unit.status !== 'fighting' &&
+          Number.isFinite(mt.toQ) &&
+          Number.isFinite(mt.toR) &&
+          tilesMut.has(tileKey(mt.toQ, mt.toR))
+        ) {
           applyDeployFlagsForMoveMutable(unit, mt.toQ, mt.toR, cities);
           clearPatrolFieldsMutable(unit);
           unit.targetQ = mt.toQ;
@@ -8205,8 +8213,14 @@ export const useGameStore = create<GameState>((set, get) => ({
   applyMultiplayerSnapshot: (data, role) => {
     const raw = deserializeSimState(data);
     const remapped = remapSimStateForClient(raw, role);
-    get().stopRealTimeLoop();
+    const previous = get();
+    previous.stopRealTimeLoop();
     const now = Date.now();
+    const resetVision =
+      previous.gameMode !== 'multiplayer' ||
+      previous.config.seed !== remapped.config.seed ||
+      previous.config.width !== remapped.config.width ||
+      previous.config.height !== remapped.config.height;
     set({
       gameMode: 'multiplayer',
       phase: remapped.phase,
@@ -8261,6 +8275,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       movementTickInCycle: remapped.globalMovementTick % MOVEMENT_TICKS_PER_ECONOMY_CYCLE,
       globalMovementTick: remapped.globalMovementTick,
       simTimeMs: remapped.simTimeMs,
+      visibleHexes: resetVision ? new Set() : previous.visibleHexes,
+      exploredHexes: resetVision ? new Set() : previous.exploredHexes,
     });
     get().recomputeVision();
   },
