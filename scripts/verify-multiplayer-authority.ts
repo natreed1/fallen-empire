@@ -166,7 +166,7 @@ function nextMessage(ws: WebSocket, type: string): Promise<Record<string, unknow
 
 async function testLiveServerRoleGuards(): Promise<void> {
   const port = 34861 + Math.floor(Math.random() * 1000);
-  const proc = spawn('npm', ['run', 'game-server'], {
+  const proc = spawn('./node_modules/.bin/tsx', ['game-server/src/index.ts'], {
     cwd: process.cwd(),
     env: { ...process.env, PORT: String(port), MULTIPLAYER_TICK_MS: '60000' },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -200,9 +200,26 @@ async function testLiveServerRoleGuards(): Promise<void> {
     guest.send(JSON.stringify({ type: 'join', roomId, role: 'guest' }));
     assert.equal((await nextMessage(guest, 'joined')).playerSlot, P2);
   } finally {
-    for (const ws of sockets) ws.close();
-    proc.kill('SIGTERM');
+    for (const ws of sockets) ws.terminate();
+    await stopProcess(proc);
   }
+}
+
+function stopProcess(proc: ChildProcessWithoutNullStreams): Promise<void> {
+  return new Promise(resolve => {
+    if (proc.exitCode !== null || proc.killed) {
+      resolve();
+      return;
+    }
+    const killTimer = setTimeout(() => {
+      if (proc.exitCode === null) proc.kill('SIGKILL');
+    }, 2_000);
+    proc.once('close', () => {
+      clearTimeout(killTimer);
+      resolve();
+    });
+    proc.kill('SIGTERM');
+  });
 }
 
 async function main(): Promise<void> {
