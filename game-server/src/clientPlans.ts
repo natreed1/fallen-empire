@@ -1,6 +1,6 @@
-import type { SimState } from '../../src/core/gameCore.ts';
-import type { AiActions } from '../../src/lib/ai.ts';
-import { tileKey } from '../../src/types/game.ts';
+import type { SimState } from '../../src/core/gameCore';
+import type { AiActions } from '../../src/lib/ai';
+import { tileKey } from '../../src/types/game';
 
 export function sanitizeClientMoveTargets(
   state: SimState,

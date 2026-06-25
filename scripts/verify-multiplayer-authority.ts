@@ -37,7 +37,7 @@ function stateWithUnits(): SimState {
   const state = initMultiplayerGame(424242, { width: 38, height: 38 });
   const p1City = state.cities.find(c => c.ownerId === P1);
   const p2City = state.cities.find(c => c.ownerId === P2);
-  assert(p1City && p2City, 'expected both multiplayer capitals');
+  if (!p1City || !p2City) throw new Error('expected both multiplayer capitals');
   return {
     ...state,
     units: [

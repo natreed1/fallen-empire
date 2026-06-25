@@ -15,11 +15,11 @@ import {
   stepSimulation,
   DEFAULT_AI_PARAMS,
   type SimState,
-} from '../../src/core/gameCore.ts';
-import { emptyAiActions, type AiActions } from '../../src/lib/ai.ts';
-import { serializeSimState, type SerializedSimState } from '../../src/lib/simStateSerialization.ts';
-import { MAX_MATCH_ECONOMY_CYCLES } from '../../src/types/game.ts';
-import { mergeClientPlan } from './clientPlans.ts';
+} from '../../src/core/gameCore';
+import { emptyAiActions, type AiActions } from '../../src/lib/ai';
+import { serializeSimState, type SerializedSimState } from '../../src/lib/simStateSerialization';
+import { MAX_MATCH_ECONOMY_CYCLES } from '../../src/types/game';
+import { mergeClientPlan } from './clientPlans';
 
 const PORT = Number(process.env.PORT ?? 3333);
 const TICK_MS = Number(process.env.MULTIPLAYER_TICK_MS ?? 4000);
