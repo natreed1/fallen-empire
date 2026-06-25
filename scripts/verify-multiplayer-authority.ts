@@ -158,7 +158,7 @@ async function connectAndJoin(port: number, roomId: string, role: string): Promi
 
 async function verifyLiveRoomGuards(): Promise<void> {
   const port = 35000 + Math.floor(Math.random() * 1000);
-  const proc = spawn('npm', ['run', 'game-server'], {
+  const proc = spawn('./node_modules/.bin/tsx', ['game-server/src/index.ts'], {
     cwd: process.cwd(),
     env: { ...process.env, PORT: String(port), MULTIPLAYER_TICK_MS: '1000000' },
   });
