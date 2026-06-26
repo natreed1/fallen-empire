@@ -226,7 +226,7 @@ function waitForMessage(
 
 async function verifyLiveRoomAuthority(): Promise<void> {
   const port = 34800 + Math.floor(Math.random() * 1000);
-  const server = spawn('npm', ['run', 'start'], {
+  const server = spawn(path.join(gameServerRoot, 'node_modules', '.bin', 'tsx'), ['--tsconfig', 'tsconfig.json', 'src/index.ts'], {
     cwd: gameServerRoot,
     env: {
       ...process.env,
@@ -292,8 +292,14 @@ async function verifyLiveRoomAuthority(): Promise<void> {
     assert.equal(server.exitCode, null, `server should ignore malformed plans without exiting: ${stderr}`);
   } finally {
     for (const socket of sockets) socket.close();
-    server.kill();
-    await delay(100);
+    if (server.exitCode === null) {
+      server.kill('SIGTERM');
+      await Promise.race([
+        new Promise<void>(resolve => server.once('close', () => resolve())),
+        delay(1000),
+      ]);
+    }
+    if (server.exitCode === null) server.kill('SIGKILL');
   }
 }
 
