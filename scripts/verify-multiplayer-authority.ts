@@ -4,7 +4,7 @@
  *   npm exec --yes tsx -- scripts/verify-multiplayer-authority.ts
  */
 import assert from 'node:assert/strict';
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -138,8 +138,14 @@ function verifyStepSimulationAuthority(): void {
   assert.equal(p2After.targetR, undefined, 'cross-owner target r must not be set');
 }
 
-function waitForServerReady(server: ChildProcessWithoutNullStreams): Promise<void> {
+function waitForServerReady(server: ChildProcess): Promise<void> {
   return new Promise((resolve, reject) => {
+    const stdout = server.stdout;
+    if (!stdout) {
+      reject(new Error('game server stdout is not available'));
+      return;
+    }
+
     const timeout = setTimeout(() => {
       cleanup();
       reject(new Error('timed out waiting for game server to listen'));
@@ -157,11 +163,11 @@ function waitForServerReady(server: ChildProcessWithoutNullStreams): Promise<voi
     };
     const cleanup = () => {
       clearTimeout(timeout);
-      server.stdout.off('data', onStdout);
+      stdout.off('data', onStdout);
       server.off('exit', onExit);
     };
 
-    server.stdout.on('data', onStdout);
+    stdout.on('data', onStdout);
     server.once('exit', onExit);
   });
 }
