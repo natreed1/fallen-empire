@@ -19,6 +19,7 @@ import {
 import { emptyAiActions, type AiActions } from '../../src/lib/ai.ts';
 import { serializeSimState, type SerializedSimState } from '../../src/lib/simStateSerialization.ts';
 import { MAX_MATCH_ECONOMY_CYCLES } from '../../src/types/game.ts';
+import { sanitizeClientPlan } from './clientPlans.ts';
 
 const PORT = Number(process.env.PORT ?? 3333);
 const TICK_MS = Number(process.env.MULTIPLAYER_TICK_MS ?? 4000);
@@ -107,6 +108,13 @@ function mergePlan(base: AiActions, patch: Partial<AiActions>): AiActions {
     ...patch,
     moveTargets: Array.from(mt.values()),
   };
+}
+
+function hasClientRole(room: Room, role: ClientMeta['role']): boolean {
+  for (const client of room.clients.values()) {
+    if (client.role === role) return true;
+  }
+  return false;
 }
 
 function stepRoom(room: Room): void {
@@ -222,6 +230,19 @@ wss.on('connection', (socket) => {
       const room = getOrCreateRoom(msg.roomId);
       if (room.clients.has(socket)) return;
 
+      if (msg.role !== 'host' && msg.role !== 'guest') {
+        socket.send(JSON.stringify({ type: 'error', message: 'Invalid role.' }));
+        return;
+      }
+      if (room.clients.size >= 2) {
+        socket.send(JSON.stringify({ type: 'error', message: 'Room is full.' }));
+        return;
+      }
+      if (hasClientRole(room, msg.role)) {
+        socket.send(JSON.stringify({ type: 'error', message: `Room already has a ${msg.role}.` }));
+        return;
+      }
+
       if (msg.role === 'host') {
         if (!room.state) {
           const seed = Math.floor(Math.random() * 1e9);
@@ -231,10 +252,6 @@ wss.on('connection', (socket) => {
       } else {
         if (!room.state) {
           socket.send(JSON.stringify({ type: 'error', message: 'Room not created yet — host must join first.' }));
-          return;
-        }
-        if (room.clients.size >= 2) {
-          socket.send(JSON.stringify({ type: 'error', message: 'Room is full.' }));
           return;
         }
         room.clients.set(socket, { socket, role: 'guest', playerId: P2 });
@@ -276,8 +293,12 @@ wss.on('connection', (socket) => {
         socket.send(JSON.stringify({ type: 'error', message: 'Not in a room' }));
         return;
       }
+      if (!found.state) {
+        socket.send(JSON.stringify({ type: 'error', message: 'Room has not started.' }));
+        return;
+      }
       const cur = found.pending[meta.playerId] ?? emptyAiActions();
-      found.pending[meta.playerId] = mergePlan(cur, msg.plan);
+      found.pending[meta.playerId] = mergePlan(cur, sanitizeClientPlan(msg.plan, found.state, meta.playerId));
       return;
     }
   });
