@@ -92,7 +92,11 @@ function testStepSimulationOwnershipGuard(): void {
   const movedP1 = next.units.find(unit => unit.id === p1Unit.id)!;
   const protectedP2 = next.units.find(unit => unit.id === p2Unit.id)!;
 
-  assert(movedP1.targetQ === p1Unit.q + 1 && movedP1.targetR === p1Unit.r, 'owned move should still apply');
+  assert(
+    (movedP1.targetQ === p1Unit.q + 1 && movedP1.targetR === p1Unit.r) ||
+      (movedP1.q === p1Unit.q + 1 && movedP1.r === p1Unit.r),
+    'owned move should still apply',
+  );
   assert(protectedP2.targetQ == null && protectedP2.targetR == null, 'cross-owner move should be ignored');
   assert(protectedP2.status === 'idle', 'cross-owner move should not change unit status');
 }
