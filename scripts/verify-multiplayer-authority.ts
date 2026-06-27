@@ -1,4 +1,4 @@
-import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
+import { spawn } from 'child_process';
 import WebSocket from 'ws';
 import { initMultiplayerGame, stepSimulation, DEFAULT_AI_PARAMS, type SimState } from '../src/core/gameCore';
 import { emptyAiActions, type AiActions } from '../src/lib/ai';
@@ -63,8 +63,9 @@ function testClientPlanSanitizer(): void {
     P1,
   );
 
-  assert(sanitized.moveTargets?.length === 1, 'sanitizer should keep only one legal owned move');
-  assert(sanitized.moveTargets[0].unitId === p1Unit.id, 'sanitizer should drop opponent unit moves');
+  const moveTargets = sanitized.moveTargets ?? [];
+  assert(moveTargets.length === 1, 'sanitizer should keep only one legal owned move');
+  assert(moveTargets[0].unitId === p1Unit.id, 'sanitizer should drop opponent unit moves');
   assert(!('builds' in sanitized), 'sanitizer should drop non-move AI actions from clients');
 }
 
@@ -101,8 +102,14 @@ function testStepSimulationOwnershipGuard(): void {
   assert(protectedP2.status === 'idle', 'cross-owner move should not change unit status');
 }
 
-function waitForServerReady(proc: ChildProcessWithoutNullStreams): Promise<void> {
+function waitForServerReady(proc: ReturnType<typeof spawn>): Promise<void> {
   return new Promise((resolve, reject) => {
+    if (!proc.stdout || !proc.stderr) {
+      reject(new Error('server process was not started with piped stdio'));
+      return;
+    }
+    const stdout = proc.stdout;
+    const stderr = proc.stderr;
     let output = '';
     const timer = setTimeout(() => {
       reject(new Error(`server did not become ready; output:\n${output}`));
@@ -111,13 +118,13 @@ function waitForServerReady(proc: ChildProcessWithoutNullStreams): Promise<void>
       output += chunk.toString();
       if (output.includes('Fallen Empire game server listening')) {
         clearTimeout(timer);
-        proc.stdout.off('data', onData);
-        proc.stderr.off('data', onData);
+        stdout.off('data', onData);
+        stderr.off('data', onData);
         resolve();
       }
     };
-    proc.stdout.on('data', onData);
-    proc.stderr.on('data', onData);
+    stdout.on('data', onData);
+    stderr.on('data', onData);
     proc.once('exit', code => {
       clearTimeout(timer);
       reject(new Error(`server exited before ready with code ${code}; output:\n${output}`));
