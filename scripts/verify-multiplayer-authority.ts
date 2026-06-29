@@ -5,6 +5,7 @@ import WebSocket from 'ws';
 import { emptyAiActions } from '../src/lib/ai.ts';
 import { DEFAULT_AI_PARAMS, initMultiplayerGame, stepSimulation } from '../src/core/gameCore.ts';
 import { sanitizeClientPlan } from '../game-server/src/clientPlans.ts';
+import type { Unit } from '../src/types/game.ts';
 
 const P1 = 'player_ai';
 const P2 = 'player_ai_2';
@@ -65,11 +66,33 @@ function firstTileAwayFrom(state: ReturnType<typeof initMultiplayerGame>, q: num
 }
 
 function assertPlanSanitizerAndSimulationAuthority() {
-  const state = initMultiplayerGame(24681357, { width: 24, height: 24 });
-  const p1Unit = state.units.find(u => u.ownerId === P1 && u.hp > 0);
-  const p2Unit = state.units.find(u => u.ownerId === P2 && u.hp > 0);
-  assert.ok(p1Unit, 'expected a P1 unit in multiplayer seed');
-  assert.ok(p2Unit, 'expected a P2 unit in multiplayer seed');
+  const baseState = initMultiplayerGame(24681357, { width: 24, height: 24 });
+  const p1City = baseState.cities.find(c => c.ownerId === P1);
+  const p2City = baseState.cities.find(c => c.ownerId === P2);
+  assert.ok(p1City, 'expected a P1 city in multiplayer seed');
+  assert.ok(p2City, 'expected a P2 city in multiplayer seed');
+  const p1Unit: Unit = {
+    id: 'verify_p1_unit',
+    type: 'infantry',
+    ownerId: P1,
+    q: p1City.q,
+    r: p1City.r,
+    hp: 100,
+    maxHp: 100,
+    xp: 0,
+    level: 1,
+    status: 'idle',
+    stance: 'aggressive',
+    nextMoveAt: 0,
+  };
+  const p2Unit: Unit = {
+    ...p1Unit,
+    id: 'verify_p2_unit',
+    ownerId: P2,
+    q: p2City.q,
+    r: p2City.r,
+  };
+  const state = { ...baseState, units: [p1Unit, p2Unit] };
 
   const p2Target = firstTileAwayFrom(state, p2Unit.q, p2Unit.r);
   const p1Target = firstTileAwayFrom(state, p1Unit.q, p1Unit.r);
@@ -91,18 +114,8 @@ function assertPlanSanitizerAndSimulationAuthority() {
     { unitId: p2Unit.id, toQ: p2Target.q, toR: p2Target.r },
   ], 'client plans must allow only finite in-map owned move targets');
 
-  const controlledState = {
-    ...state,
-    units: state.units.map(u => {
-      if (u.id === p1Unit.id || u.id === p2Unit.id) {
-        return { ...u, status: 'idle' as const, targetQ: undefined, targetR: undefined };
-      }
-      return u;
-    }),
-  };
-
   const next = stepSimulation(
-    controlledState,
+    state,
     DEFAULT_AI_PARAMS,
     DEFAULT_AI_PARAMS,
     undefined,
@@ -182,9 +195,10 @@ function waitForMessage(ws: WebSocket, predicate: (msg: any) => boolean): Promis
 
 async function assertDuplicateRolesRejected() {
   const port = 35_173;
-  const proc = spawn('npm', ['run', 'game-server'], {
+  const proc = spawn('./node_modules/.bin/tsx', ['game-server/src/index.ts'], {
     cwd: process.cwd(),
     env: { ...process.env, PORT: String(port), MULTIPLAYER_TICK_MS: '10000' },
+    detached: true,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
@@ -214,8 +228,41 @@ async function assertDuplicateRolesRejected() {
     guest.close();
     host.close();
   } finally {
+    await stopProcessGroup(proc);
+  }
+}
+
+async function stopProcessGroup(proc: ChildProcessWithoutNullStreams): Promise<void> {
+  if (proc.exitCode !== null || proc.signalCode !== null) return;
+  const exited = new Promise<void>(resolve => proc.once('exit', () => resolve()));
+  if (proc.pid) {
+    try {
+      process.kill(-proc.pid, 'SIGTERM');
+    } catch {
+      proc.kill('SIGTERM');
+    }
+  } else {
     proc.kill('SIGTERM');
   }
+  await Promise.race([
+    exited,
+    new Promise<void>(resolve => {
+      setTimeout(() => {
+        if (proc.exitCode === null && proc.signalCode === null) {
+          if (proc.pid) {
+            try {
+              process.kill(-proc.pid, 'SIGKILL');
+            } catch {
+              proc.kill('SIGKILL');
+            }
+          } else {
+            proc.kill('SIGKILL');
+          }
+        }
+        resolve();
+      }, 2_000);
+    }),
+  ]);
 }
 
 async function main() {
