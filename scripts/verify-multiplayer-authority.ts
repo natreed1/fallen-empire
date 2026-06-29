@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import WebSocket from 'ws';
-import { emptyAiActions } from '../src/lib/ai.ts';
-import { DEFAULT_AI_PARAMS, initMultiplayerGame, stepSimulation } from '../src/core/gameCore.ts';
-import { sanitizeClientPlan } from '../game-server/src/clientPlans.ts';
-import type { Unit } from '../src/types/game.ts';
+import { emptyAiActions } from '../src/lib/ai';
+import { DEFAULT_AI_PARAMS, initMultiplayerGame, stepSimulation } from '../src/core/gameCore';
+import { sanitizeClientPlan } from '../game-server/src/clientPlans';
+import type { Unit } from '../src/types/game';
 
 const P1 = 'player_ai';
 const P2 = 'player_ai_2';
@@ -136,8 +136,12 @@ function assertPlanSanitizerAndSimulationAuthority() {
   assert.notEqual(p1After.targetR, p1Target.r, 'P2 plan must not retarget P1 unit targetR');
 }
 
-function waitForServerReady(proc: ChildProcessWithoutNullStreams): Promise<void> {
+function waitForServerReady(proc: ChildProcess): Promise<void> {
   return new Promise((resolve, reject) => {
+    if (!proc.stdout || !proc.stderr) {
+      reject(new Error('Expected server process stdout/stderr pipes'));
+      return;
+    }
     let output = '';
     const timeout = setTimeout(() => {
       reject(new Error(`Timed out waiting for server start. Output:\n${output}`));
@@ -232,7 +236,7 @@ async function assertDuplicateRolesRejected() {
   }
 }
 
-async function stopProcessGroup(proc: ChildProcessWithoutNullStreams): Promise<void> {
+async function stopProcessGroup(proc: ChildProcess): Promise<void> {
   if (proc.exitCode !== null || proc.signalCode !== null) return;
   const exited = new Promise<void>(resolve => proc.once('exit', () => resolve()));
   if (proc.pid) {
