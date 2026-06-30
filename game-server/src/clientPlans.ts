@@ -1,6 +1,6 @@
-import { tileKey } from '../../src/types/game.ts';
-import type { SimState } from '../../src/core/gameCore.ts';
-import { emptyAiActions, type AiActions } from '../../src/lib/ai.ts';
+import { tileKey } from '../../src/types/game';
+import type { SimState } from '../../src/core/gameCore';
+import { emptyAiActions, type AiActions } from '../../src/lib/ai';
 
 type ClientMoveTarget = {
   unitId: string;
@@ -22,6 +22,7 @@ export function isLegalClientMoveTarget(
   if (!moveTarget || typeof moveTarget !== 'object') return false;
   const { unitId, toQ, toR } = moveTarget as Partial<ClientMoveTarget>;
   if (typeof unitId !== 'string') return false;
+  if (typeof toQ !== 'number' || typeof toR !== 'number') return false;
   if (!Number.isInteger(toQ) || !Number.isInteger(toR)) return false;
   if (!state.tiles.has(tileKey(toQ, toR))) return false;
 
