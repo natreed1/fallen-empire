@@ -25,7 +25,44 @@ function differentMapHex(state: ReturnType<typeof initMultiplayerGame>, unit: Un
   throw new Error('expected at least one alternate map hex');
 }
 
-const initial = initMultiplayerGame(424242);
+const initialBase = initMultiplayerGame(424242);
+const p1City = initialBase.cities.find(c => c.ownerId === P1);
+const p2City = initialBase.cities.find(c => c.ownerId === P2);
+assert(!!p1City && !!p2City, 'expected both multiplayer capitals');
+
+const initial = {
+  ...initialBase,
+  units: [
+    {
+      id: 'p1-test-unit',
+      type: 'infantry',
+      q: p1City!.q,
+      r: p1City!.r,
+      ownerId: P1,
+      hp: 100,
+      maxHp: 100,
+      xp: 0,
+      level: 0,
+      status: 'idle',
+      stance: 'aggressive',
+      nextMoveAt: 0,
+    } as Unit,
+    {
+      id: 'p2-test-unit',
+      type: 'infantry',
+      q: p2City!.q,
+      r: p2City!.r,
+      ownerId: P2,
+      hp: 100,
+      maxHp: 100,
+      xp: 0,
+      level: 0,
+      status: 'idle',
+      stance: 'aggressive',
+      nextMoveAt: 0,
+    } as Unit,
+  ],
+};
 const p1Unit = movableUnit(initial.units, P1);
 const p2Unit = movableUnit(initial.units, P2);
 const p1Target = differentMapHex(initial, p1Unit);
