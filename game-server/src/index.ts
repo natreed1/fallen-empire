@@ -19,6 +19,7 @@ import {
 import { emptyAiActions, type AiActions } from '../../src/lib/ai.ts';
 import { serializeSimState, type SerializedSimState } from '../../src/lib/simStateSerialization.ts';
 import { MAX_MATCH_ECONOMY_CYCLES } from '../../src/types/game.ts';
+import { sanitizeClientPlan } from './clientPlans.ts';
 
 const PORT = Number(process.env.PORT ?? 3333);
 const TICK_MS = Number(process.env.MULTIPLAYER_TICK_MS ?? 4000);
@@ -98,13 +99,12 @@ function broadcastSimSettings(room: Room): void {
   });
 }
 
-function mergePlan(base: AiActions, patch: Partial<AiActions>): AiActions {
+function mergePlan(base: AiActions, patch: AiActions): AiActions {
   const mt = new Map<string, { unitId: string; toQ: number; toR: number }>();
   for (const m of base.moveTargets) mt.set(m.unitId, m);
-  for (const m of patch.moveTargets ?? []) mt.set(m.unitId, m);
+  for (const m of patch.moveTargets) mt.set(m.unitId, m);
   return {
     ...base,
-    ...patch,
     moveTargets: Array.from(mt.values()),
   };
 }
@@ -161,7 +161,7 @@ const wss = new WebSocketServer({ port: PORT });
 
 wss.on('connection', (socket) => {
   socket.on('message', (data) => {
-    let msg: { type?: string; roomId?: string; role?: 'host' | 'guest'; plan?: Partial<AiActions> };
+    let msg: { type?: string; roomId?: string; role?: string; plan?: unknown };
     try {
       msg = JSON.parse(String(data));
     } catch {
@@ -218,9 +218,18 @@ wss.on('connection', (socket) => {
       return;
     }
 
-    if (msg.type === 'join' && msg.roomId && msg.role) {
+    if (msg.type === 'join' && msg.roomId && msg.role && msg.role !== 'host' && msg.role !== 'guest') {
+      socket.send(JSON.stringify({ type: 'error', message: 'Invalid role.' }));
+      return;
+    }
+
+    if (msg.type === 'join' && msg.roomId && (msg.role === 'host' || msg.role === 'guest')) {
       const room = getOrCreateRoom(msg.roomId);
       if (room.clients.has(socket)) return;
+      if (Array.from(room.clients.values()).some(c => c.role === msg.role)) {
+        socket.send(JSON.stringify({ type: 'error', message: `Room already has a ${msg.role}.` }));
+        return;
+      }
 
       if (msg.role === 'host') {
         if (!room.state) {
@@ -276,8 +285,12 @@ wss.on('connection', (socket) => {
         socket.send(JSON.stringify({ type: 'error', message: 'Not in a room' }));
         return;
       }
+      if (!found.state) {
+        socket.send(JSON.stringify({ type: 'error', message: 'Room has not started yet.' }));
+        return;
+      }
       const cur = found.pending[meta.playerId] ?? emptyAiActions();
-      found.pending[meta.playerId] = mergePlan(cur, msg.plan);
+      found.pending[meta.playerId] = mergePlan(cur, sanitizeClientPlan(msg.plan, found.state, meta.playerId));
       return;
     }
   });

@@ -67,7 +67,14 @@ export function remapSimStateForClient(state: SimState, role: 'host' | 'guest'):
     scrollSearchVisited,
     scrollRegionClaimed,
     commanders: state.commanders.map(c => ({ ...c, ownerId: mp(c.ownerId) })),
+    combatMoraleState: new Map(
+      Array.from(state.combatMoraleState.entries()).map(([key, value]) => [
+        key,
+        { ...value, ownerId: mp(value.ownerId) },
+      ]),
+    ),
     scoutMissions: state.scoutMissions.map(m => ({ ...m })),
+    scoutTowers: state.scoutTowers.map(t => ({ ...t, ownerId: mp(t.ownerId) })),
     constructions: state.constructions.map(c => ({ ...c, ownerId: mp(c.ownerId) })),
     wallSections: state.wallSections.map(w => ({ ...w, ownerId: mp(w.ownerId) })),
     defenseInstallations: state.defenseInstallations.map(d => ({
