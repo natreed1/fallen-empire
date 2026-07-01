@@ -1,6 +1,6 @@
-import type { SimState } from '../../src/core/gameCore.ts';
-import { emptyAiActions, type AiActions, type AiMoveAction } from '../../src/lib/ai.ts';
-import { tileKey } from '../../src/types/game.ts';
+import type { SimState } from '../../src/core/gameCore';
+import { emptyAiActions, type AiActions, type AiMoveAction } from '../../src/lib/ai';
+import { tileKey } from '../../src/types/game';
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -14,6 +14,7 @@ function sanitizeMoveTarget(
   if (!isObject(value)) return null;
   const { unitId, toQ, toR } = value;
   if (typeof unitId !== 'string') return null;
+  if (typeof toQ !== 'number' || typeof toR !== 'number') return null;
   if (!Number.isInteger(toQ) || !Number.isInteger(toR)) return null;
   if (!state.tiles.has(tileKey(toQ, toR))) return null;
 
