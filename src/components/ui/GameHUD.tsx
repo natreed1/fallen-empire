@@ -5630,6 +5630,7 @@ function SidePanel() {
   const cancelBuilderBuild = useGameStore(s => s.cancelBuilderBuild);
   const isHexVisible = useGameStore(s => s.isHexVisible);
   const isHexScouted = useGameStore(s => s.isHexScouted);
+  const exploredHexes = useGameStore(s => s.exploredHexes);
   const getScoutMissionAt = useGameStore(s => s.getScoutMissionAt);
   const sendScout = useGameStore(s => s.sendScout);
   const operationalArmies = useGameStore(s => s.operationalArmies);
@@ -5676,7 +5677,6 @@ function SidePanel() {
   const hasBuilding = hasBuildingAt(selectedHex.q, selectedHex.r);
   const construction = getConstructionAt(selectedHex.q, selectedHex.r);
   const tile = getTile(selectedHex.q, selectedHex.r);
-  const isVillage = tile?.hasVillage ?? false;
 
   // Military units at hex (not legacy builder units) — for village incorporation
   const militaryHere = allUnits.filter(
@@ -5717,8 +5717,12 @@ function SidePanel() {
   const hasEnemyOnly = enemyOnlyUnits.length > 0 && units.length === 0;
   const hexVisible = isHexVisible(selectedHex.q, selectedHex.r);
   const hexScouted = isHexScouted(selectedHex.q, selectedHex.r);
+  const selectedHexKey = tileKey(selectedHex.q, selectedHex.r);
+  const hexExplored = exploredHexes.has(selectedHexKey);
   const activeScoutMission = getScoutMissionAt(selectedHex.q, selectedHex.r);
   const canSeeEnemyInfo = hexVisible || hexScouted;
+  const canSeeTileInfo = hexVisible || hexScouted || hexExplored;
+  const isVillage = canSeeTileInfo && (tile?.hasVillage ?? false);
 
   // City that owns this hex (for wall ring build) — only when in own territory
   const human = players.find(p => p.isHuman);
@@ -5815,8 +5819,8 @@ function SidePanel() {
           </div>
         )}
 
-        {/* Tile description — every tile clickable with what it is */}
-        {tile && (
+        {/* Tile description — hidden map metadata stays unknown until discovered. */}
+        {tile && canSeeTileInfo && (
           <div className="px-2 py-1.5 bg-empire-stone/10 border border-empire-stone/20 rounded text-xs space-y-1">
             <div className="font-medium text-empire-parchment/90 capitalize">{tile.biome}</div>
             <div className="text-empire-parchment/60 flex flex-wrap gap-x-2 gap-y-0.5">
@@ -5835,8 +5839,14 @@ function SidePanel() {
             </div>
           </div>
         )}
+        {tile && !canSeeTileInfo && (
+          <div className="px-2 py-1.5 bg-empire-stone/10 border border-empire-stone/20 rounded text-xs space-y-1">
+            <div className="font-medium text-empire-parchment/70">Unknown terrain</div>
+            <div className="text-empire-parchment/45">Scout or move nearby to reveal this hex.</div>
+          </div>
+        )}
 
-        {tile?.specialTerrainKind && (() => {
+        {canSeeTileInfo && tile?.specialTerrainKind && (() => {
           const terrainName = SPECIAL_REGION_DISPLAY_NAME[tile.specialTerrainKind];
           const rk = tile.specialTerrainKind;
           const hid = human?.id ?? '';
@@ -5968,7 +5978,7 @@ function SidePanel() {
           ))}
 
         {/* Resource deposit indicator */}
-        {tile?.hasQuarryDeposit && !hasBuilding && (
+        {canSeeTileInfo && tile?.hasQuarryDeposit && !hasBuilding && (
           <div className="flex items-center gap-2 px-2 py-1.5 bg-stone-800/30 border border-stone-500/30 rounded text-xs">
             <span className="text-stone-400 text-sm">&#9830;</span>
             <div>
@@ -5977,7 +5987,7 @@ function SidePanel() {
             </div>
           </div>
         )}
-        {tile?.hasMineDeposit && !hasBuilding && (
+        {canSeeTileInfo && tile?.hasMineDeposit && !hasBuilding && (
           <div className="flex items-center gap-2 px-2 py-1.5 bg-amber-900/20 border border-amber-700/30 rounded text-xs">
             <span className="text-amber-500 text-sm">&#9830;</span>
             <div>
@@ -5986,7 +5996,7 @@ function SidePanel() {
             </div>
           </div>
         )}
-        {tile?.hasGoldMineDeposit && !hasBuilding && (
+        {canSeeTileInfo && tile?.hasGoldMineDeposit && !hasBuilding && (
           <div className="flex items-center gap-2 px-2 py-1.5 bg-yellow-900/20 border border-yellow-600/30 rounded text-xs">
             <span className="text-yellow-500 text-sm">&#9830;</span>
             <div>
@@ -5995,7 +6005,7 @@ function SidePanel() {
             </div>
           </div>
         )}
-        {tile?.hasAncientCity && (
+        {canSeeTileInfo && tile?.hasAncientCity && (
           <div className="flex items-center gap-2 px-2 py-1.5 bg-purple-900/25 border border-purple-500/40 rounded text-xs">
             <span className="text-purple-400 text-sm">&#9962;</span>
             <div>
@@ -6105,9 +6115,9 @@ function SidePanel() {
             cancelBuilderBuild={cancelBuilderBuild}
             hasBuildingOnHex={hasBuilding}
             hasCityAtHex={!!cityAtDefenseHex}
-            tileHasMineDeposit={tile?.hasMineDeposit}
-            tileHasQuarryDeposit={tile?.hasQuarryDeposit}
-            tileHasGoldMineDeposit={tile?.hasGoldMineDeposit}
+            tileHasMineDeposit={canSeeTileInfo ? tile?.hasMineDeposit : false}
+            tileHasQuarryDeposit={canSeeTileInfo ? tile?.hasQuarryDeposit : false}
+            tileHasGoldMineDeposit={canSeeTileInfo ? tile?.hasGoldMineDeposit : false}
           />
         )}
 
