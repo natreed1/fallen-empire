@@ -12,7 +12,7 @@ import {
 import { emptyAiActions } from '../src/lib/ai.ts';
 import { remapSimStateForClient } from '../src/lib/multiplayerRemap.ts';
 import { sanitizeClientPlan } from '../game-server/src/clientPlans.ts';
-import { tileKey } from '../src/types/game.ts';
+import { tileKey, type Unit } from '../src/types/game.ts';
 
 const P1 = 'player_ai';
 const P2 = 'player_ai_2';
@@ -28,8 +28,39 @@ function findDifferentTile(state: SimState, q: number, r: number): { q: number; 
   throw new Error('No alternate map tile found');
 }
 
+function unitAt(id: string, ownerId: string, q: number, r: number): Unit {
+  return {
+    id,
+    ownerId,
+    q,
+    r,
+    type: 'infantry',
+    hp: 100,
+    maxHp: 100,
+    xp: 0,
+    level: 1,
+    status: 'idle',
+    stance: 'aggressive',
+    nextMoveAt: 0,
+  };
+}
+
+function withSeedUnits(state: SimState): SimState {
+  const p1City = state.cities.find(city => city.ownerId === P1);
+  const p2City = state.cities.find(city => city.ownerId === P2);
+  assert(p1City, 'Expected a P1 city in multiplayer seed');
+  assert(p2City, 'Expected a P2 city in multiplayer seed');
+  return {
+    ...state,
+    units: [
+      unitAt('regression-p1-unit', P1, p1City.q, p1City.r),
+      unitAt('regression-p2-unit', P2, p2City.q, p2City.r),
+    ],
+  };
+}
+
 function verifyDirectSimulationAuthority(): void {
-  const state = initMultiplayerGame(424242);
+  const state = withSeedUnits(initMultiplayerGame(424242));
   const p1Unit = state.units.find(unit => unit.ownerId === P1 && unit.hp > 0);
   const p2Unit = state.units.find(unit => unit.ownerId === P2 && unit.hp > 0);
   assert(p1Unit, 'Expected a P1 unit in multiplayer seed');
@@ -86,7 +117,7 @@ function verifyDirectSimulationAuthority(): void {
 }
 
 function verifyPlanSanitizer(): void {
-  const state = initMultiplayerGame(777777);
+  const state = withSeedUnits(initMultiplayerGame(777777));
   const p1Unit = state.units.find(unit => unit.ownerId === P1 && unit.hp > 0);
   const p2Unit = state.units.find(unit => unit.ownerId === P2 && unit.hp > 0);
   assert(p1Unit, 'Expected P1 unit for sanitizer test');
