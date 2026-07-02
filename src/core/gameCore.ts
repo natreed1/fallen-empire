@@ -911,7 +911,15 @@ export function stepSimulation(
     for (const mt of aiPlan.moveTargets) {
       const unit = units.find(u => u.id === mt.unitId);
       // Allow idle, moving, or starving units to receive move targets (not fighting) so headless sims stay decisive
-      if (unit && unit.hp > 0 && unit.status !== 'fighting') {
+      if (
+        unit &&
+        unit.ownerId === aiPlayerId &&
+        unit.hp > 0 &&
+        unit.status !== 'fighting' &&
+        Number.isInteger(mt.toQ) &&
+        Number.isInteger(mt.toR) &&
+        tilesMut.has(tileKey(mt.toQ, mt.toR))
+      ) {
         applyDeployFlagsForMoveMutable(unit, mt.toQ, mt.toR, cities);
         clearPatrolFieldsMutable(unit);
         unit.targetQ = mt.toQ;

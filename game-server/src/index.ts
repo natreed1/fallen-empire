@@ -19,6 +19,7 @@ import {
 import { emptyAiActions, type AiActions } from '../../src/lib/ai.ts';
 import { serializeSimState, type SerializedSimState } from '../../src/lib/simStateSerialization.ts';
 import { MAX_MATCH_ECONOMY_CYCLES } from '../../src/types/game.ts';
+import { sanitizeClientPlan } from './clientPlans.ts';
 
 const PORT = Number(process.env.PORT ?? 3333);
 const TICK_MS = Number(process.env.MULTIPLAYER_TICK_MS ?? 4000);
@@ -81,11 +82,18 @@ function broadcastLobby(room: Room): void {
     type: 'lobby',
     players: room.clients.size,
     maxPlayers: 2,
-    started: room.clients.size >= 2 && room.state != null,
+    started: roomHasRole(room, 'host') && roomHasRole(room, 'guest') && room.state != null,
     tickMs: room.effectiveTickMs,
     paused: room.paused,
     speedMultiplier: room.speedMultiplier,
   });
+}
+
+function roomHasRole(room: Room, role: ClientMeta['role']): boolean {
+  for (const client of room.clients.values()) {
+    if (client.role === role) return true;
+  }
+  return false;
 }
 
 function broadcastSimSettings(room: Room): void {
@@ -98,13 +106,12 @@ function broadcastSimSettings(room: Room): void {
   });
 }
 
-function mergePlan(base: AiActions, patch: Partial<AiActions>): AiActions {
+function mergePlan(base: AiActions, patch: AiActions): AiActions {
   const mt = new Map<string, { unitId: string; toQ: number; toR: number }>();
   for (const m of base.moveTargets) mt.set(m.unitId, m);
-  for (const m of patch.moveTargets ?? []) mt.set(m.unitId, m);
+  for (const m of patch.moveTargets) mt.set(m.unitId, m);
   return {
-    ...base,
-    ...patch,
+    ...emptyAiActions(),
     moveTargets: Array.from(mt.values()),
   };
 }
@@ -137,7 +144,7 @@ function stepRoom(room: Room): void {
 
 function maybeStartTick(room: Room): void {
   if (room.tickTimer) return;
-  if (room.paused || room.clients.size < 2 || !room.state) return;
+  if (room.paused || !room.state || !roomHasRole(room, 'host') || !roomHasRole(room, 'guest')) return;
   const ms = roomEffectiveTickMs(room);
   room.effectiveTickMs = ms;
   room.tickTimer = setInterval(() => stepRoom(room), ms);
@@ -161,7 +168,7 @@ const wss = new WebSocketServer({ port: PORT });
 
 wss.on('connection', (socket) => {
   socket.on('message', (data) => {
-    let msg: { type?: string; roomId?: string; role?: 'host' | 'guest'; plan?: Partial<AiActions> };
+    let msg: { type?: string; roomId?: string; role?: unknown; plan?: unknown };
     try {
       msg = JSON.parse(String(data));
     } catch {
@@ -219,10 +226,18 @@ wss.on('connection', (socket) => {
     }
 
     if (msg.type === 'join' && msg.roomId && msg.role) {
+      if (msg.role !== 'host' && msg.role !== 'guest') {
+        socket.send(JSON.stringify({ type: 'error', message: 'Invalid room role.' }));
+        return;
+      }
       const room = getOrCreateRoom(msg.roomId);
       if (room.clients.has(socket)) return;
 
       if (msg.role === 'host') {
+        if (room.clients.size >= 2 || roomHasRole(room, 'host')) {
+          socket.send(JSON.stringify({ type: 'error', message: 'Host slot is already occupied.' }));
+          return;
+        }
         if (!room.state) {
           const seed = Math.floor(Math.random() * 1e9);
           room.state = initMultiplayerGame(seed);
@@ -233,8 +248,8 @@ wss.on('connection', (socket) => {
           socket.send(JSON.stringify({ type: 'error', message: 'Room not created yet — host must join first.' }));
           return;
         }
-        if (room.clients.size >= 2) {
-          socket.send(JSON.stringify({ type: 'error', message: 'Room is full.' }));
+        if (room.clients.size >= 2 || roomHasRole(room, 'guest')) {
+          socket.send(JSON.stringify({ type: 'error', message: 'Guest slot is already occupied.' }));
           return;
         }
         room.clients.set(socket, { socket, role: 'guest', playerId: P2 });
@@ -276,8 +291,12 @@ wss.on('connection', (socket) => {
         socket.send(JSON.stringify({ type: 'error', message: 'Not in a room' }));
         return;
       }
+      if (!found.state) {
+        socket.send(JSON.stringify({ type: 'error', message: 'Room has no active state.' }));
+        return;
+      }
       const cur = found.pending[meta.playerId] ?? emptyAiActions();
-      found.pending[meta.playerId] = mergePlan(cur, msg.plan);
+      found.pending[meta.playerId] = mergePlan(cur, sanitizeClientPlan(found.state, meta.playerId, msg.plan));
       return;
     }
   });
