@@ -8,11 +8,11 @@ import {
   initMultiplayerGame,
   stepSimulation,
   type SimState,
-} from '../src/core/gameCore.ts';
-import { emptyAiActions } from '../src/lib/ai.ts';
-import { remapSimStateForClient } from '../src/lib/multiplayerRemap.ts';
-import { sanitizeClientPlan } from '../game-server/src/clientPlans.ts';
-import { tileKey, type Unit } from '../src/types/game.ts';
+} from '../src/core/gameCore';
+import { emptyAiActions } from '../src/lib/ai';
+import { remapSimStateForClient } from '../src/lib/multiplayerRemap';
+import { sanitizeClientPlan } from '../game-server/src/clientPlans';
+import { tileKey, type Unit } from '../src/types/game';
 
 const P1 = 'player_ai';
 const P2 = 'player_ai_2';
