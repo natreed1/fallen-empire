@@ -28,14 +28,22 @@ interface MapControllerProps {
 export default function MapController({ target, applyTargetUpdates = true }: MapControllerProps) {
   const controlsRef = useRef<any>(null);
   const appliedInitialTargetRef = useRef(false);
+  const lastAppliedTargetRef = useRef<[number, number, number] | null>(null);
   const { camera } = useThree();
 
   useEffect(() => {
     if (target && controlsRef.current) {
-      if (!applyTargetUpdates && appliedInitialTargetRef.current) return;
+      const last = lastAppliedTargetRef.current;
+      const targetChanged =
+        !last ||
+        last[0] !== target[0] ||
+        last[1] !== target[1] ||
+        last[2] !== target[2];
+      if (!applyTargetUpdates && appliedInitialTargetRef.current && !targetChanged) return;
       controlsRef.current.target.set(...target);
       controlsRef.current.update();
       appliedInitialTargetRef.current = true;
+      lastAppliedTargetRef.current = target;
     }
   }, [target, applyTargetUpdates]);
 
