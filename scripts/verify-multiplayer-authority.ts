@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
-import { initMultiplayerGame, stepSimulation } from '../src/core/gameCore';
+import { DEFAULT_AI_PARAMS, initMultiplayerGame, stepSimulation } from '../src/core/gameCore';
 import { emptyAiActions } from '../src/lib/ai';
 import { remapSimStateForClient } from '../src/lib/multiplayerRemap';
 import { sanitizeClientPlanPatch } from '../game-server/src/clientPlans';
@@ -40,8 +40,8 @@ function verifyStepSimulationMoveAuthority(): void {
 
   const next = stepSimulation(
     state,
-    undefined,
-    undefined,
+    DEFAULT_AI_PARAMS,
+    DEFAULT_AI_PARAMS,
     undefined,
     undefined,
     {
