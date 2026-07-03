@@ -489,11 +489,14 @@ export default function GameScene() {
       prevPhaseForCameraRef.current = phase;
       return;
     }
+    const enteredPlaying = prevPhaseForCameraRef.current !== 'playing' && phase === 'playing';
     if (isPlayableCameraMode) {
+      if (phase !== 'playing' || enteredPlaying) {
+        setMapTarget(liveTarget);
+      }
       prevPhaseForCameraRef.current = phase;
       return;
     }
-    const enteredPlaying = prevPhaseForCameraRef.current !== 'playing' && phase === 'playing';
     // Keep syncing while not in the match (menus / placement); on first frame of play, snap to capital / live target
     if (phase !== 'playing' || enteredPlaying) {
       setMapTarget(liveTarget);
