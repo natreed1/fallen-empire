@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn, type ChildProcessByStdio } from 'node:child_process';
+import type { Readable } from 'node:stream';
 import { setTimeout as delay } from 'node:timers/promises';
 import { WebSocket } from 'ws';
 import { DEFAULT_AI_PARAMS, initMultiplayerGame, stepSimulation, type SimState } from '../src/core/gameCore';
@@ -9,6 +10,7 @@ import { mergePlans, sanitizeClientPlan } from '../game-server/src/clientPlans';
 
 const P1 = 'player_ai';
 const P2 = 'player_ai_2';
+type PipedServerProcess = ChildProcessByStdio<null, Readable, Readable>;
 
 function destinationAwayFrom(state: SimState, unit: { q: number; r: number; targetQ?: number; targetR?: number }) {
   for (const tile of state.tiles.values()) {
@@ -131,7 +133,7 @@ function verifyPlanSanitizer(): void {
   assert.deepEqual(merged.moveTargets, [{ unitId: p1Unit.id, ...ownDest }]);
 }
 
-async function waitForServerReady(server: ChildProcessWithoutNullStreams): Promise<void> {
+async function waitForServerReady(server: PipedServerProcess): Promise<void> {
   let output = '';
   await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`server did not start:\n${output}`)), 10_000);
