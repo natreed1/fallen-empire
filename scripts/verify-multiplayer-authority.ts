@@ -228,6 +228,7 @@ async function main(): Promise<void> {
   verifyPlanSanitizer();
   await verifyLiveServerGuards();
   console.log('multiplayer authority regression checks passed');
+  process.exit(0);
 }
 
 main().catch(error => {
