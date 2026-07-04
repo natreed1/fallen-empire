@@ -4,6 +4,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { WebSocket } from 'ws';
 import { DEFAULT_AI_PARAMS, initMultiplayerGame, stepSimulation, type SimState } from '../src/core/gameCore';
 import { emptyAiActions, type AiActions } from '../src/lib/ai';
+import type { Unit } from '../src/types/game';
 import { mergePlans, sanitizeClientPlan } from '../game-server/src/clientPlans';
 
 const P1 = 'player_ai';
@@ -22,8 +23,41 @@ function emptyPlanWithMoves(moveTargets: AiActions['moveTargets']): AiActions {
   return { ...emptyAiActions(), moveTargets };
 }
 
+function stateWithTestUnits(seed: number): SimState {
+  const state = initMultiplayerGame(seed);
+  const p1City = state.cities.find(c => c.ownerId === P1);
+  const p2City = state.cities.find(c => c.ownerId === P2);
+  assert.ok(p1City, 'expected a P1 city in initial multiplayer state');
+  assert.ok(p2City, 'expected a P2 city in initial multiplayer state');
+
+  const mkUnit = (id: string, ownerId: string, q: number, r: number, originCityId: string): Unit => ({
+    id,
+    ownerId,
+    q,
+    r,
+    originCityId,
+    type: 'infantry',
+    hp: 100,
+    maxHp: 100,
+    xp: 0,
+    level: 1,
+    armsLevel: 1,
+    status: 'idle',
+    stance: 'aggressive',
+    nextMoveAt: 0,
+  });
+
+  return {
+    ...state,
+    units: [
+      mkUnit('p1-test-unit', P1, p1City.q, p1City.r, p1City.id),
+      mkUnit('p2-test-unit', P2, p2City.q, p2City.r, p2City.id),
+    ],
+  };
+}
+
 function verifyDirectSimulationAuthority(): void {
-  const state = initMultiplayerGame(12345);
+  const state = stateWithTestUnits(12345);
   const p1Unit = state.units.find(u => u.ownerId === P1 && u.hp > 0);
   const p2Unit = state.units.find(u => u.ownerId === P2 && u.hp > 0);
   assert.ok(p1Unit, 'expected a P1 unit in initial multiplayer state');
@@ -60,7 +94,7 @@ function verifyDirectSimulationAuthority(): void {
 }
 
 function verifyPlanSanitizer(): void {
-  const state = initMultiplayerGame(67890);
+  const state = stateWithTestUnits(67890);
   const p1Unit = state.units.find(u => u.ownerId === P1 && u.hp > 0);
   const p2Unit = state.units.find(u => u.ownerId === P2 && u.hp > 0);
   assert.ok(p1Unit, 'expected a P1 unit for sanitizer test');
