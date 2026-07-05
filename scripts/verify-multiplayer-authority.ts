@@ -7,6 +7,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
 import WebSocket from 'ws';
 import { initMultiplayerGame, stepSimulation, DEFAULT_AI_PARAMS } from '../src/core/gameCore';
 import { emptyAiActions } from '../src/lib/ai';
+import type { City, Unit } from '../src/types/game';
 
 const P1 = 'player_ai';
 const P2 = 'player_ai_2';
@@ -19,13 +20,31 @@ function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+function testUnit(id: string, ownerId: string, city: City): Unit {
+  return {
+    id,
+    ownerId,
+    type: 'infantry',
+    q: city.q,
+    r: city.r,
+    hp: 100,
+    maxHp: 100,
+    xp: 0,
+    level: 0,
+    status: 'idle',
+    stance: 'aggressive',
+    nextMoveAt: 0,
+  };
+}
+
 function verifyDirectSimulationAuthority(): void {
-  const state = initMultiplayerGame(424242);
-  const p1Unit = state.units.find(u => u.ownerId === P1 && u.hp > 0);
-  const p2Unit = state.units.find(u => u.ownerId === P2 && u.hp > 0);
-  const p1City = state.cities.find(c => c.ownerId === P1);
-  const p2City = state.cities.find(c => c.ownerId === P2);
-  assert(p1Unit && p2Unit && p1City && p2City, 'multiplayer seed should create units and cities for both players');
+  const base = initMultiplayerGame(424242);
+  const p1City = base.cities.find(c => c.ownerId === P1);
+  const p2City = base.cities.find(c => c.ownerId === P2);
+  assert(p1City && p2City, 'multiplayer seed should create cities for both players');
+  const p1Unit = testUnit('verify-p1-unit', P1, p1City);
+  const p2Unit = testUnit('verify-p2-unit', P2, p2City);
+  const state = { ...base, units: [p1Unit, p2Unit] };
 
   const rejected = stepSimulation(
     state,
