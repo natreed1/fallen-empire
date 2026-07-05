@@ -4,6 +4,7 @@
  * Run with: npm exec -- tsx scripts/verify-multiplayer-authority.ts
  */
 import { spawn, type ChildProcess } from 'child_process';
+import { readFileSync } from 'fs';
 import WebSocket from 'ws';
 import { initMultiplayerGame, stepSimulation, DEFAULT_AI_PARAMS } from '../src/core/gameCore';
 import { emptyAiActions } from '../src/lib/ai';
@@ -90,6 +91,30 @@ function verifyDirectSimulationAuthority(): void {
   assert(
     acceptedP2Unit.targetQ === p1City.q && acceptedP2Unit.targetR === p1City.r,
     'P2 should still be able to move its own unit',
+  );
+}
+
+function verifyFogRenderingGuards(): void {
+  const hexGrid = readFileSync('src/components/game/HexGrid.tsx', 'utf8');
+  assert(hexGrid.includes('if (!tile) return null;'), 'city markers must skip undiscovered city tiles');
+  assert(hexGrid.includes('if (!tile) continue;'), 'building markers must skip undiscovered building tiles');
+  assert(hexGrid.includes('opacity: 0.93'), 'unknown fog overlay should remain near-opaque');
+  assert(
+    hexGrid.includes('for (const tile of discoveredTilesMap.values())'),
+    'terrain biome layers must render from discovered tiles only',
+  );
+  assert(
+    hexGrid.includes('for (const t of discoveredTilesMap.values())'),
+    'shoreline layers must render from discovered tiles only',
+  );
+  assert(hexGrid.includes('tilesMap={discoveredTilesMap}'), 'mountain snow must use discovered tile adjacency');
+  assert(
+    hexGrid.includes('c.ownerId !== PLAYER_HUMAN_ID && discoveredHexes.has(tileKey(c.q, c.r))'),
+    'attack-city tactical hints must not reveal undiscovered cities',
+  );
+  assert(
+    hexGrid.includes('if (!discoveredHexes.has(k)) continue;'),
+    'attack-building tactical hints must not reveal undiscovered buildings',
   );
 }
 
@@ -213,6 +238,7 @@ async function verifyLiveServerHardening(): Promise<void> {
 
 async function main(): Promise<void> {
   verifyDirectSimulationAuthority();
+  verifyFogRenderingGuards();
   await verifyLiveServerHardening();
   console.log('verify-multiplayer-authority: ok');
 }

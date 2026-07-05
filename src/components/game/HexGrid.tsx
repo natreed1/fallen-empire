@@ -1383,7 +1383,7 @@ function UnknownFogOverlay({ tiles }: { tiles: Tile[] }) {
       new THREE.MeshBasicMaterial({
         color: '#06070d',
         transparent: true,
-        opacity: 0.62,
+        opacity: 0.93,
         depthWrite: false,
       }),
     [],
@@ -1577,6 +1577,7 @@ function CityMarkers({ cities, tiles, players }: { cities: City[]; tiles: Map<st
     <group>
       {cities.map(city => {
         const tile = tiles.get(tileKey(city.q, city.r));
+        if (!tile) return null;
         const h = tile?.height ?? 0.3;
         const [x, z] = axialToWorld(city.q, city.r, HEX_RADIUS);
         const isHuman = city.ownerId === PLAYER_HUMAN_ID;
@@ -1675,6 +1676,7 @@ function BuildingMarkers({ cities, tiles }: { cities: City[]; tiles: Map<string,
     for (const city of cities) {
       for (const b of city.buildings) {
         const tile = tiles.get(tileKey(b.q, b.r));
+        if (!tile) continue;
         const h = tile?.height ?? 0.3;
         const [x, z] = axialToWorld(b.q, b.r, HEX_RADIUS);
         const yOff = BUILDING_Y_OFFSET[b.type] ?? 0.4;
@@ -3615,26 +3617,26 @@ export default function HexGrid() {
     const groups: Record<Biome, Tile[]> = {
       water: [], plains: [], forest: [], mountain: [], desert: [],
     };
-    for (const tile of tiles.values()) {
+    for (const tile of discoveredTilesMap.values()) {
       groups[tile.biome].push(tile);
     }
     return groups;
-  }, [tiles]);
+  }, [discoveredTilesMap]);
 
   const terrainShoreline = useMemo(() => {
     const coastalWater: Tile[] = [];
     const deepWater: Tile[] = [];
     const beachLand: Tile[] = [];
-    for (const t of tiles.values()) {
+    for (const t of discoveredTilesMap.values()) {
       if (t.biome === 'water') {
-        if (isCoastalWaterTile(t, tiles)) coastalWater.push(t);
+        if (isCoastalWaterTile(t, discoveredTilesMap)) coastalWater.push(t);
         else deepWater.push(t);
-      } else if (isBeachLandTile(t, tiles)) {
+      } else if (isBeachLandTile(t, discoveredTilesMap)) {
         beachLand.push(t);
       }
     }
     return { coastalWater, deepWater, beachLand };
-  }, [tiles]);
+  }, [discoveredTilesMap]);
 
   // Territory by player
   const territoryByPlayer = useMemo(() => {
@@ -3710,10 +3712,10 @@ export default function HexGrid() {
   const tacticalAttackHintTiles = useMemo(() => {
     if (assigningTacticalForSelectedStacks?.orderType !== 'attack_city') return [];
     return cities
-      .filter(c => c.ownerId !== PLAYER_HUMAN_ID)
+      .filter(c => c.ownerId !== PLAYER_HUMAN_ID && discoveredHexes.has(tileKey(c.q, c.r)))
       .map(c => tiles.get(tileKey(c.q, c.r)))
       .filter((t): t is Tile => !!t);
-  }, [assigningTacticalForSelectedStacks, cities, tiles]);
+  }, [assigningTacticalForSelectedStacks, cities, discoveredHexes, tiles]);
 
   const tacticalRaidBuildingHintTiles = useMemo(() => {
     if (assigningTacticalForSelectedStacks?.orderType !== 'attack_building_pick') return [];
@@ -3724,6 +3726,7 @@ export default function HexGrid() {
       for (const b of city.buildings) {
         if (!isCityBuildingOperational(ensureCityBuildingHp(b))) continue;
         const k = tileKey(b.q, b.r);
+        if (!discoveredHexes.has(k)) continue;
         if (seen.has(k)) continue;
         seen.add(k);
         const t = tiles.get(k);
@@ -3731,7 +3734,7 @@ export default function HexGrid() {
       }
     }
     return out;
-  }, [assigningTacticalForSelectedStacks, cities, tiles]);
+  }, [assigningTacticalForSelectedStacks, cities, discoveredHexes, tiles]);
 
   const tacticalPendingAttackTiles = useMemo(() => {
     if (!pendingTacticalOrders) return [];
@@ -3814,7 +3817,7 @@ export default function HexGrid() {
       <BeachSandLayer tiles={terrainShoreline.beachLand} />
       <MedievalHexOutlineLayer tiles={Array.from(discoveredTilesMap.values())} />
       <MapEdgeOutlineLayer tiles={mapEdgeOutlineTiles} />
-      <MountainSnowLayer tiles={terrainBiomeGroups.mountain} tilesMap={tiles} />
+      <MountainSnowLayer tiles={terrainBiomeGroups.mountain} tilesMap={discoveredTilesMap} />
 
       {/* Map features */}
       <RoadOverlay tiles={biomeGroups.roadTiles} />
