@@ -3,7 +3,7 @@
  *
  * Run with: npm exec -- tsx scripts/verify-multiplayer-authority.ts
  */
-import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
+import { spawn, type ChildProcess } from 'child_process';
 import WebSocket from 'ws';
 import { initMultiplayerGame, stepSimulation, DEFAULT_AI_PARAMS } from '../src/core/gameCore';
 import { emptyAiActions } from '../src/lib/ai';
@@ -93,8 +93,9 @@ function verifyDirectSimulationAuthority(): void {
   );
 }
 
-function waitForServerReady(child: ChildProcessWithoutNullStreams): Promise<string> {
+function waitForServerReady(child: ChildProcess): Promise<string> {
   return new Promise((resolve, reject) => {
+    assert(child.stdout && child.stderr, 'server stdio pipes should be available');
     let output = '';
     const timeout = setTimeout(() => reject(new Error(`server did not start:\n${output}`)), 10_000);
     const onData = (chunk: Buffer) => {
