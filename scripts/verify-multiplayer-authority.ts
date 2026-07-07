@@ -7,10 +7,10 @@ import {
   initMultiplayerGame,
   stepSimulation,
   type SimState,
-} from '../src/core/gameCore.ts';
-import { emptyAiActions, type AiActions } from '../src/lib/ai.ts';
-import { sanitizeClientPlan } from '../game-server/src/clientPlans.ts';
-import { type Unit } from '../src/types/game.ts';
+} from '../src/core/gameCore';
+import { emptyAiActions, type AiActions } from '../src/lib/ai';
+import { sanitizeClientPlan } from '../game-server/src/clientPlans';
+import { type Unit } from '../src/types/game';
 
 const P1 = 'player_ai';
 const P2 = 'player_ai_2';
@@ -194,7 +194,7 @@ async function testLiveServerGuards(): Promise<void> {
       MULTIPLAYER_TICK_MS: '250',
     },
     detached: process.platform !== 'win32',
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: ['pipe', 'pipe', 'pipe'],
   });
 
   const sockets: WebSocket[] = [];

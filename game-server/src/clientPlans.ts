@@ -1,5 +1,5 @@
-import { emptyAiActions, type AiActions } from '../../src/lib/ai.ts';
-import { tileKey, type Tile, type Unit } from '../../src/types/game.ts';
+import { emptyAiActions, type AiActions } from '../../src/lib/ai';
+import { tileKey, type Tile, type Unit } from '../../src/types/game';
 
 type MoveTarget = AiActions['moveTargets'][number];
 
