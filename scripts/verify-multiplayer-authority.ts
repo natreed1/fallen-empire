@@ -186,13 +186,14 @@ async function closeSocket(ws: WebSocket): Promise<void> {
 
 async function testLiveServerGuards(): Promise<void> {
   const port = 39871;
-  const server = spawn('npm', ['run', 'game-server'], {
+  const server = spawn('node_modules/.bin/tsx', ['game-server/src/index.ts'], {
     cwd: process.cwd(),
     env: {
       ...process.env,
       PORT: String(port),
       MULTIPLAYER_TICK_MS: '250',
     },
+    detached: process.platform !== 'win32',
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
@@ -231,7 +232,15 @@ async function testLiveServerGuards(): Promise<void> {
     assert.equal(server.exitCode, null, 'server should survive malformed client plans');
   } finally {
     await Promise.allSettled(sockets.map(closeSocket));
-    server.kill('SIGTERM');
+    if (server.pid && process.platform !== 'win32') {
+      try {
+        process.kill(-server.pid, 'SIGTERM');
+      } catch {
+        server.kill('SIGTERM');
+      }
+    } else {
+      server.kill('SIGTERM');
+    }
     await Promise.race([
       once(server, 'exit'),
       new Promise(resolve => setTimeout(resolve, 1000)),
