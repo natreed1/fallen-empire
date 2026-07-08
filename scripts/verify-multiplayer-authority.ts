@@ -179,6 +179,8 @@ function waitForServerReady(server: ChildProcess): Promise<void> {
       reject(new Error('server process is missing stdout/stderr pipes'));
       return;
     }
+    const stdout = server.stdout;
+    const stderr = server.stderr;
     let output = '';
     const timeout = setTimeout(() => {
       cleanup();
@@ -200,13 +202,13 @@ function waitForServerReady(server: ChildProcess): Promise<void> {
 
     function cleanup() {
       clearTimeout(timeout);
-      server.stdout.off('data', onData);
-      server.stderr.off('data', onData);
+      stdout.off('data', onData);
+      stderr.off('data', onData);
       server.off('exit', onExit);
     }
 
-    server.stdout.on('data', onData);
-    server.stderr.on('data', onData);
+    stdout.on('data', onData);
+    stderr.on('data', onData);
     server.once('exit', onExit);
   });
 }
