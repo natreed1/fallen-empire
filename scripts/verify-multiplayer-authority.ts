@@ -3,13 +3,13 @@
  *
  * Run with: npm exec -- tsx scripts/verify-multiplayer-authority.ts
  */
-import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
+import { spawn, type ChildProcess } from 'child_process';
 import path from 'path';
 import WebSocket from 'ws';
-import { DEFAULT_AI_PARAMS, initMultiplayerGame, stepSimulation, type SimState } from '../src/core/gameCore.ts';
-import { emptyAiActions } from '../src/lib/ai.ts';
-import { sanitizeClientPlanPatch } from '../game-server/src/clientPlans.ts';
-import type { Unit } from '../src/types/game.ts';
+import { DEFAULT_AI_PARAMS, initMultiplayerGame, stepSimulation, type SimState } from '../src/core/gameCore';
+import { emptyAiActions } from '../src/lib/ai';
+import { sanitizeClientPlanPatch } from '../game-server/src/clientPlans';
+import type { Unit } from '../src/types/game';
 
 const P1 = 'player_ai';
 const P2 = 'player_ai_2';
@@ -20,20 +20,20 @@ function assert(cond: boolean, msg: string): asserts cond {
 
 function firstUnit(state: SimState, ownerId: string) {
   const unit = state.units.find(u => u.ownerId === ownerId && u.hp > 0);
-  assert(unit, `missing live unit for ${ownerId}`);
+  assert(unit != null, `missing live unit for ${ownerId}`);
   return unit;
 }
 
 function targetAwayFrom(state: SimState, q: number, r: number) {
   const tile = Array.from(state.tiles.values()).find(t => t.q !== q || t.r !== r);
-  assert(tile, 'missing alternate target tile');
+  assert(tile != null, 'missing alternate target tile');
   return tile;
 }
 
 function withAuthorityFixtureUnits(state: SimState): SimState {
   const p1City = state.cities.find(c => c.ownerId === P1);
   const p2City = state.cities.find(c => c.ownerId === P2);
-  assert(p1City && p2City, 'missing multiplayer start cities');
+  assert(p1City != null && p2City != null, 'missing multiplayer start cities');
   const makeUnit = (id: string, ownerId: string, q: number, r: number): Unit => ({
     id,
     ownerId,
@@ -75,7 +75,7 @@ function verifyDirectStepSimulationAuthority(): void {
     { humanPlansByPlayerId: { [P1]: attackerPlan, [P2]: emptyAiActions() } },
   );
   const movedVictim = next.units.find(u => u.id === victim.id);
-  assert(movedVictim, 'victim unit disappeared during authority regression');
+  assert(movedVictim != null, 'victim unit disappeared during authority regression');
   assert(
     movedVictim.targetQ !== target.q || movedVictim.targetR !== target.r,
     'P1 plan was able to retarget a P2 unit',
@@ -173,8 +173,12 @@ async function joinRoom(port: number, roomId: string, role: 'host' | 'guest') {
   return { ws, reply };
 }
 
-function waitForServerReady(server: ChildProcessWithoutNullStreams): Promise<void> {
+function waitForServerReady(server: ChildProcess): Promise<void> {
   return new Promise((resolve, reject) => {
+    if (!server.stdout || !server.stderr) {
+      reject(new Error('server process is missing stdout/stderr pipes'));
+      return;
+    }
     let output = '';
     const timeout = setTimeout(() => {
       cleanup();
