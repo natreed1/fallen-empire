@@ -9,6 +9,7 @@ import WebSocket from 'ws';
 import { DEFAULT_AI_PARAMS, initMultiplayerGame, stepSimulation, type SimState } from '../src/core/gameCore.ts';
 import { emptyAiActions } from '../src/lib/ai.ts';
 import { sanitizeClientPlanPatch } from '../game-server/src/clientPlans.ts';
+import type { Unit } from '../src/types/game.ts';
 
 const P1 = 'player_ai';
 const P2 = 'player_ai_2';
@@ -29,8 +30,36 @@ function targetAwayFrom(state: SimState, q: number, r: number) {
   return tile;
 }
 
+function withAuthorityFixtureUnits(state: SimState): SimState {
+  const p1City = state.cities.find(c => c.ownerId === P1);
+  const p2City = state.cities.find(c => c.ownerId === P2);
+  assert(p1City && p2City, 'missing multiplayer start cities');
+  const makeUnit = (id: string, ownerId: string, q: number, r: number): Unit => ({
+    id,
+    ownerId,
+    q,
+    r,
+    type: 'infantry',
+    hp: 10,
+    maxHp: 10,
+    xp: 0,
+    level: 0,
+    status: 'idle',
+    stance: 'aggressive',
+    nextMoveAt: 0,
+  });
+  return {
+    ...state,
+    units: [
+      ...state.units,
+      makeUnit('authority-p1-unit', P1, p1City.q, p1City.r),
+      makeUnit('authority-p2-unit', P2, p2City.q, p2City.r),
+    ],
+  };
+}
+
 function verifyDirectStepSimulationAuthority(): void {
-  const state = initMultiplayerGame(24681357);
+  const state = withAuthorityFixtureUnits(initMultiplayerGame(24681357));
   const victim = firstUnit(state, P2);
   const target = targetAwayFrom(state, victim.q, victim.r);
 
@@ -54,7 +83,7 @@ function verifyDirectStepSimulationAuthority(): void {
 }
 
 function verifyClientPlanSanitizer(): void {
-  const state = initMultiplayerGame(97531);
+  const state = withAuthorityFixtureUnits(initMultiplayerGame(97531));
   const own = firstUnit(state, P1);
   const enemy = firstUnit(state, P2);
   const validTarget = targetAwayFrom(state, own.q, own.r);
