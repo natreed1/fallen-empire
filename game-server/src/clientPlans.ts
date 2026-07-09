@@ -1,6 +1,6 @@
-import type { SimState } from '../../src/core/gameCore.ts';
-import { emptyAiActions, type AiActions } from '../../src/lib/ai.ts';
-import { tileKey } from '../../src/types/game.ts';
+import type { SimState } from '../../src/core/gameCore';
+import { emptyAiActions, type AiActions } from '../../src/lib/ai';
+import { tileKey } from '../../src/types/game';
 
 function isFiniteInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && Number.isInteger(value);
