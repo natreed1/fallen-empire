@@ -7,6 +7,7 @@ import * as path from 'path';
 import { initMultiplayerGame, stepSimulation, DEFAULT_AI_PARAMS } from '../src/core/gameCore';
 import { emptyAiActions } from '../src/lib/ai';
 import { tileKey } from '../src/types/game';
+import type { Unit } from '../src/types/game';
 import { sanitizeClientPlan } from '../game-server/src/clientPlans';
 
 const P1 = 'player_ai';
@@ -20,28 +21,46 @@ function repoFile(relativePath: string): string {
   return fs.readFileSync(path.join(process.cwd(), relativePath), 'utf8');
 }
 
-function inMapNeighbor(state: ReturnType<typeof initMultiplayerGame>, q: number, r: number) {
-  const candidates = [
-    [q + 1, r],
-    [q - 1, r],
-    [q, r + 1],
-    [q, r - 1],
-    [q + 1, r - 1],
-    [q - 1, r + 1],
-  ] as const;
-  const found = candidates.find(([nq, nr]) => state.tiles.has(tileKey(nq, nr)));
-  assert(found, 'expected an adjacent in-map tile for the seeded unit');
-  return { toQ: found[0], toR: found[1] };
+function makeUnit(id: string, ownerId: string, q: number, r: number): Unit {
+  return {
+    id,
+    type: 'infantry',
+    q,
+    r,
+    ownerId,
+    hp: 100,
+    maxHp: 100,
+    xp: 0,
+    level: 1,
+    armsLevel: 1,
+    status: 'idle',
+    stance: 'aggressive',
+    nextMoveAt: 0,
+  };
 }
 
-const state = initMultiplayerGame(5047, { width: 38, height: 38 });
+const baseState = initMultiplayerGame(5047, { width: 38, height: 38 });
+const p1City = baseState.cities.find(city => city.ownerId === P1);
+const p2City = baseState.cities.find(city => city.ownerId === P2);
+assert(p1City, 'seeded multiplayer game should include a P1 city');
+assert(p2City, 'seeded multiplayer game should include a P2 city');
+
+const state = {
+  ...baseState,
+  units: [
+    makeUnit('regression-p1-infantry', P1, p1City.q, p1City.r),
+    makeUnit('regression-p2-infantry', P2, p2City.q, p2City.r),
+  ],
+};
 const p1Unit = state.units.find(unit => unit.ownerId === P1 && unit.hp > 0);
 const p2Unit = state.units.find(unit => unit.ownerId === P2 && unit.hp > 0);
 assert(p1Unit, 'seeded multiplayer game should include a P1 unit');
 assert(p2Unit, 'seeded multiplayer game should include a P2 unit');
 
-const p1Target = inMapNeighbor(state, p1Unit.q, p1Unit.r);
-const stolenTarget = inMapNeighbor(state, p2Unit.q, p2Unit.r);
+const p1Target = { toQ: p2City.q, toR: p2City.r };
+const stolenTarget = { toQ: p1City.q, toR: p1City.r };
+assert(state.tiles.has(tileKey(p1Target.toQ, p1Target.toR)), 'P1 test target should be in-map');
+assert(state.tiles.has(tileKey(stolenTarget.toQ, stolenTarget.toR)), 'stolen test target should be in-map');
 
 const sanitized = sanitizeClientPlan(
   {
