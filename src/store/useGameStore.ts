@@ -3395,7 +3395,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       }
 
       for (const mt of aiPlan.moveTargets) {
-        const unit = units.find(u => u.id === mt.unitId);
+        const unit = units.find(u => u.id === mt.unitId && u.ownerId === aiPlayerId);
         if (unit && unit.hp > 0 && unit.status !== 'fighting') {
           applyDeployFlagsForMoveMutable(unit, mt.toQ, mt.toR, cities);
           clearPatrolFieldsMutable(unit);
@@ -8206,6 +8206,12 @@ export const useGameStore = create<GameState>((set, get) => ({
     const raw = deserializeSimState(data);
     const remapped = remapSimStateForClient(raw, role);
     get().stopRealTimeLoop();
+    const previous = get();
+    const resetVision =
+      previous.gameMode !== 'multiplayer' ||
+      previous.config.seed !== remapped.config.seed ||
+      previous.config.width !== remapped.config.width ||
+      previous.config.height !== remapped.config.height;
     const now = Date.now();
     set({
       gameMode: 'multiplayer',
@@ -8221,6 +8227,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       players: remapped.players,
       heroes: remapped.heroes,
       commanders: remapped.commanders,
+      visibleHexes: resetVision ? new Set<string>() : previous.visibleHexes,
+      exploredHexes: resetVision ? new Set<string>() : previous.exploredHexes,
       politicians: [],
       unitStacks: remapped.unitStacks,
       operationalArmies: remapped.operationalArmies,
