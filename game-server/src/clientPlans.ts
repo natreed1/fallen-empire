@@ -1,6 +1,6 @@
 import type { SimState } from '../../src/core/gameCore.ts';
 import type { AiActions, AiMoveAction } from '../../src/lib/ai.ts';
-import { tileKey } from '../../src/types/game.ts';
+import { tileKey } from '../../src/types/game';
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;

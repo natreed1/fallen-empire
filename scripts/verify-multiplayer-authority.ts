@@ -69,9 +69,10 @@ function makeSeededState() {
     state,
     P1,
   );
+  const sanitizedMoves = sanitized.moveTargets ?? [];
 
-  assert(sanitized.moveTargets?.length === 1, 'sanitizer should keep only owned in-map move targets');
-  assert(sanitized.moveTargets[0].unitId === p1Unit.id, 'sanitizer should drop opponent unit moves');
+  assert(sanitizedMoves.length === 1, 'sanitizer should keep only owned in-map move targets');
+  assert(sanitizedMoves[0].unitId === p1Unit.id, 'sanitizer should drop opponent unit moves');
   assert(!('recruits' in sanitized), 'sanitizer should drop non-movement client actions');
 }
 
