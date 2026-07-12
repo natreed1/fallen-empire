@@ -9,6 +9,11 @@ import {
 
 export async function middleware(request: NextRequest) {
   if (!isSiteAuthConfigured()) {
+    if (process.env.NODE_ENV === 'production') {
+      const login = new URL('/login', request.url);
+      login.searchParams.set('from', request.nextUrl.pathname + request.nextUrl.search);
+      return NextResponse.redirect(login);
+    }
     return NextResponse.next();
   }
 
