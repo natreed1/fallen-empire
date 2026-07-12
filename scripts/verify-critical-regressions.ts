@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { initMultiplayerGame, stepSimulation, DEFAULT_AI_PARAMS, type SimState } from '../src/core/gameCore';
 import { emptyAiActions } from '../src/lib/ai';
+import type { Unit } from '../src/types/game';
 
 const P1 = 'player_ai';
 const P2 = 'player_ai_2';
@@ -32,17 +33,38 @@ function playableState(state: SimState, unitId: string): SimState {
   };
 }
 
-function verifyMoveAuthority(): void {
-  const base = initMultiplayerGame(424242, { width: 24, height: 24 });
-  const p1Unit = base.units.find(u => u.ownerId === P1 && u.hp > 0);
-  const p2Unit = base.units.find(u => u.ownerId === P2 && u.hp > 0);
-  const p1City = base.cities.find(c => c.ownerId === P1);
-  const p2City = base.cities.find(c => c.ownerId === P2);
+function testUnit(id: string, ownerId: string, q: number, r: number): Unit {
+  return {
+    id,
+    ownerId,
+    q,
+    r,
+    type: 'infantry',
+    hp: 20,
+    maxHp: 20,
+    xp: 0,
+    level: 1,
+    status: 'idle',
+    stance: 'aggressive',
+    targetQ: q,
+    targetR: r,
+    nextMoveAt: 0,
+  };
+}
 
-  assert(p1Unit, 'expected a Player 1 unit in seeded multiplayer state');
-  assert(p2Unit, 'expected a Player 2 unit in seeded multiplayer state');
+function verifyMoveAuthority(): void {
+  const seeded = initMultiplayerGame(424242, { width: 24, height: 24 });
+  const p1City = seeded.cities.find(c => c.ownerId === P1);
+  const p2City = seeded.cities.find(c => c.ownerId === P2);
   assert(p1City, 'expected a Player 1 city in seeded multiplayer state');
   assert(p2City, 'expected a Player 2 city in seeded multiplayer state');
+
+  const p1Unit = testUnit('verify_p1_unit', P1, p1City.q, p1City.r);
+  const p2Unit = testUnit('verify_p2_unit', P2, p2City.q, p2City.r);
+  const base: SimState = {
+    ...seeded,
+    units: [...seeded.units, p1Unit, p2Unit],
+  };
 
   const hijackPlan = emptyAiActions();
   hijackPlan.moveTargets = [{ unitId: p1Unit.id, toQ: p2City.q, toR: p2City.r }];
