@@ -103,6 +103,8 @@ function verifyMoveAuthority(): void {
 
 function verifyStaticGuards(): void {
   const server = readRepoFile('game-server/src/index.ts');
+  const serverPackage = JSON.parse(readRepoFile('game-server/package.json')) as { type?: string };
+  assert(serverPackage.type !== 'module', 'game-server package-local ESM mode breaks shared TS named exports');
   assert(server.includes('function sanitizeClientPlan'), 'server must sanitize client plans');
   assert(server.includes('Array.isArray(patch.moveTargets)'), 'server must tolerate malformed moveTargets');
   assert(server.includes('unit.ownerId !== playerId'), 'server must reject cross-owner moveTargets');
