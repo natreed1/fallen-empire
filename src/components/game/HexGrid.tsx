@@ -1577,7 +1577,8 @@ function CityMarkers({ cities, tiles, players }: { cities: City[]; tiles: Map<st
     <group>
       {cities.map(city => {
         const tile = tiles.get(tileKey(city.q, city.r));
-        const h = tile?.height ?? 0.3;
+        if (!tile) return null;
+        const h = tile.height;
         const [x, z] = axialToWorld(city.q, city.r, HEX_RADIUS);
         const isHuman = city.ownerId === PLAYER_HUMAN_ID;
         const factionColor = playerColorOrDefault(players, city.ownerId);
@@ -1675,7 +1676,8 @@ function BuildingMarkers({ cities, tiles }: { cities: City[]; tiles: Map<string,
     for (const city of cities) {
       for (const b of city.buildings) {
         const tile = tiles.get(tileKey(b.q, b.r));
-        const h = tile?.height ?? 0.3;
+        if (!tile) continue;
+        const h = tile.height;
         const [x, z] = axialToWorld(b.q, b.r, HEX_RADIUS);
         const yOff = BUILDING_Y_OFFSET[b.type] ?? 0.4;
         result.push({
@@ -2830,25 +2832,30 @@ function ScoutTowerMarkers({ scoutTowers: towers, tiles, players }: { scoutTower
   const meshRef = useRef<THREE.InstancedMesh>(null);
   const geo = useMemo(() => new THREE.CylinderGeometry(0.2, 0.28, 0.5, 6), []);
   const material = useMemo(() => new THREE.MeshLambertMaterial({ color: '#66aacc', emissive: '#224466', emissiveIntensity: 0.3 }), []);
+  const visibleTowers = useMemo(
+    () => towers.filter(t => tiles.has(tileKey(t.q, t.r))),
+    [towers, tiles],
+  );
 
   useEffect(() => {
-    if (!meshRef.current || towers.length === 0) return;
+    if (!meshRef.current || visibleTowers.length === 0) return;
     const mesh = meshRef.current;
     const dummy = new THREE.Object3D();
-    towers.forEach((t, i) => {
+    visibleTowers.forEach((t, i) => {
       const tile = tiles.get(tileKey(t.q, t.r));
-      const h = tile?.height ?? 0.3;
+      if (!tile) return;
+      const h = tile.height;
       const [x, z] = axialToWorld(t.q, t.r, HEX_RADIUS);
       dummy.position.set(x, h + 0.35, z);
       dummy.updateMatrix();
       mesh.setMatrixAt(i, dummy.matrix);
     });
     mesh.instanceMatrix.needsUpdate = true;
-  }, [towers, tiles]);
+  }, [visibleTowers, tiles]);
 
-  if (towers.length === 0) return null;
+  if (visibleTowers.length === 0) return null;
   return (
-    <instancedMesh ref={meshRef} args={[geo, material, towers.length]} renderOrder={MAP_ENTITY_RENDER_ORDER} />
+    <instancedMesh ref={meshRef} args={[geo, material, visibleTowers.length]} renderOrder={MAP_ENTITY_RENDER_ORDER} />
   );
 }
 
@@ -2877,9 +2884,10 @@ function CityDefenseMarkers({
   const selectHex = useGameStore(s => s.selectHex);
 
   const positioned = useMemo(() => {
-    return installations.map(d => {
+    return installations.flatMap(d => {
       const tile = tiles.get(tileKey(d.q, d.r));
-      const h = tile?.height ?? 0.3;
+      if (!tile) return [];
+      const h = tile.height;
       const [x, z] = axialToWorld(d.q, d.r, HEX_RADIUS);
       const yOff = 0.48 + (d.level - 1) * 0.035;
       const playerColor = players.find(p => p.id === d.ownerId)?.color ?? '#ffffff';
@@ -2940,15 +2948,20 @@ function ConstructionMarkers({ sites, tiles }: { sites: ConstructionSite[]; tile
     color: '#cc8800', emissive: '#cc8800', emissiveIntensity: 0.4,
     transparent: true, opacity: 0.7,
   }), []);
+  const visibleSites = useMemo(
+    () => sites.filter(site => tiles.has(tileKey(site.q, site.r))),
+    [sites, tiles],
+  );
 
   useEffect(() => {
-    if (!meshRef.current || sites.length === 0) return;
+    if (!meshRef.current || visibleSites.length === 0) return;
     const mesh = meshRef.current;
     const dummy = new THREE.Object3D();
     const time = Date.now() * 0.003;
-    sites.forEach((site, i) => {
+    visibleSites.forEach((site, i) => {
       const tile = tiles.get(tileKey(site.q, site.r));
-      const h = tile?.height ?? 0.3;
+      if (!tile) return;
+      const h = tile.height;
       const [x, z] = axialToWorld(site.q, site.r, HEX_RADIUS);
       const bob = Math.sin(time + i) * 0.05;
       dummy.position.set(x, h + 0.25 + bob, z);
@@ -2957,11 +2970,11 @@ function ConstructionMarkers({ sites, tiles }: { sites: ConstructionSite[]; tile
       mesh.setMatrixAt(i, dummy.matrix);
     });
     mesh.instanceMatrix.needsUpdate = true;
-  }, [sites, tiles]);
+  }, [visibleSites, tiles]);
 
-  if (sites.length === 0) return null;
+  if (visibleSites.length === 0) return null;
   return (
-    <instancedMesh ref={meshRef} args={[geometry, material, sites.length]} renderOrder={MAP_BUILDING_RENDER_ORDER} />
+    <instancedMesh ref={meshRef} args={[geometry, material, visibleSites.length]} renderOrder={MAP_BUILDING_RENDER_ORDER} />
   );
 }
 
@@ -3615,26 +3628,26 @@ export default function HexGrid() {
     const groups: Record<Biome, Tile[]> = {
       water: [], plains: [], forest: [], mountain: [], desert: [],
     };
-    for (const tile of tiles.values()) {
+    for (const tile of discoveredTilesMap.values()) {
       groups[tile.biome].push(tile);
     }
     return groups;
-  }, [tiles]);
+  }, [discoveredTilesMap]);
 
   const terrainShoreline = useMemo(() => {
     const coastalWater: Tile[] = [];
     const deepWater: Tile[] = [];
     const beachLand: Tile[] = [];
-    for (const t of tiles.values()) {
+    for (const t of discoveredTilesMap.values()) {
       if (t.biome === 'water') {
-        if (isCoastalWaterTile(t, tiles)) coastalWater.push(t);
+        if (isCoastalWaterTile(t, discoveredTilesMap)) coastalWater.push(t);
         else deepWater.push(t);
-      } else if (isBeachLandTile(t, tiles)) {
+      } else if (isBeachLandTile(t, discoveredTilesMap)) {
         beachLand.push(t);
       }
     }
     return { coastalWater, deepWater, beachLand };
-  }, [tiles]);
+  }, [discoveredTilesMap]);
 
   // Territory by player
   const territoryByPlayer = useMemo(() => {
@@ -3814,7 +3827,7 @@ export default function HexGrid() {
       <BeachSandLayer tiles={terrainShoreline.beachLand} />
       <MedievalHexOutlineLayer tiles={Array.from(discoveredTilesMap.values())} />
       <MapEdgeOutlineLayer tiles={mapEdgeOutlineTiles} />
-      <MountainSnowLayer tiles={terrainBiomeGroups.mountain} tilesMap={tiles} />
+      <MountainSnowLayer tiles={terrainBiomeGroups.mountain} tilesMap={discoveredTilesMap} />
 
       {/* Map features */}
       <RoadOverlay tiles={biomeGroups.roadTiles} />
