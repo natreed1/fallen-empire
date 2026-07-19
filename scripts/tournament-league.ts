@@ -513,15 +513,17 @@ function promoteRelegateAndReplace(
 }
 
 /** Select champion: best in A by points, then tie-breakers. */
-function selectChampion(divisionA: Candidate[]): Candidate {
+export function selectChampion(divisionA: Candidate[]): Candidate {
   const sorted = [...divisionA].sort(compareCandidates);
-  return sorted[0];
+  const champion = sorted[0];
+  if (!champion) throw new Error('Cannot select a champion: Division A is empty.');
+  return champion;
 }
 
 // ─── Main ─────────────────────────────────────────────────────────────────
-type DivisionStanding = { id: string; points: number; wins: number; losses: number; draws: number; killsFor: number; killsAgainst: number; cityDiff: number; popDiff: number; decisiveGames: number; noCombatGames: number; farmsBuiltEarly: number; farmsBuiltLate: number; marketsBuilt: number; minesBuilt: number; quarriesBuilt: number; barracksBuilt: number; factoriesBuilt: number; academiesBuilt: number; goldMinesBuilt: number; archetypePoints?: number; params?: AiParams };
+export type DivisionStanding = { id: string; points: number; wins: number; losses: number; draws: number; killsFor: number; killsAgainst: number; cityDiff: number; popDiff: number; decisiveGames: number; noCombatGames: number; farmsBuiltEarly: number; farmsBuiltLate: number; marketsBuilt: number; minesBuilt: number; quarriesBuilt: number; barracksBuilt: number; factoriesBuilt: number; academiesBuilt: number; goldMinesBuilt: number; archetypePoints?: number; params?: AiParams };
 
-type LeagueReport = {
+export type LeagueReport = {
   seasons: number;
   divSize: number;
   seedPool?: string;
@@ -536,14 +538,17 @@ type LeagueReport = {
   finalStandingsA: { id: string; points: number; wins: number; params?: AiParams }[];
 };
 
-type LeagueCheckpointCandidate = {
+export type LeagueCheckpointCandidate = {
   id: string;
   params: AiParams;
   division: Division;
+  /** Persisted because a completed-season resume may finalize without running another season. */
+  seasonStats?: Stats;
+  gameScores?: number[];
 };
 
-type LeagueCheckpoint = {
-  version: 'v1';
+export type LeagueCheckpoint = {
+  version: 'v1' | 'v2';
   savedAt: string;
   nextSeason: number;
   seedPool?: string;
@@ -555,11 +560,11 @@ function resolveCheckpointPath(filePath: string): string {
   return path.isAbsolute(filePath) ? filePath : path.join(process.cwd(), filePath);
 }
 
-function saveLeagueCheckpoint(filePath: string, nextSeason: number, candidates: Candidate[], report: LeagueReport, seedPool?: string): void {
+export function saveLeagueCheckpoint(filePath: string, nextSeason: number, candidates: Candidate[], report: LeagueReport, seedPool?: string): void {
   const resolved = resolveCheckpointPath(filePath);
   fs.mkdirSync(path.dirname(resolved), { recursive: true });
   const payload: LeagueCheckpoint = {
-    version: 'v1',
+    version: 'v2',
     savedAt: new Date().toISOString(),
     nextSeason,
     seedPool,
@@ -567,31 +572,77 @@ function saveLeagueCheckpoint(filePath: string, nextSeason: number, candidates: 
       id: c.id,
       params: cloneParams(c.params),
       division: c.division,
+      seasonStats: { ...c.seasonStats },
+      gameScores: c.gameScores ? [...c.gameScores] : undefined,
     })),
     history: report.history,
   };
-  fs.writeFileSync(resolved, JSON.stringify(payload, null, 2), 'utf8');
+  const temporary = `${resolved}.tmp-${process.pid}-${Date.now()}`;
+  try {
+    fs.writeFileSync(temporary, JSON.stringify(payload, null, 2), 'utf8');
+    fs.renameSync(temporary, resolved);
+  } catch (error) {
+    try {
+      fs.unlinkSync(temporary);
+    } catch {
+      // Keep the previous checkpoint intact if the temporary file was never created.
+    }
+    throw error;
+  }
 }
 
-function loadLeagueCheckpoint(filePath: string): LeagueCheckpoint | null {
+export function loadLeagueCheckpoint(filePath: string): LeagueCheckpoint | null {
   const resolved = resolveCheckpointPath(filePath);
   if (!fs.existsSync(resolved)) return null;
   try {
     const raw = fs.readFileSync(resolved, 'utf8');
     const data = JSON.parse(raw) as LeagueCheckpoint;
-    if (!Array.isArray(data.candidates) || !Array.isArray(data.history) || !Number.isFinite(data.nextSeason)) return null;
+    const validCandidates =
+      Array.isArray(data.candidates) &&
+      data.candidates.length > 0 &&
+      data.candidates.some(c => c?.division === 'A') &&
+      data.candidates.every(c =>
+        c &&
+        typeof c.id === 'string' &&
+        (c.division === 'A' || c.division === 'B' || c.division === 'C') &&
+        typeof c.params === 'object' &&
+        c.params !== null
+      );
+    if (
+      (data.version !== 'v1' && data.version !== 'v2') ||
+      !validCandidates ||
+      !Array.isArray(data.history) ||
+      !Number.isInteger(data.nextSeason) ||
+      data.nextSeason < 1
+    ) {
+      throw new Error('checkpoint has an invalid shape');
+    }
     return data;
-  } catch {
-    return null;
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`Unable to resume league from ${resolved}: ${detail}`);
   }
 }
 
-function restoreCandidatesFromCheckpoint(checkpoint: LeagueCheckpoint): Candidate[] {
+function statsFromStanding(standing: DivisionStanding | undefined): Stats {
+  if (!standing) return emptyStats();
+  const { id: _id, params: _params, ...stats } = standing;
+  return { ...emptyStats(), ...stats };
+}
+
+export function restoreCandidatesFromCheckpoint(checkpoint: LeagueCheckpoint): Candidate[] {
+  const latest = checkpoint.history[checkpoint.history.length - 1];
+  const latestStandings = latest
+    ? [...latest.standingsA, ...latest.standingsB, ...latest.standingsC]
+    : [];
   return checkpoint.candidates.map(c => ({
     id: c.id,
     params: cloneParams(c.params),
     division: c.division,
-    seasonStats: emptyStats(),
+    seasonStats: c.seasonStats
+      ? { ...emptyStats(), ...c.seasonStats }
+      : statsFromStanding(latestStandings.find(s => s.id === c.id)),
+    gameScores: c.gameScores ? [...c.gameScores] : undefined,
   }));
 }
 
@@ -810,4 +861,6 @@ function main() {
   console.log('Updated champion library at', championLibraryPath);
 }
 
-main();
+if (require.main === module) {
+  main();
+}
