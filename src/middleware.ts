@@ -9,6 +9,9 @@ import {
 
 export async function middleware(request: NextRequest) {
   if (!isSiteAuthConfigured()) {
+    if (process.env.NODE_ENV === 'production') {
+      return new NextResponse('Site authentication is not configured.', { status: 503 });
+    }
     return NextResponse.next();
   }
 
