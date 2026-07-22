@@ -5,7 +5,8 @@
     "start": "tsx --tsconfig tsconfig.json src/index.ts",
     "dev": "tsx watch --tsconfig tsconfig.json src/index.ts",
     "verify-multiplayer-authority": "tsx --tsconfig tsconfig.json ../scripts/verify-multiplayer-authority.ts",
-    "verify-site-auth": "tsx --tsconfig tsconfig.json ../scripts/verify-site-auth.ts"
+    "verify-site-auth": "tsx --tsconfig tsconfig.json ../scripts/verify-site-auth.ts",
+    "verify-fog-of-war": "tsx --tsconfig tsconfig.json ../scripts/verify-fog-of-war.ts"
   },
   "dependencies": {
     "simplex-noise": "^4.0.1",
