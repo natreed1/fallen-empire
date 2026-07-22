@@ -3,7 +3,7 @@ import {
   getResolvedCookieSecret,
   getResolvedSitePassword,
   isSiteAuthConfigured,
-} from '../src/lib/siteAuth.ts';
+} from '../src/lib/siteAuth';
 
 const original = {
   nodeEnv: process.env.NODE_ENV,
