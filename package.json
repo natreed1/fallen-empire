@@ -42,12 +42,15 @@
     "@types/react": "^18.3.0",
     "@types/react-dom": "^18.3.0",
     "@types/three": "^0.165.0",
+    "@types/ws": "^8.18.1",
     "autoprefixer": "^10.4.21",
     "eslint": "^8.57.0",
     "eslint-config-next": "^14.2.0",
     "postcss": "^8.4.38",
     "tailwindcss": "^3.4.0",
     "ts-node": "^10.9.2",
-    "typescript": "^5.4.0"
+    "tsx": "^4.23.1",
+    "typescript": "^5.4.0",
+    "ws": "^8.21.1"
   }
 }
