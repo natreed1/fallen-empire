@@ -1,10 +1,10 @@
 {
   "name": "fallen-empire-game-server",
   "private": true,
-  "type": "module",
   "scripts": {
     "start": "tsx --tsconfig tsconfig.json src/index.ts",
-    "dev": "tsx watch --tsconfig tsconfig.json src/index.ts"
+    "dev": "tsx watch --tsconfig tsconfig.json src/index.ts",
+    "verify-multiplayer-authority": "tsx --tsconfig tsconfig.json ../scripts/verify-multiplayer-authority.ts"
   },
   "dependencies": {
     "simplex-noise": "^4.0.1",
