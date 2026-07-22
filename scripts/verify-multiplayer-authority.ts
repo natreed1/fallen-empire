@@ -139,7 +139,7 @@ function verifyPlanAuthority(): void {
 async function verifyLiveAdmission(): Promise<void> {
   const port = 35_000 + Math.floor(Math.random() * 1_000);
   const server = spawn(
-    resolve('game-server/node_modules/.bin/tsx'),
+    resolve('node_modules/.bin/tsx'),
     ['--tsconfig', 'tsconfig.json', 'src/index.ts'],
     {
       cwd: resolve('game-server'),
