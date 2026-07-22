@@ -8,6 +8,7 @@ import {
   stepSimulation,
 } from '../src/core/gameCore.ts';
 import { emptyAiActions } from '../src/lib/ai.ts';
+import type { Unit } from '../src/types/game.ts';
 import { sanitizeClientPlan } from '../game-server/src/clientPlans.ts';
 
 function waitForServer(child: ChildProcessWithoutNullStreams): Promise<void> {
@@ -59,6 +60,28 @@ async function sendAndReceive(
 
 function verifyPlanAuthority(): void {
   const state = initMultiplayerGame(731_991);
+  const playerOneCity = state.cities.find(city => city.ownerId === 'player_ai');
+  const playerTwoCity = state.cities.find(city => city.ownerId === 'player_ai_2');
+  assert.ok(playerOneCity);
+  assert.ok(playerTwoCity);
+  const makeUnit = (id: string, ownerId: string, q: number, r: number): Unit => ({
+    id,
+    ownerId,
+    q,
+    r,
+    type: 'infantry',
+    hp: 100,
+    maxHp: 100,
+    xp: 0,
+    level: 1,
+    status: 'idle',
+    stance: 'aggressive',
+    nextMoveAt: 0,
+  });
+  state.units = [
+    makeUnit('player-one-unit', 'player_ai', playerOneCity.q, playerOneCity.r),
+    makeUnit('player-two-unit', 'player_ai_2', playerTwoCity.q, playerTwoCity.r),
+  ];
   const ownUnit = state.units.find(unit => unit.ownerId === 'player_ai' && unit.hp > 0);
   const opponentUnit = state.units.find(unit => unit.ownerId === 'player_ai_2' && unit.hp > 0);
   assert.ok(ownUnit, 'expected a living player-one unit');
