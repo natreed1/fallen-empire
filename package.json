@@ -8,6 +8,7 @@
     "start": "next start",
     "game-server": "npx tsx game-server/src/index.ts",
     "game-server:dev": "npx tsx watch game-server/src/index.ts",
+    "verify-critical-regressions": "tsx scripts/verify-multiplayer-authority.ts && tsx scripts/verify-site-auth.ts && tsx scripts/verify-fog-of-war.ts",
     "lint": "next lint",
     "generate-biomes": "python3 scripts/generate_biome_overlays.py",
     "align-biome-hex": "python3 scripts/composite_biome_hex_mask.py --biomes plains desert",
