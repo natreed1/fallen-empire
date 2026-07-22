@@ -6,10 +6,10 @@ import {
   DEFAULT_AI_PARAMS,
   initMultiplayerGame,
   stepSimulation,
-} from '../src/core/gameCore.ts';
-import { emptyAiActions } from '../src/lib/ai.ts';
-import type { Unit } from '../src/types/game.ts';
-import { sanitizeClientPlan } from '../game-server/src/clientPlans.ts';
+} from '../src/core/gameCore';
+import { emptyAiActions } from '../src/lib/ai';
+import type { Unit } from '../src/types/game';
+import { sanitizeClientPlan } from '../game-server/src/clientPlans';
 
 function waitForServer(child: ChildProcessWithoutNullStreams): Promise<void> {
   return new Promise((resolveReady, reject) => {
