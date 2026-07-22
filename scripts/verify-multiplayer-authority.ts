@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn, type ChildProcessByStdio } from 'node:child_process';
 import { resolve } from 'node:path';
+import type { Readable } from 'node:stream';
 import { WebSocket } from 'ws';
 import {
   DEFAULT_AI_PARAMS,
@@ -11,7 +12,7 @@ import { emptyAiActions } from '../src/lib/ai';
 import type { Unit } from '../src/types/game';
 import { sanitizeClientPlan } from '../game-server/src/clientPlans';
 
-function waitForServer(child: ChildProcessWithoutNullStreams): Promise<void> {
+function waitForServer(child: ChildProcessByStdio<null, Readable, Readable>): Promise<void> {
   return new Promise((resolveReady, reject) => {
     let output = '';
     const timeout = setTimeout(() => reject(new Error(`Server startup timed out:\n${output}`)), 20_000);
