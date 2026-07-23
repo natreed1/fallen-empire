@@ -14,7 +14,7 @@ Open [http://localhost:3010](http://localhost:3010) (see `package.json` `dev` sc
 
 ## Private hosting (password gate)
 
-Production deploys use a **built-in site password** by default (see [`src/lib/siteAuth.ts`](src/lib/siteAuth.ts)). Override with `SITE_PASSWORD` / `COOKIE_SECRET` in Vercel or [`.env.local`](.env.example) if needed. Locally, leave those unset for an open dev server, or set both to test `/login`.
+Production deploys require deployment-specific `SITE_PASSWORD` and `COOKIE_SECRET` values; the app fails closed if either is missing. Locally, leave both unset for an open dev server, or set both in [`.env.local`](.env.example) to test `/login`.
 
 ## Controls
 

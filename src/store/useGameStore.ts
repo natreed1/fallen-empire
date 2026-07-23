@@ -3395,7 +3395,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       }
 
       for (const mt of aiPlan.moveTargets) {
-        const unit = units.find(u => u.id === mt.unitId);
+        const unit = units.find(u => u.id === mt.unitId && u.ownerId === aiPlayerId);
         if (unit && unit.hp > 0 && unit.status !== 'fighting') {
           applyDeployFlagsForMoveMutable(unit, mt.toQ, mt.toR, cities);
           clearPatrolFieldsMutable(unit);
@@ -8205,6 +8205,10 @@ export const useGameStore = create<GameState>((set, get) => ({
   applyMultiplayerSnapshot: (data, role) => {
     const raw = deserializeSimState(data);
     const remapped = remapSimStateForClient(raw, role);
+    const previous = get();
+    const resetMultiplayerVision =
+      previous.gameMode !== 'multiplayer' ||
+      previous.config.seed !== remapped.config.seed;
     get().stopRealTimeLoop();
     const now = Date.now();
     set({
@@ -8261,6 +8265,9 @@ export const useGameStore = create<GameState>((set, get) => ({
       movementTickInCycle: remapped.globalMovementTick % MOVEMENT_TICKS_PER_ECONOMY_CYCLE,
       globalMovementTick: remapped.globalMovementTick,
       simTimeMs: remapped.simTimeMs,
+      ...(resetMultiplayerVision
+        ? { visibleHexes: new Set<string>(), exploredHexes: new Set<string>() }
+        : {}),
     });
     get().recomputeVision();
   },
