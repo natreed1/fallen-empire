@@ -4,6 +4,8 @@ import { resolve } from 'node:path';
 
 const hexGrid = readFileSync(resolve('src/components/game/HexGrid.tsx'), 'utf8');
 const store = readFileSync(resolve('src/store/useGameStore.ts'), 'utf8');
+const gameScene = readFileSync(resolve('src/components/game/GameScene.tsx'), 'utf8');
+const mapController = readFileSync(resolve('src/components/game/MapController.tsx'), 'utf8');
 
 const terrainStart = hexGrid.indexOf('const terrainBiomeGroups = useMemo');
 const terrainEnd = hexGrid.indexOf('// Territory by player', terrainStart);
@@ -38,4 +40,18 @@ assert.ok(
   'entering a multiplayer map retains stale exploration',
 );
 
-console.log('Fog-of-war regression checks passed.');
+const playableCameraStart = gameScene.indexOf('if (isPlayableCameraMode)');
+const playableCameraEnd = gameScene.indexOf('prevPhaseForCameraRef.current = phase;', playableCameraStart);
+assert.ok(
+  playableCameraStart >= 0 &&
+    playableCameraEnd > playableCameraStart &&
+    gameScene.slice(playableCameraStart, playableCameraEnd).includes('setMapTarget(liveTarget)'),
+  'playable modes never retarget the camera when a match starts',
+);
+assert.ok(
+  mapController.includes('targetChanged') &&
+    mapController.includes('lastAppliedTargetRef.current = target'),
+  'map controls ignore the capital target that arrives after initial mount',
+);
+
+console.log('Fog-of-war and camera regression checks passed.');
