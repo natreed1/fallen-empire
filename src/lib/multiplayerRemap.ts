@@ -4,7 +4,8 @@
  */
 
 import type { SimState } from '../core/gameCore';
-import type { ScrollItem } from '../types/game';
+import type { MoraleState } from './combat';
+import type { ScrollItem, SpecialRegionKind } from '../types/game';
 
 const S_P1 = 'player_ai';
 const S_P2 = 'player_ai_2';
@@ -40,19 +41,26 @@ export function remapSimStateForClient(state: SimState, role: 'host' | 'guest'):
     scrollInventory[mp(k)] = v;
   }
 
-  const scrollSearchVisited = { ...state.scrollSearchVisited };
-  for (const k of Object.keys(scrollSearchVisited)) {
-    const nk = mp(k);
-    if (nk !== k) {
-      scrollSearchVisited[nk] = scrollSearchVisited[k];
-      delete scrollSearchVisited[k];
-    }
+  // Rebuild into a fresh object — in-place rename can collide when host maps
+  // player_ai_2 → player_ai while player_ai → player_human still exists.
+  const scrollSearchVisited: Record<string, Partial<Record<SpecialRegionKind, string[]>>> = {};
+  for (const [k, v] of Object.entries(state.scrollSearchVisited ?? {})) {
+    scrollSearchVisited[mp(k)] = v;
   }
 
   const scrollRegionClaimed = { ...state.scrollRegionClaimed };
   for (const region of Object.keys(scrollRegionClaimed) as (keyof typeof scrollRegionClaimed)[]) {
     const arr = scrollRegionClaimed[region];
     if (arr?.length) scrollRegionClaimed[region] = arr.map(mp);
+  }
+
+  // Keys are `${hexKey}:${ownerId}` — rebuild so guest/host owner ids stay consistent.
+  const combatMoraleState: MoraleState = new Map();
+  for (const [key, entry] of state.combatMoraleState ?? []) {
+    const ownerId = mp(entry.ownerId);
+    const suffix = `:${entry.ownerId}`;
+    const hexKey = key.endsWith(suffix) ? key.slice(0, -suffix.length) : key;
+    combatMoraleState.set(`${hexKey}:${ownerId}`, { ownerId, morale: entry.morale });
   }
 
   return {
@@ -68,6 +76,7 @@ export function remapSimStateForClient(state: SimState, role: 'host' | 'guest'):
     scrollRegionClaimed,
     commanders: state.commanders.map(c => ({ ...c, ownerId: mp(c.ownerId) })),
     scoutMissions: state.scoutMissions.map(m => ({ ...m })),
+    scoutTowers: (state.scoutTowers ?? []).map(t => ({ ...t, ownerId: mp(t.ownerId) })),
     constructions: state.constructions.map(c => ({ ...c, ownerId: mp(c.ownerId) })),
     wallSections: state.wallSections.map(w => ({ ...w, ownerId: mp(w.ownerId) })),
     defenseInstallations: state.defenseInstallations.map(d => ({
@@ -81,6 +90,7 @@ export function remapSimStateForClient(state: SimState, role: 'host' | 'guest'):
       Object.entries(state.cityCaptureHold).map(([cid, h]) => [cid, { ...h, attackerId: mp(h.attackerId) }]),
     ),
     scrollAttachments: state.scrollAttachments.map(a => ({ ...a, ownerId: mp(a.ownerId) })),
+    combatMoraleState,
   };
 }
 
