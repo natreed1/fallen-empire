@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from 'react';
 import { useGameStore } from '@/store/useGameStore';
+import { getMultiplayerLocalOutcome } from '@/lib/multiplayerOutcome';
 import {
   playNotification,
   playVictory,
@@ -18,6 +19,8 @@ import {
 export default function SoundController() {
   const phase = useGameStore(s => s.phase);
   const notifications = useGameStore(s => s.notifications);
+  const gameMode = useGameStore(s => s.gameMode);
+  const cities = useGameStore(s => s.cities);
   const playedVictoryRef = useRef(false);
   const prevNotifCountRef = useRef(notifications.length);
   const lastNotifIdRef = useRef<string | null>(
@@ -49,10 +52,13 @@ export default function SoundController() {
     if (phase !== 'victory' || playedVictoryRef.current) return;
     playedVictoryRef.current = true;
     const last = notifications[notifications.length - 1];
-    const isWin = last?.type === 'success';
+    const isWin =
+      gameMode === 'multiplayer'
+        ? getMultiplayerLocalOutcome(cities).isWin
+        : last?.type === 'success';
     if (isWin) playVictory();
     else playDefeat();
-  }, [phase, notifications]);
+  }, [phase, notifications, gameMode, cities]);
 
   // SFX for new notifications
   useEffect(() => {

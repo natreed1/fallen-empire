@@ -197,6 +197,7 @@ import {
 import { assignSpatialFormationTargets } from '@/lib/formationPlacement';
 import { deserializeSimState, type SerializedSimState } from '@/lib/simStateSerialization';
 import { remapSimStateForClient } from '@/lib/multiplayerRemap';
+import { getMultiplayerLocalOutcome } from '@/lib/multiplayerOutcome';
 import { sendMultiplayerPlan } from '@/lib/multiplayerBridge';
 import {
   computeUniversityBuildingLevelFromPopulation,
@@ -8207,6 +8208,21 @@ export const useGameStore = create<GameState>((set, get) => ({
     const remapped = remapSimStateForClient(raw, role);
     get().stopRealTimeLoop();
     const now = Date.now();
+    const cities = syncUniversityBuildingLevelsForCities(remapped.cities);
+    // Server victory payloads have no outcome notifications; stamp a local win/loss toast once.
+    let notifications = get().notifications;
+    if (remapped.phase === 'victory' && get().phase !== 'victory') {
+      const outcome = getMultiplayerLocalOutcome(cities);
+      notifications = [
+        ...notifications.slice(-8),
+        {
+          id: generateId('n'),
+          turn: remapped.cycle,
+          message: outcome.message,
+          type: outcome.isWin ? 'success' : 'danger',
+        },
+      ];
+    }
     set({
       gameMode: 'multiplayer',
       phase: remapped.phase,
@@ -8216,7 +8232,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       provinceCenters: [],
       specialRegions: [],
       isGenerated: true,
-      cities: syncUniversityBuildingLevelsForCities(remapped.cities),
+      cities,
       units: remapped.units,
       players: remapped.players,
       heroes: remapped.heroes,
@@ -8251,6 +8267,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       lastRangedShotFx: [],
       rangedShooterUnitIds: [],
       combatKillFeed: [],
+      notifications,
       gameEndTime: now + GAME_DURATION_SEC * 1000,
       nextCycleTime: now + CYCLE_INTERVAL_SEC * 1000,
       gameTimeRemaining: Math.max(0, MAX_MATCH_ECONOMY_CYCLES - remapped.cycle),
