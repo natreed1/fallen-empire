@@ -1,13 +1,13 @@
 /**
  * Regression: multiplayer local outcome + host scrollSearchVisited remap.
- * Run: npx tsx --tsconfig tsconfig.json scripts/verify-multiplayer-outcome.ts
+ * Run: npm run verify-multiplayer-outcome
  */
 
 import assert from 'assert';
-import { getMultiplayerLocalOutcome } from '../src/lib/multiplayerOutcome.ts';
-import { remapSimStateForClient } from '../src/lib/multiplayerRemap.ts';
-import type { SimState } from '../src/core/gameCore.ts';
-import type { City } from '../src/types/game.ts';
+import { getMultiplayerLocalOutcome } from '../src/lib/multiplayerOutcome';
+import { remapSimStateForClient } from '../src/lib/multiplayerRemap';
+import type { SimState } from '../src/core/gameCore';
+import type { City, SpecialRegionKind } from '../src/types/game';
 
 function city(ownerId: string, population = 10): City {
   return {
@@ -17,10 +17,11 @@ function city(ownerId: string, population = 10): City {
     r: 0,
     ownerId,
     population,
+    morale: 100,
     buildings: [],
     storage: { food: 0, wood: 0, stone: 0, gold: 0, iron: 0 },
     storageCap: { food: 0, wood: 0, stone: 0, gold: 0, iron: 0 },
-  } as City;
+  } as unknown as City;
 }
 
 function baseState(partial: Partial<SimState>): SimState {
@@ -61,7 +62,7 @@ function baseState(partial: Partial<SimState>): SimState {
     globalMovementTick: 0,
     simTimeMs: 0,
     ...partial,
-  } as SimState;
+  } as unknown as SimState;
 }
 
 // ── Outcome from cities ────────────────────────────────────────────
@@ -92,10 +93,12 @@ function baseState(partial: Partial<SimState>): SimState {
 
 // ── Host remap: P2-first insertion must not drop host scroll progress ─
 {
+  const forest: SpecialRegionKind = 'forest_secrets';
+  const hills: SpecialRegionKind = 'hills_lost';
   const state = baseState({
     scrollSearchVisited: {
-      player_ai_2: { desert: ['d1'] },
-      player_ai: { forest: ['f1'] },
+      player_ai_2: { [hills]: ['d1'] },
+      player_ai: { [forest]: ['f1'] },
     },
     scoutTowers: [
       { id: 't1', q: 1, r: 1, ownerId: 'player_ai' },
@@ -108,16 +111,16 @@ function baseState(partial: Partial<SimState>): SimState {
   });
 
   const host = remapSimStateForClient(state, 'host');
-  assert.deepStrictEqual(host.scrollSearchVisited.player_human, { forest: ['f1'] });
-  assert.deepStrictEqual(host.scrollSearchVisited.player_ai, { desert: ['d1'] });
+  assert.deepStrictEqual(host.scrollSearchVisited.player_human, { [forest]: ['f1'] });
+  assert.deepStrictEqual(host.scrollSearchVisited.player_ai, { [hills]: ['d1'] });
   assert.strictEqual(host.scoutTowers.find(t => t.id === 't1')?.ownerId, 'player_human');
   assert.strictEqual(host.scoutTowers.find(t => t.id === 't2')?.ownerId, 'player_ai');
   assert.strictEqual(host.combatMoraleState.get('3,4:player_human')?.morale, 80);
   assert.strictEqual(host.combatMoraleState.get('5,6:player_ai')?.morale, 40);
 
   const guest = remapSimStateForClient(state, 'guest');
-  assert.deepStrictEqual(guest.scrollSearchVisited.player_human, { desert: ['d1'] });
-  assert.deepStrictEqual(guest.scrollSearchVisited.player_ai, { forest: ['f1'] });
+  assert.deepStrictEqual(guest.scrollSearchVisited.player_human, { [hills]: ['d1'] });
+  assert.deepStrictEqual(guest.scrollSearchVisited.player_ai, { [forest]: ['f1'] });
   assert.strictEqual(guest.scoutTowers.find(t => t.id === 't2')?.ownerId, 'player_human');
   assert.strictEqual(guest.combatMoraleState.get('5,6:player_human')?.morale, 40);
 }
