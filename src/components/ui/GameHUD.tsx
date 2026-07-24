@@ -33,6 +33,7 @@ import {
   universityTaskMatchesSiteType,
 } from '@/lib/builders';
 import { computeUniversityBuildingLevelFromPopulation, nextUniversityLevelPopulationThreshold } from '@/lib/universityPopulation';
+import { getMultiplayerLocalOutcome } from '@/lib/multiplayerOutcome';
 import { countLandMilitaryByType, TACTICAL_FILTER_LAND_TYPES, unitIdsMatchingTypes } from '@/lib/siege';
 import type { SiegeTacticId } from '@/lib/siegeTactics';
 import { SIEGE_TACTIC_META, buildWaveGroupsFromTactic } from '@/lib/siegeTactics';
@@ -557,15 +558,20 @@ function PlaceCityOverlay() {
 
 function VictoryScreen() {
   const notifications = useGameStore(s => s.notifications);
+  const gameMode = useGameStore(s => s.gameMode);
+  const cities = useGameStore(s => s.cities);
   const last = notifications[notifications.length - 1];
-  const isWin = last?.type === 'success';
+  // Multiplayer snapshots do not emit outcome notifications — derive from remapped cities.
+  const mpOutcome = gameMode === 'multiplayer' ? getMultiplayerLocalOutcome(cities) : null;
+  const isWin = mpOutcome ? mpOutcome.isWin : last?.type === 'success';
+  const message = mpOutcome?.message ?? last?.message ?? 'The game is over.';
   return (
     <div className="absolute inset-0 flex items-center justify-center bg-black/70 pointer-events-auto">
       <div className="bg-empire-dark border border-empire-gold/40 rounded-xl p-8 text-center max-w-md">
         <h1 className={`text-4xl font-bold tracking-widest mb-4 ${isWin ? 'text-empire-gold' : 'text-red-400'}`}>
           {isWin ? 'VICTORY' : 'DEFEAT'}
         </h1>
-        <p className="text-empire-parchment/70 mb-6">{last?.message ?? 'The game is over.'}</p>
+        <p className="text-empire-parchment/70 mb-6">{message}</p>
         <button onClick={() => window.location.reload()}
           className="px-8 py-3 bg-empire-gold/20 border border-empire-gold/60 rounded-lg text-empire-gold font-bold hover:bg-empire-gold/30 transition-colors">
           PLAY AGAIN
