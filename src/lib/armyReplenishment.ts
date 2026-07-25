@@ -12,6 +12,7 @@ import {
   isNavalUnitType,
   generateId,
 } from '@/types/game';
+import { deductGunsL2AcrossCities, totalGunsL2ForOwner } from '@/lib/gunsL2';
 
 export type ReplenishPendingLand = {
   id: string;
@@ -219,14 +220,7 @@ export function computeArmyReplenishment(input: ReplenishInput): ReplenishResult
         rangedVariant: effRangedVariant,
       });
       const gunL2Upkeep = (stats as { gunL2Upkeep?: number }).gunL2Upkeep ?? 0;
-      if (gunL2Upkeep > 0) {
-        const totalGunsL2 = playerCities.reduce((sum, c) => sum + (c.storage.gunsL2 ?? 0), 0);
-        if (totalGunsL2 < gunL2Upkeep) continue;
-      }
-
-      player = { ...player, gold: player.gold - goldCost };
-      players = players.slice();
-      players[pIdx] = player;
+      if (gunL2Upkeep > 0 && totalGunsL2ForOwner(playerCities, army.ownerId) < gunL2Upkeep) continue;
 
       let nextHome = { ...home };
       if (stoneCost > 0 || ironCost > 0 || refinedWoodCost > 0) {
@@ -240,23 +234,20 @@ export function computeArmyReplenishment(input: ReplenishInput): ReplenishResult
           },
         };
       }
-      cities = cities.slice();
+      // Apply home resource spend first, then empire-wide gunsL2 so home overwrite
+      // cannot wipe the arms deduction (previous bug when home held the gunsL2).
+      let nextCities = cities.slice();
+      nextCities[homeIdx] = nextHome;
       if (gunL2Upkeep > 0) {
-        for (let i = 0; i < cities.length; i++) {
-          if (cities[i].ownerId !== army.ownerId) continue;
-          if ((cities[i].storage.gunsL2 ?? 0) >= gunL2Upkeep) {
-            cities[i] = {
-              ...cities[i],
-              storage: {
-                ...cities[i].storage,
-                gunsL2: (cities[i].storage.gunsL2 ?? 0) - gunL2Upkeep,
-              },
-            };
-            break;
-          }
-        }
+        const deducted = deductGunsL2AcrossCities(nextCities, army.ownerId, gunL2Upkeep);
+        if (!deducted) continue;
+        nextCities = deducted;
       }
-      cities[homeIdx] = nextHome;
+
+      player = { ...player, gold: player.gold - goldCost };
+      players = players.slice();
+      players[pIdx] = player;
+      cities = nextCities;
 
       newPending.push({
         id: generateId('pr'),

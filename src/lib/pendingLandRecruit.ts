@@ -31,7 +31,9 @@ export type PendingLandRecruit = {
 export function spawnUnitFromPendingLand(item: PendingLandRecruit, cities: City[]): Unit | null {
   if (item.type === 'builder') return null;
   const city = cities.find(c => c.id === item.cityId);
-  if (!city) return null;
+  // City must still belong to the recruiting player — otherwise a capture would
+  // spawn a hostile garrison inside the new owner's capital.
+  if (!city || city.ownerId !== item.playerId) return null;
   const rv =
     item.type === 'ranged' && item.effectiveArmsLevel === 3
       ? (item.rangedVariant ?? 'marksman')

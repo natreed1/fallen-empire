@@ -28,6 +28,7 @@ import {
 import { computeUniversityBuildingLevelFromPopulation } from '@/lib/universityPopulation';
 import type { AiActions } from '@/lib/ai';
 import type { PendingLandRecruit } from '@/lib/pendingLandRecruit';
+import { deductGunsL2AcrossCities, totalGunsL2ForOwner } from '@/lib/gunsL2';
 
 /** Where queued land recruits are appended (array or custom sink). */
 export type PendingLandRecruitSink = {
@@ -168,10 +169,7 @@ export function applyAiRecruitsAsPending(
     if (refinedWoodCost > 0 && (city.storage.refinedWood ?? 0) < refinedWoodCost) continue;
     const stats = getUnitStats({ type: rec.type, armsLevel: effectiveLevel as 1 | 2 | 3 });
     const gunL2Upkeep = (stats as { gunL2Upkeep?: number }).gunL2Upkeep ?? 0;
-    if (gunL2Upkeep > 0) {
-      const totalGunsL2 = ctx.cities.filter(c => c.ownerId === ctx.aiPlayerId).reduce((sum, c) => sum + (c.storage.gunsL2 ?? 0), 0);
-      if (totalGunsL2 < gunL2Upkeep) continue;
-    }
+    if (gunL2Upkeep > 0 && totalGunsL2ForOwner(ctx.cities, ctx.aiPlayerId) < gunL2Upkeep) continue;
     if (rec.type === 'builder') continue;
     const barracks = city.buildings.find(b => b.type === 'barracks');
     const bl = barracks?.level ?? 1;
@@ -195,16 +193,14 @@ export function applyAiRecruitsAsPending(
     }
 
     if (gunL2Upkeep > 0) {
-      for (const oc of ctx.cities.filter(c => c.ownerId === ctx.aiPlayerId)) {
-        if ((oc.storage.gunsL2 ?? 0) >= gunL2Upkeep) {
-          oc.storage.gunsL2 = (oc.storage.gunsL2 ?? 0) - gunL2Upkeep;
-          break;
-        }
-      }
+      const deducted = deductGunsL2AcrossCities(ctx.cities, ctx.aiPlayerId, gunL2Upkeep);
+      if (!deducted) continue;
+      // Keep the same array reference callers hold (store / gameCore).
+      for (let i = 0; i < ctx.cities.length; i++) ctx.cities[i] = deducted[i];
     }
     ctx.onSpendGold(goldCost);
     if (stoneCost > 0 || ironCost > 0 || refinedWoodCost > 0) {
-      const idx = ctx.cities.indexOf(city);
+      const idx = ctx.cities.findIndex(c => c.id === city.id);
       if (idx >= 0) {
         const c = ctx.cities[idx];
         ctx.cities[idx] = {
