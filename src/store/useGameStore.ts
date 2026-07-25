@@ -129,6 +129,7 @@ import {
   placeManyAiCapitalsApart,
 } from '@/lib/ai';
 import { spawnUnitFromPendingLand, type PendingLandRecruit } from '@/lib/pendingLandRecruit';
+import { deductGunsL2AcrossCities, totalGunsL2ForOwner } from '@/lib/gunsL2';
 import { applyAiInstantBuilds, applyAiUpgrades, applyAiRecruitsAsPending } from '@/lib/applyAiPlan';
 import { getAiParams } from '@/lib/aiParams';
 import {
@@ -1175,7 +1176,8 @@ function incorporateVillagePatch(
 }
 
 function spawnUnitFromPendingShip(item: PendingShipRecruit, cities: City[]): Unit | null {
-  if (!cities.some(c => c.id === item.cityId)) return null;
+  const city = cities.find(c => c.id === item.cityId);
+  if (!city || city.ownerId !== item.playerId) return null;
   const cap = getShipMaxCargo(item.shipType);
   const stats = getUnitStats({ type: item.shipType });
   return {
@@ -5099,11 +5101,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       rangedVariant: resolvedRangedVariant,
     });
     const gunL2Upkeep = (stats as { gunL2Upkeep?: number }).gunL2Upkeep ?? 0;
-    if (gunL2Upkeep > 0) {
-      const totalGunsL2 = s.cities.filter(c => c.ownerId === HUMAN_ID).reduce((sum, c) => sum + (c.storage.gunsL2 ?? 0), 0);
-      if (totalGunsL2 < gunL2Upkeep) {
-        get().addNotification('Need L2 arms to recruit this unit! Build upgraded factory.', 'warning'); return;
-      }
+    if (gunL2Upkeep > 0 && totalGunsL2ForOwner(s.cities, HUMAN_ID) < gunL2Upkeep) {
+      get().addNotification('Need L2 arms to recruit this unit! Build upgraded factory.', 'warning'); return;
     }
 
     const spawnQ = city.q;
@@ -5187,20 +5186,12 @@ export const useGameStore = create<GameState>((set, get) => ({
 
     const nextPlayers = s.players.map(p => p.id === player.id ? { ...p, gold: p.gold - goldCost } : p);
     if (gunL2Upkeep > 0) {
-      updatedCities = updatedCities.slice();
-      for (let i = 0; i < updatedCities.length; i++) {
-        if (updatedCities[i].ownerId !== HUMAN_ID) continue;
-        if ((updatedCities[i].storage.gunsL2 ?? 0) >= gunL2Upkeep) {
-          updatedCities[i] = {
-            ...updatedCities[i],
-            storage: {
-              ...updatedCities[i].storage,
-              gunsL2: (updatedCities[i].storage.gunsL2 ?? 0) - gunL2Upkeep,
-            },
-          };
-          break;
-        }
+      const deducted = deductGunsL2AcrossCities(updatedCities, HUMAN_ID, gunL2Upkeep);
+      if (!deducted) {
+        get().addNotification('Need L2 arms to recruit this unit! Build upgraded factory.', 'warning');
+        return;
       }
+      updatedCities = deducted;
     }
 
     set({
