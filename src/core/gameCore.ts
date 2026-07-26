@@ -1024,29 +1024,24 @@ export function stepSimulation(
       let availBP = computeConstructionAvailableBp(site, state.territory, updatedCities, constructions);
 
       if (site.type === 'wall_section' && site.cityId) {
-        const wallCity = updatedCities.find(c => c.id === site.cityId);
+        const idx = updatedCities.findIndex(c => c.id === site.cityId);
+        const wallCity = idx >= 0 ? updatedCities[idx] : undefined;
         const wSlots = wallCity ? countDefensesTaskSlots(wallCity) : 0;
         const wallStoneNeed = wSlots * WALL_BUILDER_STONE_PER_CYCLE_PER_SLOT;
+        const alreadyPaid = wallCity ? wallStonePaidCityIds.has(wallCity.id) : false;
         const stn = wallCity?.storage.stone ?? 0;
-        if (
-          !wallCity ||
-          wallCity.ownerId !== site.ownerId ||
-          wSlots <= 0 ||
-          stn < wallStoneNeed
-        ) {
+        const canAfford = alreadyPaid || stn >= wallStoneNeed;
+        if (!wallCity || wallCity.ownerId !== site.ownerId || wSlots <= 0 || !canAfford) {
           availBP = 0;
-        } else if (!wallStonePaidCityIds.has(wallCity.id)) {
-          const idx = updatedCities.findIndex(c => c.id === wallCity.id);
-          if (idx >= 0) {
-            updatedCities[idx] = {
-              ...updatedCities[idx],
-              storage: {
-                ...updatedCities[idx].storage,
-                stone: (updatedCities[idx].storage.stone ?? 0) - wallStoneNeed,
-              },
-            };
-            wallStonePaidCityIds.add(wallCity.id);
-          }
+        } else if (!alreadyPaid) {
+          updatedCities[idx] = {
+            ...wallCity,
+            storage: {
+              ...wallCity.storage,
+              stone: stn - wallStoneNeed,
+            },
+          };
+          wallStonePaidCityIds.add(wallCity.id);
         }
       }
 
