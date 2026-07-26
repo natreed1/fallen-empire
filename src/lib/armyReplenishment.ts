@@ -127,6 +127,19 @@ export function computeArmyReplenishment(input: ReplenishInput): ReplenishResult
     }
   }
 
+  /** Projected living+pending troops per owner so multi-army replenish cannot overshoot pop cap. */
+  const projectedTroopsByOwner = new Map<string, number>();
+  const totalPopByOwner = new Map<string, number>();
+  for (const p of players) {
+    const living = input.units.filter(u => u.ownerId === p.id && u.hp > 0).length;
+    const pending = input.pendingRecruits.filter(
+      pr => 'effectiveArmsLevel' in pr && pr.playerId === p.id,
+    ).length;
+    projectedTroopsByOwner.set(p.id, living + pending);
+    const pop = cities.filter(c => c.ownerId === p.id).reduce((s, c) => s + c.population, 0);
+    totalPopByOwner.set(p.id, pop);
+  }
+
   for (const army of unitStacks) {
     if (!army.autoReplenish) continue;
     const homeIdx = cities.findIndex(c => c.id === army.homeCityId && c.ownerId === army.ownerId);
@@ -137,11 +150,8 @@ export function computeArmyReplenishment(input: ReplenishInput): ReplenishResult
     let player = players[pIdx];
 
     const playerCities = cities.filter(c => c.ownerId === army.ownerId);
-    const totalPop = playerCities.reduce((s, c) => s + c.population, 0);
-    const livingTroops = input.units.filter(u => u.ownerId === army.ownerId && u.hp > 0).length;
-    const pendingLand = input.pendingRecruits.filter(
-      pr => 'effectiveArmsLevel' in pr && pr.playerId === army.ownerId,
-    ).length;
+    const totalPop = totalPopByOwner.get(army.ownerId) ?? 0;
+    let projectedTroops = projectedTroopsByOwner.get(army.ownerId) ?? 0;
 
     const barracks = home.buildings.find(b => b.type === 'barracks');
     const barracksLvl = barracks ? (barracks.level ?? 1) : 1;
@@ -157,7 +167,7 @@ export function computeArmyReplenishment(input: ReplenishInput): ReplenishResult
         entryRv,
       );
       if (have >= entry.count) continue;
-      if (livingTroops + pendingLand >= totalPop) break;
+      if (projectedTroops >= totalPop) break;
 
       const t = entry.unitType;
       if (t === 'builder' || isNavalUnitType(t)) continue;
@@ -272,6 +282,8 @@ export function computeArmyReplenishment(input: ReplenishInput): ReplenishResult
         moveToRallyAfterSpawn: { q: army.rallyQ, r: army.rallyR },
       });
       pendingSet.add(pk);
+      projectedTroops += 1;
+      projectedTroopsByOwner.set(army.ownerId, projectedTroops);
       break;
     }
   }

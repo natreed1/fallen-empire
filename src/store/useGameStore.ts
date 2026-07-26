@@ -148,6 +148,11 @@ import {
   type RangedShotFx,
 } from '@/lib/military';
 import { computeArmyReplenishment, updateArmyRallyFromUnits, mergeCompositionEntry } from '@/lib/armyReplenishment';
+import { applyCityCaptureEffects } from '@/lib/cityCaptureEffects';
+import {
+  applyOriginCityPopulationDeath,
+  applyOriginCityPopulationReturn,
+} from '@/lib/originCityPopulation';
 import { computeVisibleHexes } from '@/lib/vision';
 import { rollForWeatherEvent, tickWeatherEvent, weatherAnnouncement, getWeatherHarvestMultiplier } from '@/lib/weather';
 import {
@@ -2351,7 +2356,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         s.combatMoraleState,
       );
 
-      const wallSectionsMut = s.wallSections.map(w => ({ ...w }));
+      let wallSectionsMut = s.wallSections.map(w => ({ ...w }));
       const coastalResult = coastalBombardmentTick(
         movingUnits,
         movingHeroes,
@@ -2400,20 +2405,10 @@ export const useGameStore = create<GameState>((set, get) => ({
       unassignCommandersWithDeadAnchors(movingCommanders, aliveUnits);
 
       // Population: when a unit dies, its origin city loses 1 population (design doc §22)
+      // Only while that city is still owned by the unit's owner (capture strips fielded slots).
       const killedIds = new Set(mergedKilledUnitIds);
-      const popDeductByCityId: Record<string, number> = {};
-      for (const u of s.units) {
-        if (killedIds.has(u.id) && u.originCityId) {
-          popDeductByCityId[u.originCityId] = (popDeductByCityId[u.originCityId] ?? 0) + 1;
-        }
-      }
-      const updatedCities =
-        Object.keys(popDeductByCityId).length === 0
-          ? citiesBase
-          : citiesBase.map(c => {
-              const deduct = popDeductByCityId[c.id] ?? 0;
-              return deduct > 0 ? { ...c, population: Math.max(0, c.population - deduct) } : c;
-            });
+      const deadUnits = s.units.filter(u => killedIds.has(u.id));
+      const updatedCities = applyOriginCityPopulationDeath(citiesBase, deadUnits);
 
       // Reset fighters to idle if no enemies nearby
       for (const u of aliveUnits) {
@@ -2427,6 +2422,7 @@ export const useGameStore = create<GameState>((set, get) => ({
 
       // -- City capture hold: attacker holds center 5s to capture (design §13, 35); pop=0 = easy take
       let citiesFinal = updatedCities;
+      let constructionsAfterCapture = s.constructions;
       let captureHoldNext: Record<string, { attackerId: string; startedAtMovementTick: number }> = {
         ...s.cityCaptureHold,
       };
@@ -2450,7 +2446,17 @@ export const useGameStore = create<GameState>((set, get) => ({
           city.population === 0 ||
           (defendingLandMilitary.length === 0 && !wallBlocks);
         if (instantTake) {
-          citiesFinal = citiesFinal.map(c => (c.id === city.id ? { ...c, ownerId: attackerId } : c));
+          const fx = applyCityCaptureEffects({
+            city,
+            previousOwnerId: city.ownerId,
+            newOwnerId: attackerId,
+            units: aliveUnits,
+            wallSections: wallSectionsMut,
+            constructions: constructionsAfterCapture,
+          });
+          citiesFinal = citiesFinal.map(c => (c.id === city.id ? fx.city : c));
+          wallSectionsMut = fx.wallSections;
+          constructionsAfterCapture = fx.constructions;
           delete captureHoldNext[city.id];
           captureNotifs.push({
             id: generateId('n'),
@@ -2467,7 +2473,17 @@ export const useGameStore = create<GameState>((set, get) => ({
         if (!existing || existing.attackerId !== attackerId) {
           captureHoldNext[city.id] = { attackerId, startedAtMovementTick: s.globalMovementTick };
         } else if (s.globalMovementTick - existing.startedAtMovementTick >= CITY_CAPTURE_HOLD_TICKS) {
-          citiesFinal = citiesFinal.map(c => (c.id === city.id ? { ...c, ownerId: attackerId } : c));
+          const fx = applyCityCaptureEffects({
+            city,
+            previousOwnerId: city.ownerId,
+            newOwnerId: attackerId,
+            units: aliveUnits,
+            wallSections: wallSectionsMut,
+            constructions: constructionsAfterCapture,
+          });
+          citiesFinal = citiesFinal.map(c => (c.id === city.id ? fx.city : c));
+          wallSectionsMut = fx.wallSections;
+          constructionsAfterCapture = fx.constructions;
           delete captureHoldNext[city.id];
           captureNotifs.push({ id: generateId('n'), turn: s.cycle, message: `${city.name} captured!`, type: 'success' });
         }
@@ -2592,6 +2608,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         territory: territoryAfterCapture ?? s.territory,
         phase: phaseAfterCapture,
         wallSections: wallSectionsMut,
+        constructions: constructionsAfterCapture,
         cityCaptureHold: captureHoldNext,
         heroes: aliveHeroes,
         commanders: movingCommanders,
@@ -2683,7 +2700,12 @@ export const useGameStore = create<GameState>((set, get) => ({
               const wSlots = wallCity ? countDefensesTaskSlots(wallCity) : 0;
               const wallStoneNeed = wSlots * WALL_BUILDER_STONE_PER_CYCLE_PER_SLOT;
               const stn = wallCity?.storage.stone ?? 0;
-              if (wSlots <= 0 || stn < wallStoneNeed) {
+              if (
+                !wallCity ||
+                wallCity.ownerId !== site.ownerId ||
+                wSlots <= 0 ||
+                stn < wallStoneNeed
+              ) {
                 availBP = 0;
               }
             }
@@ -3505,7 +3527,7 @@ export const useGameStore = create<GameState>((set, get) => ({
 
     // City capture (discrete cycle): align with RT — land military only; wall / defenders block unless pop 0
     let citiesToSet = cities;
-    for (const city of cities) {
+    for (const city of citiesToSet) {
       const wallBlocks = enemyIntactWallOnCityHex(wallSectionsMut, city);
       const defendingLand = aliveUnits.filter(
         u => landMilitaryContestsCityCapture(u, city.q, city.r) && u.ownerId === city.ownerId,
@@ -3518,7 +3540,17 @@ export const useGameStore = create<GameState>((set, get) => ({
         city.population === 0 || (defendingLand.length === 0 && !wallBlocks);
       if (!instantTake) continue;
       const newOwnerId = attackingLand[0].ownerId;
-      citiesToSet = citiesToSet.map(c => (c.id === city.id ? { ...c, ownerId: newOwnerId } : c));
+      const fx = applyCityCaptureEffects({
+        city,
+        previousOwnerId: city.ownerId,
+        newOwnerId,
+        units: aliveUnits,
+        wallSections: wallSectionsMut,
+        constructions: constructionsForSet,
+      });
+      citiesToSet = citiesToSet.map(c => (c.id === city.id ? fx.city : c));
+      wallSectionsMut = fx.wallSections;
+      constructionsForSet = fx.constructions;
       notifs.push({ id: generateId('n'), turn: newCycle, message: `${city.name} captured!`, type: 'danger' });
     }
     const territory = calculateTerritory(citiesToSet, tilesMut);
@@ -3645,7 +3677,7 @@ export const useGameStore = create<GameState>((set, get) => ({
 
     const citiesWallStone = citiesForSet.map(c => {
       const hasWallSite = constructionsForSet.some(
-        con => con.cityId === c.id && con.type === 'wall_section',
+        con => con.cityId === c.id && con.type === 'wall_section' && con.ownerId === c.ownerId,
       );
       if (!hasWallSite) return c;
       const slots = countDefensesTaskSlots(c);
@@ -7521,17 +7553,9 @@ export const useGameStore = create<GameState>((set, get) => ({
     const { q, r } = s.selectedHex;
     const toRemove = s.units.filter(u => u.q === q && u.r === r && u.ownerId === HUMAN_ID && u.hp > 0);
     if (toRemove.length === 0) return;
-    const popByCity: Record<string, number> = {};
-    for (const u of toRemove) {
-      if (u.originCityId) popByCity[u.originCityId] = (popByCity[u.originCityId] ?? 0) + 1;
-    }
     const ids = new Set(toRemove.map(u => u.id));
     const newUnits = s.units.filter(u => !ids.has(u.id));
-    const popAdjusted =
-      Object.keys(popByCity).length === 0 ? s.cities : s.cities.map(c => {
-        const add = popByCity[c.id] ?? 0;
-        return add > 0 ? { ...c, population: c.population + add } : c;
-      });
+    const popAdjusted = applyOriginCityPopulationReturn(s.cities, toRemove);
     const newCities = syncUniversityBuildingLevelsForCities(popAdjusted, {
       onLevelUp: ({ city, newLevel }) => {
         if (city.ownerId === HUMAN_ID) {
@@ -7713,7 +7737,15 @@ export const useGameStore = create<GameState>((set, get) => ({
     const hasArmy = s.units.some(u => u.q === city.q && u.r === city.r && u.ownerId === HUMAN_ID && u.hp > 0);
     if (!hasArmy) { get().addNotification('Need an army on the city!', 'warning'); return; }
 
-    const newCities = s.cities.map(c => c.id !== cityId ? c : { ...c, ownerId: HUMAN_ID });
+    const fx = applyCityCaptureEffects({
+      city,
+      previousOwnerId: city.ownerId,
+      newOwnerId: HUMAN_ID,
+      units: s.units,
+      wallSections: s.wallSections,
+      constructions: s.constructions,
+    });
+    const newCities = s.cities.map(c => (c.id !== cityId ? c : fx.city));
     const territory = calculateTerritory(newCities, s.tiles);
 
     // Check victory
@@ -7727,7 +7759,14 @@ export const useGameStore = create<GameState>((set, get) => ({
       newNotifs.push({ id: generateId('n'), turn: s.cycle, message: `${city.name} captured!`, type: 'success' });
     }
 
-    set({ cities: newCities, territory, phase, notifications: newNotifs.slice(-12) });
+    set({
+      cities: newCities,
+      territory,
+      phase,
+      notifications: newNotifs.slice(-12),
+      wallSections: fx.wallSections,
+      constructions: fx.constructions,
+    });
   },
 
   incorporateVillage: (q, r) => {
