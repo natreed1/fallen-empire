@@ -124,7 +124,7 @@ function baseUnit(overrides: Partial<Unit> & Pick<Unit, 'id' | 'ownerId' | 'type
 {
   const city = baseCity({ id: 'enemy', ownerId: 'ai', q: 5, r: 5, population: 20 });
   const walls: WallSection[] = [
-    { id: 'w1', q: 5, r: 5, ownerId: 'ai', hp: 10, maxHp: 10, ring: 0 },
+    { q: 5, r: 5, ownerId: 'ai', hp: 10, maxHp: 10 },
   ];
 
   const builderOnly = [
