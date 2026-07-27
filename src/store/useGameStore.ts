@@ -144,6 +144,7 @@ import {
   autoEmbarkLandUnitsOntoScoutShipsAtHex,
   landMilitaryContestsCityCapture,
   enemyIntactWallOnCityHex,
+  resolveInstantCityCaptureOwner,
   type DefenseVolleyFx,
   type RangedShotFx,
 } from '@/lib/military';
@@ -3503,21 +3504,11 @@ export const useGameStore = create<GameState>((set, get) => ({
 
     let aliveUnits = units.filter(u => u.hp > 0);
 
-    // City capture (discrete cycle): align with RT — land military only; wall / defenders block unless pop 0
+    // City capture (discrete cycle): align with RT — land military only; sole hostile contender; wall / defenders block unless pop 0
     let citiesToSet = cities;
     for (const city of cities) {
-      const wallBlocks = enemyIntactWallOnCityHex(wallSectionsMut, city);
-      const defendingLand = aliveUnits.filter(
-        u => landMilitaryContestsCityCapture(u, city.q, city.r) && u.ownerId === city.ownerId,
-      );
-      const attackingLand = aliveUnits.filter(
-        u => landMilitaryContestsCityCapture(u, city.q, city.r) && u.ownerId !== city.ownerId,
-      );
-      if (attackingLand.length === 0) continue;
-      const instantTake =
-        city.population === 0 || (defendingLand.length === 0 && !wallBlocks);
-      if (!instantTake) continue;
-      const newOwnerId = attackingLand[0].ownerId;
+      const newOwnerId = resolveInstantCityCaptureOwner(city, aliveUnits, wallSectionsMut);
+      if (!newOwnerId) continue;
       citiesToSet = citiesToSet.map(c => (c.id === city.id ? { ...c, ownerId: newOwnerId } : c));
       notifs.push({ id: generateId('n'), turn: newCycle, message: `${city.name} captured!`, type: 'danger' });
     }
@@ -4181,6 +4172,14 @@ export const useGameStore = create<GameState>((set, get) => ({
 
     const inTerritory = s.territory.get(hexKey);
     const isPlayerTerritory = inTerritory && inTerritory.playerId === HUMAN_ID;
+    if (
+      inTerritory &&
+      inTerritory.playerId !== HUMAN_ID &&
+      (type === 'mine' || type === 'quarry' || type === 'gold_mine' || type === 'logging_hut')
+    ) {
+      get().addNotification('Cannot build on enemy territory!', 'warning');
+      return;
+    }
 
     // Find nearest owned city to assign the building to
     let cityId: string | undefined;
@@ -6048,6 +6047,12 @@ export const useGameStore = create<GameState>((set, get) => ({
       get().addNotification(msg, 'warning'); return;
     }
     const hexKey = tileKey(q, r);
+    // Match AI remote resource rules: own or neutral land only — never enemy territory.
+    const terr = s.territory.get(hexKey);
+    if (terr && terr.playerId !== HUMAN_ID) {
+      get().addNotification('Cannot build on enemy territory!', 'warning');
+      return;
+    }
     if (s.cities.some(c => c.buildings.some(b => tileKey(b.q, b.r) === hexKey))) {
       get().addNotification('Already a building there!', 'warning'); return;
     }
@@ -7667,10 +7672,16 @@ export const useGameStore = create<GameState>((set, get) => ({
     const s = get();
     const city = s.cities.find(c => c.id === cityId);
     if (!city) return;
+    if (city.ownerId === HUMAN_ID) return;
 
-    // Verify player has units on city's hex
-    const hasArmy = s.units.some(u => u.q === city.q && u.r === city.r && u.ownerId === HUMAN_ID && u.hp > 0);
-    if (!hasArmy) { get().addNotification('Need an army on the city!', 'warning'); return; }
+    // Same eligibility as capture contest: land military on center (not builders/naval).
+    const hasLandMilitary = s.units.some(
+      u => landMilitaryContestsCityCapture(u, city.q, city.r) && u.ownerId === HUMAN_ID,
+    );
+    if (!hasLandMilitary) {
+      get().addNotification('Need land military on the city center!', 'warning');
+      return;
+    }
 
     set({
       cities: syncUniversityBuildingLevelsForCities(
@@ -7709,9 +7720,33 @@ export const useGameStore = create<GameState>((set, get) => ({
     const s = get();
     const city = s.cities.find(c => c.id === cityId);
     if (!city) return;
+    if (city.ownerId === HUMAN_ID) return;
 
-    const hasArmy = s.units.some(u => u.q === city.q && u.r === city.r && u.ownerId === HUMAN_ID && u.hp > 0);
-    if (!hasArmy) { get().addNotification('Need an army on the city!', 'warning'); return; }
+    // Align with RT / discrete capture: land military only, sole contender, instant-take rules.
+    const humanLand = s.units.some(
+      u => landMilitaryContestsCityCapture(u, city.q, city.r) && u.ownerId === HUMAN_ID,
+    );
+    if (!humanLand) {
+      get().addNotification('Need land military on the city center!', 'warning');
+      return;
+    }
+    const newOwnerId = resolveInstantCityCaptureOwner(city, s.units, s.wallSections);
+    if (newOwnerId !== HUMAN_ID) {
+      const contenders = [
+        ...new Set(
+          s.units.filter(u => landMilitaryContestsCityCapture(u, city.q, city.r)).map(u => u.ownerId),
+        ),
+      ];
+      if (contenders.length !== 1 || contenders[0] !== HUMAN_ID) {
+        get().addNotification('City center is contested — capture requires sole control.', 'warning');
+        return;
+      }
+      get().addNotification(
+        'Cannot capture yet — clear walls and defenders, or hold the center.',
+        'warning',
+      );
+      return;
+    }
 
     const newCities = s.cities.map(c => c.id !== cityId ? c : { ...c, ownerId: HUMAN_ID });
     const territory = calculateTerritory(newCities, s.tiles);

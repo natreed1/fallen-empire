@@ -31,6 +31,7 @@ export function computeCityProductionRate(
   }
   let buildingFood = 0, buildingGoods = 0, buildingGuns = 0, buildingStone = 0, buildingIron = 0;
   let buildingWood = 0, buildingRefined = 0;
+  let woodRemainingForSawmills = city.storage.wood ?? 0;
   for (const b of city.buildings) {
     if (b.type === 'city_center' || b.type === 'barracks' || b.type === 'academy' || b.type === 'siege_workshop' || b.type === 'port' || b.type === 'shipyard') continue;
     if (!isCityBuildingOperational(b)) continue;
@@ -57,9 +58,9 @@ export function computeCityProductionRate(
     buildingWood += (prod.wood ?? 0) * lvl * (b.type === 'logging_hut' ? active : 0);
     if (b.type === 'sawmill') {
       const maxRef = (prod.refinedWood ?? 0) * lvl * staffRatio;
-      const woodAvail = city.storage.wood ?? 0;
-      const canMake = Math.min(maxRef, Math.floor(woodAvail / SAWMILL_WOOD_PER_REFINED));
+      const canMake = Math.min(maxRef, Math.floor(woodRemainingForSawmills / SAWMILL_WOOD_PER_REFINED));
       buildingRefined += canMake;
+      woodRemainingForSawmills -= canMake * SAWMILL_WOOD_PER_REFINED;
     }
   }
   return {
@@ -75,8 +76,8 @@ export function computeCityProductionRate(
 
 /**
  * Per-cycle sawmill preview for one building (same formula as productionPhase).
- * If the city has multiple sawmills, each preview uses the full current wood stock when
- * computing the wood cap (matching the simulation loop).
+ * When the city has multiple sawmills, wood is consumed in building order —
+ * this preview for a single mill uses the full current stock (UI upper bound).
  */
 export function computeSawmillBuildingPreview(city: City, building: CityBuilding): {
   refinedPerCycle: number;
@@ -252,7 +253,22 @@ export function processEconomyTurn(
 
 function autoAssignWorkersPhase(cities: City[]) {
   for (const city of cities) {
-    let available = city.population - city.buildings.reduce((s, b) => s + ((b as CityBuilding).assignedWorkers ?? 0), 0);
+    let totalAssigned = city.buildings.reduce((s, b) => s + ((b as CityBuilding).assignedWorkers ?? 0), 0);
+    // Clamp stale assignments after population loss (starvation/capture) so production
+    // cannot keep running on workers who no longer exist.
+    if (totalAssigned > city.population) {
+      let excess = totalAssigned - city.population;
+      for (let i = city.buildings.length - 1; i >= 0 && excess > 0; i--) {
+        const b = city.buildings[i] as CityBuilding;
+        const assigned = b.assignedWorkers ?? 0;
+        if (assigned <= 0) continue;
+        const remove = Math.min(assigned, excess);
+        b.assignedWorkers = assigned - remove;
+        excess -= remove;
+      }
+      totalAssigned = city.population;
+    }
+    let available = city.population - totalAssigned;
     if (available <= 0) continue;
     for (const b of city.buildings) {
       const jobs = getBuildingJobs(b);
@@ -312,6 +328,9 @@ function productionPhase(
     let buildingWood = 0;
     let sawmillRefined = 0;
     let sawmillWoodUsed = 0;
+    // Deduct wood sequentially across sawmills so multiple mills cannot each
+    // consume the same raw wood stockpile (free refined wood).
+    let woodRemainingForSawmills = city.storage.wood ?? 0;
     for (const b of city.buildings) {
       if (b.type === 'city_center' || b.type === 'barracks' || b.type === 'academy' || b.type === 'siege_workshop' || b.type === 'port' || b.type === 'shipyard') continue;
       if (!isCityBuildingOperational(b)) continue;
@@ -339,10 +358,11 @@ function productionPhase(
       }
       if (b.type === 'sawmill') {
         const maxRef = (prod.refinedWood ?? 0) * lvl * staffRatio;
-        const woodAvail = city.storage.wood ?? 0;
-        const canMake = Math.min(maxRef, Math.floor(woodAvail / SAWMILL_WOOD_PER_REFINED));
+        const canMake = Math.min(maxRef, Math.floor(woodRemainingForSawmills / SAWMILL_WOOD_PER_REFINED));
         sawmillRefined += canMake;
-        sawmillWoodUsed += canMake * SAWMILL_WOOD_PER_REFINED;
+        const woodUsed = canMake * SAWMILL_WOOD_PER_REFINED;
+        sawmillWoodUsed += woodUsed;
+        woodRemainingForSawmills -= woodUsed;
       }
     }
 
@@ -411,11 +431,14 @@ function playerResourcePhase(
     const ironUsed = Math.min(totalIron, ironNeeded);
     const gunsL2Produced = Math.floor(ironUsed * (FACTORY_L2_ARMS_PER_CYCLE / FACTORY_L2_IRON_PER_CYCLE));
     const gunsPerCity = l2Count > 0 ? Math.floor(gunsL2Produced / l2Count) : 0;
+    let remainder = gunsL2Produced - gunsPerCity * l2Count;
 
     for (const city of l2Cities) {
+      const extra = remainder > 0 ? 1 : 0;
+      if (remainder > 0) remainder -= 1;
       city.storage.gunsL2 = Math.min(
         city.storageCap.gunsL2,
-        city.storage.gunsL2 + gunsPerCity,
+        city.storage.gunsL2 + gunsPerCity + extra,
       );
     }
     if (gunsL2Produced > 0 && player.id === humanId) {
