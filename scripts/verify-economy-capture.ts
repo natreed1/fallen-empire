@@ -35,7 +35,7 @@ function basePlayer(id: string, isHuman = false): Player {
     color: '#fff',
     gold: 100,
     taxRate: 0.3,
-    foodPriority: 'balanced',
+    foodPriority: 'military',
     isHuman,
   };
 }
