@@ -522,6 +522,31 @@ export function enemyIntactWallOnCityHex(wallSections: WallSection[], city: City
   );
 }
 
+/**
+ * Instant city capture owner when rules allow (sole hostile land military; undefended /
+ * unwalled or pop 0). Returns null when contested by multiple hostiles or blocked.
+ */
+export function resolveInstantCityCaptureOwner(
+  city: City,
+  units: Unit[],
+  wallSections: WallSection[],
+): string | null {
+  const defendingLand = units.filter(
+    u => landMilitaryContestsCityCapture(u, city.q, city.r) && u.ownerId === city.ownerId,
+  );
+  const attackingLand = units.filter(
+    u => landMilitaryContestsCityCapture(u, city.q, city.r) && u.ownerId !== city.ownerId,
+  );
+  if (attackingLand.length === 0) return null;
+  const attackerIds = [...new Set(attackingLand.map(u => u.ownerId))];
+  if (attackerIds.length !== 1) return null;
+  const wallBlocks = enemyIntactWallOnCityHex(wallSections, city);
+  const instantTake =
+    city.population === 0 || (defendingLand.length === 0 && !wallBlocks);
+  if (!instantTake) return null;
+  return attackerIds[0];
+}
+
 export interface ClosingFireResult {
   killedUnitIds: string[];
   notifications: GameNotification[];

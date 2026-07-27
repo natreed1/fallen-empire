@@ -61,6 +61,7 @@ import {
   type SupplyCacheEntry,
   landMilitaryContestsCityCapture,
   enemyIntactWallOnCityHex,
+  resolveInstantCityCaptureOwner,
 } from '../lib/military';
 import { updateArmyRallyFromUnits, computeArmyReplenishment } from '../lib/armyReplenishment';
 import type { MoraleState } from '../lib/combat';
@@ -1072,22 +1073,12 @@ export function stepSimulation(
   }
   scoutMissions = stillPending;
 
-  // ── City capture before movement (instant only; land military + wall / defender check) ──
+  // ── City capture before movement (instant only; land military + sole contender + wall / defender check) ──
   let citiesToSet = cities;
   let aliveUnits = units.filter(u => u.hp > 0);
   for (const city of cities) {
-    const wallBlocks = enemyIntactWallOnCityHex(wallSectionsAfterAi, city);
-    const defendingLand = aliveUnits.filter(
-      u => landMilitaryContestsCityCapture(u, city.q, city.r) && u.ownerId === city.ownerId,
-    );
-    const attackingLand = aliveUnits.filter(
-      u => landMilitaryContestsCityCapture(u, city.q, city.r) && u.ownerId !== city.ownerId,
-    );
-    if (attackingLand.length === 0) continue;
-    const instantTake =
-      city.population === 0 || (defendingLand.length === 0 && !wallBlocks);
-    if (!instantTake) continue;
-    const newOwnerId = attackingLand[0].ownerId;
+    const newOwnerId = resolveInstantCityCaptureOwner(city, aliveUnits, wallSectionsAfterAi);
+    if (!newOwnerId) continue;
     citiesToSet = citiesToSet.map(c => (c.id === city.id ? { ...c, ownerId: newOwnerId } : c));
   }
   // Territory computed once at end of step (after capture hold) to avoid duplicate work
