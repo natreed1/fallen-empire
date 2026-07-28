@@ -208,10 +208,27 @@ function basePlayer(id: string, isHuman = true): Player {
     mkUnit('ship', 'warship', 1, 0, 'p2'),
     mkUnit('inf', 'infantry', 0, 1, 'p2'),
   ];
+  const mkTile = (q: number, r: number, biome: Tile['biome']): Tile => ({
+    q,
+    r,
+    biome,
+    elevation: 0,
+    height: 0,
+    hasRoad: false,
+    hasRuins: false,
+    hasVillage: false,
+    isProvinceCenter: false,
+    hasQuarryDeposit: false,
+    hasMineDeposit: false,
+    hasAncientCity: false,
+    hasGoldMineDeposit: false,
+    hasWoodDeposit: false,
+    isIsland: false,
+  });
   const tiles = new Map<string, Tile>([
-    [tileKey(0, 0), { q: 0, r: 0, biome: 'plains', elevation: 0, forest: false, road: false, resource: null }],
-    [tileKey(1, 0), { q: 1, r: 0, biome: 'water', elevation: 0, forest: false, road: false, resource: null }],
-    [tileKey(0, 1), { q: 0, r: 1, biome: 'plains', elevation: 0, forest: false, road: false, resource: null }],
+    [tileKey(0, 0), mkTile(0, 0, 'plains')],
+    [tileKey(1, 0), mkTile(1, 0, 'water')],
+    [tileKey(0, 1), mkTile(0, 1, 'plains')],
   ]);
   const infHpBefore = units[2].hp;
   combatTick(units, [], 1, [], tiles, 1_000_000);
