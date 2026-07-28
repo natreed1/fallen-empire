@@ -13,7 +13,7 @@ import {
   UNIT_COSTS,
   UNIT_L2_COSTS,
   UNIT_L3_COSTS,
-  WORKERS_PER_LEVEL,
+  getBuildingJobs,
   BARACKS_UPGRADE_COST,
   FACTORY_UPGRADE_COST,
   FARM_UPGRADE_COST,
@@ -74,9 +74,14 @@ export function applyAiInstantBuilds(
       (b as { level?: number }).level = computeUniversityBuildingLevelFromPopulation(city.population);
     }
     if (build.type === 'quarry' || build.type === 'mine' || build.type === 'gold_mine') {
-      const toAssign = Math.min(WORKERS_PER_LEVEL, Math.max(0, city.population - 1));
-      (b as { assignedWorkers?: number }).assignedWorkers = toAssign;
-      city.population -= toAssign;
+      // Employment is tracked separately from population (same as human builds / autoAssignWorkersPhase).
+      const jobs = getBuildingJobs(b);
+      const employed = city.buildings.reduce(
+        (s, x) => s + ((x as { assignedWorkers?: number }).assignedWorkers ?? 0),
+        0,
+      );
+      const available = Math.max(0, city.population - employed);
+      (b as { assignedWorkers?: number }).assignedWorkers = Math.min(jobs, available);
     }
     city.buildings.push(b);
     ctx.onSpendGold(BUILDING_COSTS[build.type]);

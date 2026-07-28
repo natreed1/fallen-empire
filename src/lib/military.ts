@@ -1129,6 +1129,9 @@ export function combatTick(
             adjustMoraleOnKill(moraleState, otherKey, atk.ownerId, target.ownerId);
             killFeed.push({ killerType: atk.type, killerOwner: atk.ownerId, victimType: target.type, victimOwner: target.ownerId, hexKey: otherKey, timestamp: now });
           }
+          // Only consume the attack tick when a fightable target was actually engaged.
+          // Incompatible hexes (e.g. land vs ship) must not burn the attack before a land foe is tried.
+          processed.add(atk.id);
         } else if (enemyHero && !isNavalUnitType(atk.type)) {
           const atkMult = combatScrollMult(units, atk, scrollAttachments);
           const cmdAtk = commanderAttackMultiplierForUnit(atk, commanders, cities, units);
@@ -1143,8 +1146,8 @@ export function combatTick(
             killedHeroIds.push(enemyHero.id);
             adjustMoraleOnHeroDeath(moraleState, otherKey, enemyHero.ownerId);
           }
+          processed.add(atk.id);
         }
-        processed.add(atk.id);
       }
 
       const defenderHero = heroes.find(h => h.q === oq && h.r === or_ && h.ownerId === (enemies[0]?.ownerId ?? enemyHero?.ownerId));

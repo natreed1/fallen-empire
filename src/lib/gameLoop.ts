@@ -58,7 +58,8 @@ export function computeCityProductionRate(
     if (b.type === 'sawmill') {
       const maxRef = (prod.refinedWood ?? 0) * lvl * staffRatio;
       const woodAvail = city.storage.wood ?? 0;
-      const canMake = Math.min(maxRef, Math.floor(woodAvail / SAWMILL_WOOD_PER_REFINED));
+      // Integer batches only — fractional canMake burned wood for floor(refined)=0.
+      const canMake = Math.floor(Math.min(maxRef, Math.floor(woodAvail / SAWMILL_WOOD_PER_REFINED)));
       buildingRefined += canMake;
     }
   }
@@ -92,7 +93,7 @@ export function computeSawmillBuildingPreview(city: City, building: CityBuilding
   const staffRatio = jobs > 0 ? Math.min(1, assigned / jobs) : 0;
   const staffCappedRefined = (prod.refinedWood ?? 0) * lvl * staffRatio;
   const woodAvail = city.storage.wood ?? 0;
-  const canMake = Math.min(staffCappedRefined, Math.floor(woodAvail / SAWMILL_WOOD_PER_REFINED));
+  const canMake = Math.floor(Math.min(staffCappedRefined, Math.floor(woodAvail / SAWMILL_WOOD_PER_REFINED)));
   const moraleMod = city.morale / 100;
   return {
     refinedPerCycle: Math.floor(canMake * moraleMod),
@@ -173,9 +174,7 @@ export function computeEmpireIncomeStatement(
 
   const foodExpense = foodExpenseCiv + foodExpenseMil;
 
-  const l2FactoryCount = empireCities.filter(c =>
-    c.buildings.some(b => b.type === 'factory' && ((b as CityBuilding).level ?? 1) >= 2),
-  ).length;
+  const l2FactoryCount = empireCities.filter(cityHasActiveL2Factory).length;
   const ironExpense = l2FactoryCount * FACTORY_L2_IRON_PER_CYCLE;
 
   const ironUsed = Math.min(ironIncome, ironExpense);
@@ -340,7 +339,8 @@ function productionPhase(
       if (b.type === 'sawmill') {
         const maxRef = (prod.refinedWood ?? 0) * lvl * staffRatio;
         const woodAvail = city.storage.wood ?? 0;
-        const canMake = Math.min(maxRef, Math.floor(woodAvail / SAWMILL_WOOD_PER_REFINED));
+        // Integer batches only — fractional canMake burned wood for floor(refined)=0.
+        const canMake = Math.floor(Math.min(maxRef, Math.floor(woodAvail / SAWMILL_WOOD_PER_REFINED)));
         sawmillRefined += canMake;
         sawmillWoodUsed += canMake * SAWMILL_WOOD_PER_REFINED;
       }
@@ -389,6 +389,18 @@ function productionPhase(
   return foodProduced;
 }
 
+/** True if the city has an L2 factory that should consume iron / produce arms this cycle. */
+function cityHasActiveL2Factory(city: City): boolean {
+  return city.buildings.some(b => {
+    if (b.type !== 'factory' || ((b as CityBuilding).level ?? 1) < 2) return false;
+    if (!isCityBuildingOperational(b as CityBuilding)) return false;
+    const jobs = getBuildingJobs(b);
+    const assigned = (b as CityBuilding).assignedWorkers ?? 0;
+    const staffRatio = jobs > 0 ? Math.min(1, assigned / jobs) : 0;
+    return staffRatio > 0;
+  });
+}
+
 // ─── Phase 1b: Empire resource allocation ───
 // Iron is pooled per player; L2 factories consume from the pool and produce gunsL2.
 function playerResourcePhase(
@@ -403,9 +415,7 @@ function playerResourcePhase(
 
     const totalIron = playerCities.reduce((s, c) => s + (c.storage.iron ?? 0), 0);
 
-    const l2Cities = playerCities.filter(c =>
-      c.buildings.some(b => b.type === 'factory' && ((b as CityBuilding).level ?? 1) >= 2),
-    );
+    const l2Cities = playerCities.filter(cityHasActiveL2Factory);
     const l2Count = l2Cities.length;
     const ironNeeded = l2Count * FACTORY_L2_IRON_PER_CYCLE;
     const ironUsed = Math.min(totalIron, ironNeeded);
@@ -738,6 +748,7 @@ function economicsPhase(
       const moraleMod = city.morale / 100;
 
       for (const b of city.buildings) {
+        if (!isCityBuildingOperational(b as CityBuilding)) continue;
         if (b.type === 'market') {
           const jobs = BUILDING_JOBS.market;
           const assigned = (b as CityBuilding).assignedWorkers ?? 0;
