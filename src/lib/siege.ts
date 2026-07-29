@@ -201,6 +201,40 @@ export function releaseAttackWaveHolds(units: Unit[], cities: City[]): void {
   }
 }
 
+/**
+ * Begin a center assault on `city` for `ownerId`.
+ * Retargets units currently sieging the city **and** later echelons still on
+ * `attackWaveHold` for that city (Begin Assault used to leave holders stranded
+ * once wave-1 left the rally hex).
+ */
+export function unitsBeginSiegeAssaultOnCity(
+  units: Unit[],
+  city: City,
+  ownerId: string,
+  cities: City[],
+): Unit[] {
+  return units.map(u => {
+    if (u.ownerId !== ownerId || u.hp <= 0) return u;
+    const heldForCity = u.attackWaveHold?.cityId === city.id;
+    const sieging = u.siegingCityId === city.id;
+    if (!sieging && !heldForCity) return u;
+
+    const deployed = withoutPatrolFields(withDeployFlags(u, city.q, city.r, cities));
+    const nextU: Unit = {
+      ...deployed,
+      targetQ: city.q,
+      targetR: city.r,
+      status: 'moving',
+      assaulting: true,
+      marchInitialHexDistance: marchHexDistanceAtOrder(u, city.q, city.r),
+    };
+    delete nextU.siegingCityId;
+    delete nextU.attackWaveHold;
+    if (nextU.incorporateVillageAt) delete nextU.incorporateVillageAt;
+    return nextU;
+  });
+}
+
 export function countLandMilitaryByType(stackUnits: Unit[]): Partial<Record<UnitType, number>> {
   const out: Partial<Record<UnitType, number>> = {};
   for (const u of stackUnits) {

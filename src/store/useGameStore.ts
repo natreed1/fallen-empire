@@ -163,6 +163,7 @@ import {
   selectUnitIdsByTypeCounts,
   releaseAttackWaveHolds,
   releaseMarchEchelonHolds,
+  unitsBeginSiegeAssaultOnCity,
   unitIdsMatchingTypes,
   TACTICAL_FILTER_LAND_TYPES,
 } from '@/lib/siege';
@@ -6999,21 +7000,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     const city = s.cities.find(c => c.id === cityId);
     if (!city) return;
     set({
-      units: s.units.map(u => {
-        if (u.ownerId !== HUMAN_ID || u.hp <= 0 || u.siegingCityId !== cityId) return u;
-        const deployed = withoutPatrolFields(withDeployFlags(u, city.q, city.r, s.cities));
-        const nextU: Unit = {
-          ...deployed,
-          targetQ: city.q,
-          targetR: city.r,
-          status: 'moving',
-          assaulting: true,
-          marchInitialHexDistance: marchHexDistanceAtOrder(u, city.q, city.r),
-        };
-        delete nextU.siegingCityId;
-        if (nextU.incorporateVillageAt) delete nextU.incorporateVillageAt;
-        return nextU;
-      }),
+      units: unitsBeginSiegeAssaultOnCity(s.units, city, HUMAN_ID, s.cities),
     });
     get().addNotification(`Assault on ${city.name}!`, 'danger');
   },
