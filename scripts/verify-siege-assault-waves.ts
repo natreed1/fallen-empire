@@ -39,15 +39,18 @@ function baseUnit(partial: Partial<Unit> & Pick<Unit, 'id' | 'q' | 'r'>): Unit {
   } as Unit;
 }
 
-// Wave 1 at rally (sieging); wave 2 held until wave 1 reaches rally.
-const wave1 = baseUnit({
+// Wave 1 still en route to rally (siegingCityId set at order confirm — Assault UI available).
+// Wave 2 held until wave 1 reaches rally.
+const wave1EnRoute = baseUnit({
   id: 'w1',
-  q: rallyQ,
-  r: rallyR,
-  status: 'idle',
+  q: 2,
+  r: 2,
+  status: 'moving',
+  targetQ: rallyQ,
+  targetR: rallyR,
   siegingCityId: city.id,
 });
-const wave2 = baseUnit({
+const wave2Held = baseUnit({
   id: 'w2',
   q: 1,
   r: 1,
@@ -63,25 +66,30 @@ const wave2 = baseUnit({
   },
 });
 
-// Old bug: assault only moved sieging units → wave1 leaves rally → releaseAttackWaveHolds never fires.
-const afterOldAssaultShape: Unit[] = [
+// Old bug: assault only moves sieging units. Wave-1 never reaches rally → hold never releases.
+const afterOldAssault: Unit[] = [
   {
-    ...wave1,
+    ...wave1EnRoute,
     targetQ: city.q,
     targetR: city.r,
     status: 'moving',
     assaulting: true,
   },
-  { ...wave2 },
+  { ...wave2Held },
 ];
-delete afterOldAssaultShape[0].siegingCityId;
-releaseAttackWaveHolds(afterOldAssaultShape, [city]);
+delete afterOldAssault[0].siegingCityId;
+releaseAttackWaveHolds(afterOldAssault, [city]);
 assert(
-  !!afterOldAssaultShape[1].attackWaveHold,
-  'repro: held wave stays stranded after wave-1 leaves rally for assault',
+  !!afterOldAssault[1].attackWaveHold,
+  'repro: held wave stranded when assault starts before wave-1 reaches rally',
 );
 
-const afterFix = unitsBeginSiegeAssaultOnCity([wave1, wave2], city, 'player_human', [city]);
+const afterFix = unitsBeginSiegeAssaultOnCity(
+  [wave1EnRoute, wave2Held],
+  city,
+  'player_human',
+  [city],
+);
 const u1 = afterFix.find(u => u.id === 'w1')!;
 const u2 = afterFix.find(u => u.id === 'w2')!;
 
@@ -90,6 +98,38 @@ assert(!u1.siegingCityId, 'wave1 clears siegingCityId');
 assert(u2.assaulting === true && u2.targetQ === city.q && u2.targetR === city.r, 'wave2 assaults center');
 assert(!u2.attackWaveHold, 'wave2 hold cleared');
 assert(u2.status === 'moving', 'wave2 is moving');
+
+// Also when wave-1 is already at rally: held echelons must join the assault, not sit on hold.
+const wave1AtRally = baseUnit({
+  id: 'w1b',
+  q: rallyQ,
+  r: rallyR,
+  status: 'idle',
+  siegingCityId: city.id,
+});
+const wave2AtHold = baseUnit({
+  id: 'w2b',
+  q: 0,
+  r: 0,
+  status: 'idle',
+  attackWaveHold: {
+    waitForUnitIds: ['w1b'],
+    cityId: city.id,
+    rallyQ,
+    rallyR,
+    centerQ: city.q,
+    centerR: city.r,
+    attackStyle: 'siege',
+  },
+});
+const joined = unitsBeginSiegeAssaultOnCity(
+  [wave1AtRally, wave2AtHold],
+  city,
+  'player_human',
+  [city],
+);
+assert(joined.find(u => u.id === 'w2b')!.assaulting === true, 'held wave at-rally case joins assault');
+assert(!joined.find(u => u.id === 'w2b')!.attackWaveHold, 'held wave at-rally case clears hold');
 
 // Unrelated hold must not be touched.
 const otherHold = baseUnit({
