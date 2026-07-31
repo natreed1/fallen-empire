@@ -11,6 +11,8 @@ import {
   getUnitStats,
   isNavalUnitType,
   generateId,
+  ensureCityBuildingHp,
+  isCityBuildingOperational,
 } from '@/types/game';
 
 export type ReplenishPendingLand = {
@@ -165,29 +167,28 @@ export function computeArmyReplenishment(input: ReplenishInput): ReplenishResult
       if (t === 'crusader_knight' && player.kingdomId !== 'crusaders') continue;
       const isSiege = t === 'trebuchet' || t === 'battering_ram';
       if (isSiege) {
-        if (!home.buildings.some(b => b.type === 'siege_workshop')) continue;
+        const siegeWs = home.buildings.find(b => b.type === 'siege_workshop');
+        if (!siegeWs || !isCityBuildingOperational(ensureCityBuildingHp(siegeWs))) continue;
       } else {
-        if (!barracks) continue;
+        if (!barracks || !isCityBuildingOperational(ensureCityBuildingHp(barracks))) continue;
       }
 
+      // Match recruitUnit: L2 and L3 are mutually exclusive (not cumulative).
       const wantL3 = entry.armsLevel === 3 || t === 'defender' || t === 'crusader_knight';
-      const wantL2 = entry.armsLevel === 2 || wantL3;
+      const wantL2 = entry.armsLevel === 2 && !wantL3;
       if (!isSiege) {
-        if (t === 'defender' && barracksLvl < 2) continue;
-        if ((wantL2 || wantL3) && t !== 'defender' && barracksLvl < 2) continue;
-        if (t === 'crusader_knight' && barracksLvl < 3) continue;
+        if (wantL2 && barracksLvl < 2) continue;
+        if (wantL3 && barracksLvl < 3) continue;
       }
 
       const effArms: 1 | 2 | 3 =
         t === 'trebuchet' || t === 'battering_ram'
           ? 1
-          : t === 'defender' || t === 'crusader_knight'
+          : wantL3
             ? 3
-            : wantL3
-              ? 3
-              : wantL2
-                ? 2
-                : 1;
+            : wantL2
+              ? 2
+              : 1;
 
       let effRangedVariant: RangedVariant | undefined;
       if (t === 'ranged' && effArms === 3) {
