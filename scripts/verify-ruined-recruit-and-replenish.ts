@@ -13,8 +13,8 @@ import {
   type Player,
   type Unit,
   type UnitStack,
-  type PendingLandRecruit,
 } from '../src/types/game';
+import type { PendingLandRecruit } from '../src/lib/pendingLandRecruit';
 
 function assert(cond: boolean, msg: string): asserts cond {
   if (!cond) throw new Error(msg);
@@ -145,7 +145,7 @@ const player: Player = {
   taxRate: 0.3,
   foodPriority: 'military',
   isHuman: true,
-  kingdomId: 'romans',
+  kingdomId: 'crusaders',
 };
 
 const units: Unit[] = [];
