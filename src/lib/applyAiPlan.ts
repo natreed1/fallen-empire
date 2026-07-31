@@ -24,6 +24,8 @@ import {
   isUnitUnlockedByTech,
   maxBuildingLevelByTech,
   STARTING_TECHS,
+  ensureCityBuildingHp,
+  isCityBuildingOperational,
 } from '@/types/game';
 import { computeUniversityBuildingLevelFromPopulation } from '@/lib/universityPopulation';
 import type { AiActions } from '@/lib/ai';
@@ -144,8 +146,10 @@ export function applyAiRecruitsAsPending(
     if (!city || city.ownerId !== ctx.aiPlayerId || city.population <= 0 || aiTroopCount >= aiTotalPopForRecruit) {
       continue;
     }
-    if (rec.type === 'trebuchet' || rec.type === 'battering_ram') {
-      if (!city.buildings.some(b => b.type === 'siege_workshop')) continue;
+    const isSiege = rec.type === 'trebuchet' || rec.type === 'battering_ram';
+    if (isSiege) {
+      const siegeWs = city.buildings.find(b => b.type === 'siege_workshop');
+      if (!siegeWs || !isCityBuildingOperational(ensureCityBuildingHp(siegeWs))) continue;
     }
     const effectiveLevel = rec.type === 'defender' ? 3 : (rec.armsLevel ?? 1);
     const wantL2 = effectiveLevel === 2;
@@ -173,11 +177,14 @@ export function applyAiRecruitsAsPending(
       if (totalGunsL2 < gunL2Upkeep) continue;
     }
     if (rec.type === 'builder') continue;
-    const barracks = city.buildings.find(b => b.type === 'barracks');
-    const bl = barracks?.level ?? 1;
-    const needBarracks =
-      rec.type === 'defender' ? 3 : wantL3 ? 3 : wantL2 ? 2 : 1;
-    if (bl < needBarracks) continue;
+    if (!isSiege) {
+      const barracks = city.buildings.find(b => b.type === 'barracks');
+      if (!barracks || !isCityBuildingOperational(ensureCityBuildingHp(barracks))) continue;
+      const bl = barracks.level ?? 1;
+      const needBarracks =
+        rec.type === 'defender' ? 3 : wantL3 ? 3 : wantL2 ? 2 : 1;
+      if (bl < needBarracks) continue;
+    }
     const sq = city.q;
     const sr = city.r;
     const effArms: 1 | 2 | 3 = rec.type === 'defender' ? 3 : wantL3 ? 3 : wantL2 ? 2 : 1;

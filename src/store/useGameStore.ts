@@ -5017,12 +5017,22 @@ export const useGameStore = create<GameState>((set, get) => ({
       return;
     } else if (type === 'trebuchet' || type === 'battering_ram') {
       const siegeWs = city.buildings.find(b => b.type === 'siege_workshop');
-      if (!siegeWs) {
-        get().addNotification('Build a Siege workshop to recruit trebuchets and battering rams!', 'warning'); return;
+      if (!siegeWs || !isCityBuildingOperational(ensureCityBuildingHp(siegeWs))) {
+        get().addNotification(
+          siegeWs
+            ? 'Repair the Siege workshop before recruiting siege engines!'
+            : 'Build a Siege workshop to recruit trebuchets and battering rams!',
+          'warning',
+        );
+        return;
       }
     } else {
-      if (!barracks) {
-        get().addNotification('Build a Barracks to recruit military units!', 'warning'); return;
+      if (!barracks || !isCityBuildingOperational(ensureCityBuildingHp(barracks))) {
+        get().addNotification(
+          barracks ? 'Repair the Barracks before recruiting!' : 'Build a Barracks to recruit military units!',
+          'warning',
+        );
+        return;
       }
       if (wantL2 && barracksLvl < 2) {
         get().addNotification('Upgrade barracks to L2 to recruit L2 units!', 'warning'); return;
@@ -5660,9 +5670,13 @@ export const useGameStore = create<GameState>((set, get) => ({
       get().addNotification(msg ?? 'Not researched yet.', 'warning');
       return;
     }
-    const yard = city.buildings.some(b => b.type === 'shipyard' && b.q === shipyardQ && b.r === shipyardR);
-    if (!yard) {
-      get().addNotification('No shipyard at that location.', 'warning'); return;
+    const yard = city.buildings.find(b => b.type === 'shipyard' && b.q === shipyardQ && b.r === shipyardR);
+    if (!yard || !isCityBuildingOperational(ensureCityBuildingHp(yard))) {
+      get().addNotification(
+        yard ? 'Repair the Shipyard before building ships!' : 'No shipyard at that location.',
+        'warning',
+      );
+      return;
     }
     const costs = SHIP_RECRUIT_COSTS[shipType];
     if (player.gold < costs.gold) {
