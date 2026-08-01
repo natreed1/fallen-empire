@@ -1983,7 +1983,17 @@ function isScoutShipEmbarkWaterHex(
   const ship = shipsHere[0];
   const cap = getShipMaxCargo('scout_ship');
   const n = ship.cargoUnitIds?.length ?? 0;
-  return cap > n;
+  // Count land units already on this water hex (arriving this tick) so stacks cannot overflow cargo.
+  const waiting = allUnits.filter(
+    u =>
+      !u.aboardShipId &&
+      !isNavalUnitType(u.type) &&
+      u.q === nq &&
+      u.r === nr &&
+      u.ownerId === ownerId &&
+      u.hp > 0,
+  ).length;
+  return n + waiting < cap;
 }
 
 /** Enemy walls keyed by hex (intact enemy wall blocks land move onto that hex). */
@@ -2180,7 +2190,10 @@ export function autoEmbarkLandUnitsOntoScoutShipsAtHex(units: Unit[], tiles: Map
   }
 }
 
-/** Siege tick: trebuchet (range 3) and battering ram (range 1) damage enemy wall sections (design §17–19, 29). */
+/**
+ * Siege tick: trebuchet (range 3) and battering ram (range 1) damage enemy wall sections (design §17–19, 29).
+ * Call once per economy cycle (live RT gates this; headless gameCore steps once per cycle).
+ */
 export function siegeTick(
   wallSections: WallSection[],
   units: Unit[],

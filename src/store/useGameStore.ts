@@ -1219,7 +1219,8 @@ function canLandStackEmbarkFriendlyScoutAt(
   if (ships.length !== 1) return false;
   const cap = getShipMaxCargo('scout_ship');
   const n = ships[0].cargoUnitIds?.length ?? 0;
-  return cap > n;
+  // Whole stack must fit — partial boarding leaves overflow stranded on water.
+  return stack.length > 0 && n + stack.length <= cap;
 }
 
 // ─── Store ─────────────────────────────────────────────────────────
@@ -2364,17 +2365,20 @@ export const useGameStore = create<GameState>((set, get) => ({
         movingCommanders,
       );
 
-      // -- Siege tick: trebuchet/ram damage walls (design §17–19) --
-      siegeTick(wallSectionsMut, movingUnits);
-      siegeDefenseInstallationsTick(defenseInstallationsMut, movingUnits);
-
+      // Siege / structure damage once per economy cycle (design: siegeTick each cycle;
+      // headless gameCore applies these once per step). Combat/coastal still tick every second.
       const citiesBase = s.cities.map(c => ({
         ...c,
         buildings: c.buildings.map(b => ({ ...b })),
       }));
-      siegeBuildingsTick(citiesBase, movingUnits);
-      landUnitBuildingDamageTick(citiesBase, movingUnits);
-      defenseInstallationsLandRaidTick(defenseInstallationsMut, movingUnits);
+      const applySiegeStructureDamage = m === MOVEMENT_TICKS_PER_ECONOMY_CYCLE - 1;
+      if (applySiegeStructureDamage) {
+        siegeTick(wallSectionsMut, movingUnits);
+        siegeDefenseInstallationsTick(defenseInstallationsMut, movingUnits);
+        siegeBuildingsTick(citiesBase, movingUnits);
+        landUnitBuildingDamageTick(citiesBase, movingUnits);
+        defenseInstallationsLandRaidTick(defenseInstallationsMut, movingUnits);
+      }
 
       const mergedKilledUnitIds = [
         ...new Set([...closingFire.killedUnitIds, ...combatResult.killedUnitIds, ...coastalResult.killedUnitIds]),
@@ -5764,12 +5768,20 @@ export const useGameStore = create<GameState>((set, get) => ({
     if (!ship || !ship.cargoUnitIds?.length) {
       get().addNotification('No cargo to unload.', 'info'); return;
     }
+    const wallByKey = new Map(s.wallSections.map(w => [tileKey(w.q, w.r), w]));
     const landNeighbor = hexNeighbors(ship.q, ship.r).find(([lq, lr]) => {
       const t = s.tiles.get(tileKey(lq, lr));
-      return t && t.biome !== 'water' && t.biome !== 'mountain';
+      if (!t || t.biome === 'water' || t.biome === 'mountain') return false;
+      const wall = wallByKey.get(tileKey(lq, lr));
+      if (wall && wall.ownerId !== HUMAN_ID && (wall.hp ?? 1) > 0) return false;
+      const hasEnemy = s.units.some(
+        u => !u.aboardShipId && u.q === lq && u.r === lr && u.ownerId !== HUMAN_ID && u.hp > 0,
+      );
+      if (hasEnemy) return false;
+      return true;
     });
     if (!landNeighbor) {
-      get().addNotification('No adjacent land to disembark.', 'warning'); return;
+      get().addNotification('No safe adjacent land to disembark (walls or enemies block).', 'warning'); return;
     }
     const [lq, lr] = landNeighbor;
     const cargoIds = new Set(ship.cargoUnitIds);
