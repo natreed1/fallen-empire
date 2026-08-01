@@ -20,6 +20,26 @@ function assert(cond: boolean, msg: string) {
   if (!cond) throw new Error(msg);
 }
 
+function makeTile(q: number, r: number, biome: Tile['biome']): Tile {
+  return {
+    q,
+    r,
+    biome,
+    elevation: 0,
+    height: 0,
+    hasRoad: false,
+    hasRuins: false,
+    hasVillage: false,
+    isProvinceCenter: false,
+    hasQuarryDeposit: false,
+    hasMineDeposit: false,
+    hasAncientCity: false,
+    hasGoldMineDeposit: false,
+    hasWoodDeposit: false,
+    isIsland: false,
+  };
+}
+
 // ── 1. One siegeTick ≈ design damage; 30 ticks would melt a wall ──────────
 {
   const wall: WallSection = {
@@ -67,7 +87,7 @@ function assert(cond: boolean, msg: string) {
   assert(cap === 5, 'scout cargo cap');
 
   const tiles = new Map<string, Tile>();
-  tiles.set(tileKey(0, 0), { q: 0, r: 0, biome: 'water', elevation: 0, foodYield: 0 });
+  tiles.set(tileKey(0, 0), makeTile(0, 0, 'water'));
 
   const ship: Unit = {
     id: 'ship1',
@@ -138,8 +158,8 @@ function assert(cond: boolean, msg: string) {
   }
 
   const tiles = new Map<string, Tile>();
-  tiles.set(tileKey(1, 0), { q: 1, r: 0, biome: 'plains', elevation: 0, foodYield: 0 });
-  tiles.set(tileKey(0, 1), { q: 0, r: 1, biome: 'plains', elevation: 0, foodYield: 0 });
+  tiles.set(tileKey(1, 0), makeTile(1, 0, 'plains'));
+  tiles.set(tileKey(0, 1), makeTile(0, 1, 'plains'));
 
   const intactWall: WallSection[] = [
     { q: 1, r: 0, ownerId: 'enemy', hp: WALL_SECTION_HP, maxHp: WALL_SECTION_HP },
