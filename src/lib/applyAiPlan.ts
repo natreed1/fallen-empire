@@ -204,7 +204,9 @@ export function applyAiRecruitsAsPending(
     }
     ctx.onSpendGold(goldCost);
     if (stoneCost > 0 || ironCost > 0 || refinedWoodCost > 0) {
-      const idx = ctx.cities.indexOf(city);
+      // Must key by city id — doctrine replace above may have swapped the array entry,
+      // so indexOf(city) on the stale object reference would skip the spend (free iron).
+      const idx = ctx.cities.findIndex(c => c.id === city.id);
       if (idx >= 0) {
         const c = ctx.cities[idx];
         ctx.cities[idx] = {

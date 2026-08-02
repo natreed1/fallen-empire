@@ -1024,8 +1024,9 @@ export function stepSimulation(
         continue;
       }
 
-      // One cycle = 30 seconds: gain 30 * (availBP / BP_RATE_BASE) = availBP
-      const bpGain = availBP;
+      // Live game: each movement tick adds availBP/BP_RATE_BASE; one economy cycle =
+      // MOVEMENT_TICKS_PER_ECONOMY_CYCLE ticks → availBP * 30/50 (not availBP).
+      const bpGain = availBP * (MOVEMENT_TICKS_PER_ECONOMY_CYCLE / BP_RATE_BASE);
       const newAccum = site.bpAccumulated + bpGain;
 
       if (newAccum >= site.bpRequired) {
