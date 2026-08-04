@@ -1,25 +1,31 @@
 /**
  * Multiplayer room session hygiene: dead-socket prune, role reclaim, host-pause cleanup.
+ * Uses a minimal socket shape so shared verify scripts can import without `ws` types.
  */
-import type { WebSocket } from 'ws';
 
 export type RoomRole = 'host' | 'guest';
 
+/** Minimal socket handle used by session helpers (compatible with `ws` WebSocket). */
+export type RoomSocket = {
+  readyState: number;
+  close?: () => void;
+};
+
 export type RoomClientMeta = {
-  socket: WebSocket;
+  socket: RoomSocket;
   role: RoomRole;
   playerId: string;
 };
 
 export type SessionRoom = {
-  clients: Map<WebSocket, RoomClientMeta>;
+  clients: Map<RoomSocket, RoomClientMeta>;
   paused: boolean;
 };
 
 /** Drop sockets that are no longer OPEN so capacity checks see live peers only. */
 export function pruneDeadClients(
   room: SessionRoom,
-  isOpen: (socket: WebSocket) => boolean,
+  isOpen: (socket: RoomSocket) => boolean,
 ): number {
   let removed = 0;
   for (const [socket] of room.clients) {
@@ -31,7 +37,7 @@ export function pruneDeadClients(
   return removed;
 }
 
-export function findSocketByRole(room: SessionRoom, role: RoomRole): WebSocket | null {
+export function findSocketByRole(room: SessionRoom, role: RoomRole): RoomSocket | null {
   for (const [socket, meta] of room.clients) {
     if (meta.role === role) return socket;
   }
@@ -39,7 +45,7 @@ export function findSocketByRole(room: SessionRoom, role: RoomRole): WebSocket |
 }
 
 export type JoinDecision =
-  | { ok: true; replaced: WebSocket | null }
+  | { ok: true; replaced: RoomSocket | null }
   | { ok: false; reason: string };
 
 /**
@@ -49,7 +55,7 @@ export type JoinDecision =
 export function decideRoomJoin(
   room: SessionRoom,
   role: RoomRole,
-  isOpen: (socket: WebSocket) => boolean,
+  isOpen: (socket: RoomSocket) => boolean,
 ): JoinDecision {
   pruneDeadClients(room, isOpen);
   const existing = findSocketByRole(room, role);
