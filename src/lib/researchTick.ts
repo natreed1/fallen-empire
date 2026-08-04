@@ -13,6 +13,8 @@ import {
   UNIVERSITY_EDUCATION_PER_LEVEL,
   EducationState,
   NationalCouncil,
+  ensureCityBuildingHp,
+  isCityBuildingOperational,
 } from '@/types/game';
 import { computeUniversityBuildingLevelFromPopulation } from '@/lib/universityPopulation';
 import { computeCouncilBoosts } from './nationalCouncil';
@@ -34,6 +36,7 @@ export function computeLiteracyPerCycle(
   for (const city of playerCities) {
     for (const b of city.buildings) {
       if (b.type !== 'university') continue;
+      if (!isCityBuildingOperational(ensureCityBuildingHp(b))) continue;
       const level = computeUniversityBuildingLevelFromPopulation(city.population);
       universityBonus += UNIVERSITY_EDUCATION_PER_LEVEL * level;
     }
@@ -62,6 +65,7 @@ export function computeResearchPerCycle(
   for (const city of playerCities) {
     for (const b of city.buildings) {
       if (b.type !== 'university') continue;
+      if (!isCityBuildingOperational(ensureCityBuildingHp(b))) continue;
       const level = computeUniversityBuildingLevelFromPopulation(city.population);
       const spec = b.universitySpecialization ?? 'general';
       let researchBase = level * 0.8;

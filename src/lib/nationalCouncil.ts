@@ -12,6 +12,8 @@ import {
   CityBuilding,
   UNIVERSITY_GRADUATE_CHANCE_BASE,
   generateId,
+  ensureCityBuildingHp,
+  isCityBuildingOperational,
 } from '@/types/game';
 import { computeUniversityBuildingLevelFromPopulation } from '@/lib/universityPopulation';
 
@@ -177,6 +179,9 @@ export function rollUniversityGraduate(
   cycleSeed: number,
 ): UniversityGraduateResult {
   if (building.type !== 'university') return { kind: 'none', seed: cycleSeed };
+  if (!isCityBuildingOperational(ensureCityBuildingHp(building))) {
+    return { kind: 'none', seed: cycleSeed };
+  }
   const level = computeUniversityBuildingLevelFromPopulation(cityPopulation);
   const spec = building.universitySpecialization ?? 'general';
   const chance = UNIVERSITY_GRADUATE_CHANCE_BASE * level;

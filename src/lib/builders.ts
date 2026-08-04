@@ -9,6 +9,8 @@ import {
   type BuilderTask,
   tileKey,
   hexDistance,
+  ensureCityBuildingHp,
+  isCityBuildingOperational,
 } from '@/types/game';
 
 /** Resolved task list for each University workforce slot (length = slot count). */
@@ -52,6 +54,7 @@ export function cityUniversityHasSlotTask(city: City, task: BuilderTask): boolea
 /** Builder workforce size from University (academy) level — 1 slot per level, max 5. */
 export function getUniversityBuilderSlots(academy: CityBuilding | undefined | null): number {
   if (!academy || academy.type !== 'academy') return 0;
+  if (!isCityBuildingOperational(ensureCityBuildingHp(academy))) return 0;
   const lvl = academy.level ?? 1;
   return Math.min(5, Math.max(1, lvl));
 }
@@ -83,7 +86,13 @@ export function findNearestCityWithAcademy(
   let bestD = Infinity;
   for (const c of cities) {
     if (c.ownerId !== ownerId) continue;
-    if (!c.buildings.some(b => b.type === 'academy')) continue;
+    if (
+      !c.buildings.some(
+        b => b.type === 'academy' && isCityBuildingOperational(ensureCityBuildingHp(b)),
+      )
+    ) {
+      continue;
+    }
     const d = hexDistance(c.q, c.r, q, r);
     if (d < bestD) {
       bestD = d;
