@@ -3478,11 +3478,11 @@ export const useGameStore = create<GameState>((set, get) => ({
         if (unit && unit.hp > 0) unit.stance = sc.stance;
       }
 
-      // AI retreat (when losing badly)
+      // AI retreat (when losing badly) — stamp sim clock (movementTick compares retreatAt to simTimeMs)
       for (const rt of aiPlan.retreats ?? []) {
         const unit = units.find(u => u.id === rt.unitId && u.ownerId === aiPlayerId);
         if (unit && unit.hp > 0 && !unit.retreatAt) {
-          unit.retreatAt = Date.now() + RETREAT_DELAY_MS;
+          unit.retreatAt = s.simTimeMs + RETREAT_DELAY_MS;
         }
       }
 
@@ -6516,7 +6516,8 @@ export const useGameStore = create<GameState>((set, get) => ({
     const s = get();
     if (!s.selectedHex) return;
     const { q, r } = s.selectedHex;
-    const at = Date.now() + RETREAT_DELAY_MS;
+    // RT movementTick/combatTick use simTimeMs — wall-clock stamps never elapse
+    const at = s.simTimeMs + RETREAT_DELAY_MS;
     set({
       units: s.units.map(u =>
         u.q === q && u.r === r && u.ownerId === HUMAN_ID && u.hp > 0 ? { ...u, retreatAt: at } : u
@@ -6527,7 +6528,7 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   setRetreatStack: (q, r) => {
     const s = get();
-    const at = Date.now() + RETREAT_DELAY_MS;
+    const at = s.simTimeMs + RETREAT_DELAY_MS;
     set({
       units: s.units.map(u =>
         u.q === q && u.r === r && u.ownerId === HUMAN_ID && u.hp > 0 ? { ...u, retreatAt: at } : u
