@@ -15,10 +15,19 @@ function plainsTile(q: number, r: number): Tile {
   return {
     q,
     r,
-    elevation: 0.4,
-    moisture: 0.4,
-    temperature: 0.5,
     biome: 'plains',
+    elevation: 0.4,
+    height: 0.4,
+    hasRoad: false,
+    hasRuins: false,
+    hasVillage: false,
+    isProvinceCenter: false,
+    hasQuarryDeposit: false,
+    hasMineDeposit: false,
+    hasAncientCity: false,
+    hasGoldMineDeposit: false,
+    hasWoodDeposit: false,
+    isIsland: false,
   };
 }
 
@@ -78,15 +87,10 @@ function runRetreatCase(label: string, retreatAt: number, simNow: number): Unit 
   assert(before.retreatAt === retreatAt, 'retreatAt still pending before delay');
 
   const after = runRetreatCase('sim stamp after delay', retreatAt, orderedAt + RETREAT_DELAY_MS);
-  assert(after.status === 'moving', 'retreat must set status moving after sim delay');
+  // Same movementTick both starts the retreat march and may complete a 1-hex step → idle
   assert(after.retreatAt === undefined, 'retreatAt cleared after execution');
-  assert(!(after.q === 0 && after.r === 0 && after.targetQ === 0 && after.targetR === 0), 'must leave combat hex');
-  assert(
-    after.targetQ !== undefined &&
-      after.targetR !== undefined &&
-      (after.targetQ !== 0 || after.targetR !== 0),
-    'retreat target must be a neighboring escape hex',
-  );
+  assert(!(after.q === 0 && after.r === 0), 'must leave combat hex after sim delay');
+  assert(after.status === 'moving' || after.status === 'idle', 'retreat march or arrive adjacent');
 }
 
 // Store-facing stamp parity: simTimeMs + RETREAT_DELAY_MS is what setRetreat must use
@@ -95,7 +99,8 @@ function runRetreatCase(label: string, retreatAt: number, simNow: number): Unit 
   const stamped = simTimeMs + RETREAT_DELAY_MS;
   assert(stamped === 44_000, 'human/AI retreat stamp = simTimeMs + RETREAT_DELAY_MS');
   const u = runRetreatCase('store stamp formula', stamped, simTimeMs + RETREAT_DELAY_MS);
-  assert(u.status === 'moving', 'store-formula stamp must execute at delay boundary');
+  assert(u.retreatAt === undefined, 'store-formula stamp must execute at delay boundary');
+  assert(!(u.q === 0 && u.r === 0), 'store-formula stamp must leave combat hex');
 }
 
 console.log('verify-retreat-sim-time: ok');
