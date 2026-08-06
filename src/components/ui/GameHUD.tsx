@@ -18,6 +18,7 @@ import { BUILDING_COSTS, BUILDING_PRODUCTION, BUILDING_BP_COST, BUILDING_JOBS, C
   SCOUT_MISSION_MOVEMENT_TICKS,
 } from '@/types/game';
 import { getAvailableTechs } from '@/lib/researchTick';
+import { isAbilityActive } from '@/lib/combat';
 import { computeCouncilBoosts, isAssignedToCouncil, getCouncilAppointment } from '@/lib/nationalCouncil';
 import {
   battleClusterContainingHex,
@@ -7946,6 +7947,7 @@ function ArmyPanel({ units }: { units: import('@/types/game').Unit[] }) {
   const cities = useGameStore(s => s.cities);
   const selectedHex = useGameStore(s => s.selectedHex);
   const splitStackPending = useGameStore(s => s.splitStackPending);
+  const simTimeMs = useGameStore(s => s.simTimeMs);
 
   const counts: Record<UnitType, number> = {
     infantry: 0, cavalry: 0, ranged: 0, horse_archer: 0, crusader_knight: 0, builder: 0, trebuchet: 0, battering_ram: 0, defender: 0,
@@ -8027,7 +8029,8 @@ function ArmyPanel({ units }: { units: import('@/types/game').Unit[] }) {
           if (getAbilityForUnit(u.type)) abilityTypes.add(u.type);
         }
         if (abilityTypes.size === 0) return null;
-        const now = Date.now();
+        // Match activateAbility / combatTick: deadlines are on the sim clock.
+        const now = simTimeMs;
         return (
           <div className="border-t border-empire-stone/20 pt-1.5 space-y-1">
             <p className="text-[9px] text-empire-parchment/40 mb-0.5">Abilities</p>
@@ -8036,7 +8039,9 @@ function ArmyPanel({ units }: { units: import('@/types/game').Unit[] }) {
                 const abilityId = getAbilityForUnit(ut)!;
                 const def = ABILITY_DEFS[abilityId];
                 const sampleUnit = units.find(u => u.type === ut);
-                const isActive = sampleUnit?.abilityActive ?? false;
+                const isActive = sampleUnit
+                  ? (def.toggle ? !!sampleUnit.abilityActive : isAbilityActive(sampleUnit, now))
+                  : false;
                 const onCd = sampleUnit?.abilityCooldownUntil ? now < sampleUnit.abilityCooldownUntil : false;
                 return (
                   <button

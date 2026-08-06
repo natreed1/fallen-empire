@@ -6463,7 +6463,8 @@ export const useGameStore = create<GameState>((set, get) => ({
     const s = get();
     if (!s.selectedHex) return;
     const { q, r } = s.selectedHex;
-    const now = Date.now();
+    // Combat/movement ticks compare ability deadlines against simTimeMs (not wall clock).
+    const now = s.simTimeMs;
     const abilityId = getAbilityForUnit(unitType);
     if (!abilityId) return;
     const def = ABILITY_DEFS[abilityId];
