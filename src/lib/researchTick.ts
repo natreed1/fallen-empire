@@ -82,8 +82,39 @@ export interface ResearchTickResult {
 }
 
 /**
+ * Priority order for AI auto-research. Keeps bots progressing past {@link STARTING_TECHS}
+ * so tech gates in {@link applyAiPlan} / {@link planAiTurn} are not a permanent softlock.
+ */
+const AI_RESEARCH_PRIORITY: TechId[] = [
+  'masonry_1',
+  'military_tactics_2',
+  'mining_2',
+  'agriculture_2',
+  'iron_working',
+  'advanced_construction',
+  'siege_engineering',
+  'naval_technology',
+  'gunpowder',
+  'economics_2',
+  'advanced_naval',
+  'advanced_metallurgy',
+];
+
+/** Choose next tech for an AI player with no active research. */
+export function pickAiResearchTarget(player: Player): TechId | null {
+  if (player.activeResearch) return null;
+  const available = getAvailableTechs(player);
+  if (available.length === 0) return null;
+  for (const id of AI_RESEARCH_PRIORITY) {
+    if (available.includes(id)) return id;
+  }
+  return available[0] ?? null;
+}
+
+/**
  * Process one economy cycle of education + research for a player.
  * Mutates the player in-place and returns any newly completed tech.
+ * Non-human players with no active project auto-pick the next available tech.
  */
 export function processResearchTick(
   player: Player,
@@ -96,6 +127,14 @@ export function processResearchTick(
   }
   if (!player.researchedTechs) {
     player.researchedTechs = [...STARTING_TECHS];
+  }
+
+  if (!player.isHuman && !player.activeResearch) {
+    const pick = pickAiResearchTarget(player);
+    if (pick) {
+      player.activeResearch = pick;
+      player.researchProgress = 0;
+    }
   }
 
   const council = player.nationalCouncil;
@@ -111,7 +150,9 @@ export function processResearchTick(
       player.researchProgress = (player.researchProgress ?? 0) + researchGain;
 
       if (player.researchProgress >= techDef.researchCost) {
-        player.researchedTechs.push(player.activeResearch);
+        if (!player.researchedTechs.includes(player.activeResearch)) {
+          player.researchedTechs.push(player.activeResearch);
+        }
         completedTech = player.activeResearch;
         player.activeResearch = null;
         player.researchProgress = 0;
