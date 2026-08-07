@@ -27,6 +27,7 @@ import {
   MOVEMENT_TICKS_PER_ECONOMY_CYCLE,
   WALL_SECTION_STONE_COST, WALL_SECTION_HP, WALL_SECTION_BP_COST, getHexRing,
   defenseInstallationCurrentHp,
+  RETREAT_DELAY_MS,
 } from '../types/game';
 import { generateMap, placeAncientCity, rebuildSpecialTerrainForCapitals, type ScrollRelicClusters } from '../lib/mapGenerator';
 import { calculateTerritory } from '../lib/territory';
@@ -73,6 +74,7 @@ import { rollCommanderIdentity, createCommanderRecord, syncCommandersToAssignmen
 import { tickScrollRelicPickup, returnScrollsForDeadCarriers } from '../lib/scrolls';
 import { spawnUnitFromPendingLand, type PendingLandRecruit } from '../lib/pendingLandRecruit';
 import { applyAiInstantBuilds, applyAiUpgrades, applyAiRecruitsAsPending } from '../lib/applyAiPlan';
+import { processResearchTick } from '../lib/researchTick';
 
 export type { AiParams };
 export { DEFAULT_AI_PARAMS };
@@ -616,6 +618,12 @@ export function stepSimulation(
   let units = econ.units;
   let players = econ.players;
 
+  // ── Research & education (parity with live runCycle; AI auto-picks projects) ──
+  let commandersForResearch = state.commanders.map(c => ({ ...c }));
+  for (const p of players) {
+    processResearchTick(p, cities, commandersForResearch, []);
+  }
+
   // ── Contested zone payout (every 2nd cycle) ──
   const preContestedGold1 = players.find(p => p.id === AI_ID)?.gold ?? 0;
   const preContestedGold2 = players.find(p => p.id === AI_ID_2)?.gold ?? 0;
@@ -962,7 +970,7 @@ export function stepSimulation(
   }
 
   // ── Apply new AI actions: commander assignments, scroll attachments, university tasks ──
-  let commandersMut = state.commanders.map(c => ({ ...c }));
+  let commandersMut = commandersForResearch;
   for (let cfgIdx = 0; cfgIdx < aiConfigs.length; cfgIdx++) {
     const { id: aiPlayerId } = aiConfigs[cfgIdx];
     const aiPlan = plans[cfgIdx];
@@ -1007,6 +1015,18 @@ export function stepSimulation(
           universityBuilderTask: ut.task,
           universityBuilderSlotTasks: fillUniversitySlotTasks(c0, acad, ut.task),
         };
+      }
+    }
+
+    // Stance / retreat plans (parity with useGameStore.runCycle AI apply path)
+    for (const sc of aiPlan.stanceChanges ?? []) {
+      const unit = units.find(u => u.id === sc.unitId && u.ownerId === aiPlayerId);
+      if (unit && unit.hp > 0) unit.stance = sc.stance;
+    }
+    for (const rt of aiPlan.retreats ?? []) {
+      const unit = units.find(u => u.id === rt.unitId && u.ownerId === aiPlayerId);
+      if (unit && unit.hp > 0 && !unit.retreatAt) {
+        unit.retreatAt = state.simTimeMs + RETREAT_DELAY_MS;
       }
     }
   }
