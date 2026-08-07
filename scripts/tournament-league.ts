@@ -512,10 +512,13 @@ function promoteRelegateAndReplace(
   }
 }
 
-/** Select champion: best in A by points, then tie-breakers. */
+/** Select champion: best in A by points, then tie-breakers. Caller must pass pre-promotion Division A. */
 function selectChampion(divisionA: Candidate[]): Candidate {
+  if (divisionA.length === 0) {
+    throw new Error('selectChampion: Division A is empty — cannot choose a champion');
+  }
   const sorted = [...divisionA].sort(compareCandidates);
-  return sorted[0];
+  return sorted[0]!;
 }
 
 // ─── Main ─────────────────────────────────────────────────────────────────
@@ -632,6 +635,8 @@ function main() {
   };
   const seedPoolForCheckpoint = checkpoint?.seedPool ?? (useSeedPool ? LEAGUE_SEED_POOL : undefined);
   const startSeason = checkpoint?.nextSeason ?? 1;
+  /** Pre-promotion Division A from the final completed season — used for champion (not post-relegation roster). */
+  let lastSeasonDivisionA: Candidate[] = [];
 
   for (let season = startSeason; season <= LEAGUE_SEASONS; season++) {
     for (const c of candidates) {
@@ -678,6 +683,7 @@ function main() {
     const A = candidates.filter(c => c.division === 'A').sort(compareCandidates);
     const B = candidates.filter(c => c.division === 'B').sort(compareCandidates);
     const C = candidates.filter(c => c.division === 'C').sort(compareCandidates);
+    lastSeasonDivisionA = A;
 
     const elites = A.slice(0, Math.max(ELITES_UNCHANGED, 2));
     promoteRelegateAndReplace(candidates, elites);
@@ -734,9 +740,15 @@ function main() {
     saveLeagueCheckpoint(LEAGUE_CHECKPOINT_PATH, season + 1, candidates, report, seedPoolForCheckpoint);
   }
 
-  const finalA = candidates.filter(c => c.division === 'A').sort(compareCandidates);
-  const champion = selectChampion(finalA);
-  report.champion = { id: champion.id, division: champion.division };
+  // Champion = best of the last season's Division A *before* promotion/relegation.
+  // Post-promo roster mixes in B-division scores and can drop the true A winner.
+  const championPool =
+    lastSeasonDivisionA.length > 0
+      ? lastSeasonDivisionA
+      : candidates.filter(c => c.division === 'A');
+  const champion = selectChampion(championPool);
+  const finalA = [...championPool].sort(compareCandidates);
+  report.champion = { id: champion.id, division: 'A' };
   report.finalStandingsA = finalA.map(c => ({
     id: c.id,
     points: c.seasonStats.points,
