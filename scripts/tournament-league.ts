@@ -59,10 +59,22 @@ const CHAMPION_LIBRARY_CAP = parseInt(process.env.CHAMPION_LIBRARY_CAP || '50', 
 const CHAMPION_LIBRARY_PARAM_DISTANCE_THRESHOLD = parseFloat(process.env.CHAMPION_LIBRARY_PARAM_DISTANCE_THRESHOLD || '0.05') || 0.05;
 
 const POPULATION_SIZE = LEAGUE_DIV_SIZE * 3; // 24 = 8 per division (ignored when seed pool)
-const TOP_K = LEAGUE_SEED_POOL ? 1 : 2;
-const BOT_K = LEAGUE_SEED_POOL ? 1 : 2;
 const ELITES_UNCHANGED = 1;
 const SEED_POOL_LIGHT_MUTATION = 0.08; // for B/C when using seed pool
+
+/**
+ * Promotion/relegation cardinality for the active league shape.
+ * Seed-pool leagues use 6/3/3 divisions and must move only 1 per border;
+ * using the default 2-on-2 quotas overlaps top/bottom slices in B/C (size 3).
+ */
+export function leaguePromoCounts(seedPoolMode: boolean): { topK: number; botK: number } {
+  return seedPoolMode ? { topK: 1, botK: 1 } : { topK: 2, botK: 2 };
+}
+
+/** Prefer checkpoint-recorded seed-pool shape on resume, even if LEAGUE_SEED_POOL env is omitted. */
+export function resolveSeedPoolMode(checkpointSeedPool?: string | null, envSeedPool: string = LEAGUE_SEED_POOL): boolean {
+  return Boolean(checkpointSeedPool && checkpointSeedPool.length > 0) || envSeedPool.length > 0;
+}
 
 // Scoring weights (configurable at top-level)
 const WIN_POINTS = 100;
@@ -479,10 +491,12 @@ function initialCandidates(): Candidate[] {
   return list;
 }
 
-/** Promote/relegate: top TOP_K from B->A (by combat/points), bottom BOT_K from A->B; same B<->C; replace bottom in C with mutations. */
-function promoteRelegateAndReplace(
+/** Promote/relegate: top topK from B->A (by combat/points), bottom botK from A->B; same B<->C; replace bottom in C with mutations. */
+export function promoteRelegateAndReplace(
   candidates: Candidate[],
   elites: Candidate[],
+  topK: number,
+  botK: number,
 ): void {
   const A = candidates.filter(c => c.division === 'A').sort(compareCandidates);
   const B = candidates.filter(c => c.division === 'B').sort(compareCandidates);
@@ -491,11 +505,11 @@ function promoteRelegateAndReplace(
   const BByPromotion = [...B].sort(compareForPromotion);
   const CByPromotion = [...C].sort(compareForPromotion);
 
-  const toA = BByPromotion.slice(0, TOP_K);
-  const toBFromA = A.slice(-BOT_K);
-  const toB = CByPromotion.slice(0, TOP_K);
-  const toCFromB = B.slice(-BOT_K);
-  const bottomC = C.slice(-BOT_K);
+  const toA = BByPromotion.slice(0, topK);
+  const toBFromA = A.slice(-botK);
+  const toB = CByPromotion.slice(0, topK);
+  const toCFromB = B.slice(-botK);
+  const bottomC = C.slice(-botK);
   const newC = elites.length >= 1
     ? bottomC.map((_, i) => mutateParamsForLeague(elites[Math.min(i, elites.length - 1)].params))
     : bottomC.map(() => mutateParamsForLeague(DEFAULT_AI_PARAMS));
@@ -600,37 +614,42 @@ function main() {
   const paramSummary = getMutationSpaceSummary();
   console.log(`Params: ${paramSummary.totalParamCount} total, ${paramSummary.paramsInMutationSpace.length} in mutation space, ${paramSummary.excludedFromMutation.length} excluded (${paramSummary.excludedReason})`);
 
-  const useSeedPool = LEAGUE_SEED_POOL.length > 0;
   const checkpoint = LEAGUE_RESUME ? loadLeagueCheckpoint(LEAGUE_CHECKPOINT_PATH) : null;
-  const divLabel = useSeedPool ? '6/3/3 (seed pool)' : `${LEAGUE_DIV_SIZE} each`;
+  const seedPoolMode = resolveSeedPoolMode(checkpoint?.seedPool, LEAGUE_SEED_POOL);
+  const { topK, botK } = leaguePromoCounts(seedPoolMode);
+  const divLabel = seedPoolMode ? '6/3/3 (seed pool)' : `${LEAGUE_DIV_SIZE} each`;
 
   console.log('League tournament');
   console.log(`  Seasons: ${LEAGUE_SEASONS}  Divisions: ${divLabel}  Map: ${LEAGUE_MAP_SIZE}x${LEAGUE_MAP_SIZE}  MaxCycles: ${LEAGUE_MAX_CYCLES}`);
-  if (useSeedPool) console.log(`  Seed pool: ${LEAGUE_SEED_POOL}`);
+  console.log(`  Promo/relegate quotas: top ${topK} / bottom ${botK}`);
+  if (seedPoolMode) {
+    const poolLabel = checkpoint?.seedPool || LEAGUE_SEED_POOL || '(from checkpoint)';
+    console.log(`  Seed pool: ${poolLabel}`);
+  }
   if (checkpoint) console.log(`  Resuming from checkpoint: ${LEAGUE_CHECKPOINT_PATH} (next season ${checkpoint.nextSeason})`);
   console.log('');
 
   let candidates = checkpoint
     ? restoreCandidatesFromCheckpoint(checkpoint)
-    : useSeedPool
+    : seedPoolMode && LEAGUE_SEED_POOL
       ? initialCandidatesFromSeedPool(LEAGUE_SEED_POOL)
       : initialCandidates();
   const report: LeagueReport = checkpoint ? {
     seasons: LEAGUE_SEASONS,
-    divSize: checkpoint.seedPool ? 6 : LEAGUE_DIV_SIZE,
+    divSize: seedPoolMode ? 6 : LEAGUE_DIV_SIZE,
     seedPool: checkpoint.seedPool,
     history: checkpoint.history,
     champion: { id: '', division: 'A' },
     finalStandingsA: [],
   } : {
     seasons: LEAGUE_SEASONS,
-    divSize: useSeedPool ? 6 : LEAGUE_DIV_SIZE,
-    seedPool: useSeedPool ? LEAGUE_SEED_POOL : undefined,
+    divSize: seedPoolMode ? 6 : LEAGUE_DIV_SIZE,
+    seedPool: seedPoolMode ? LEAGUE_SEED_POOL : undefined,
     history: [],
     champion: { id: '', division: 'A' },
     finalStandingsA: [],
   };
-  const seedPoolForCheckpoint = checkpoint?.seedPool ?? (useSeedPool ? LEAGUE_SEED_POOL : undefined);
+  const seedPoolForCheckpoint = checkpoint?.seedPool ?? (seedPoolMode ? LEAGUE_SEED_POOL : undefined);
   const startSeason = checkpoint?.nextSeason ?? 1;
 
   for (let season = startSeason; season <= LEAGUE_SEASONS; season++) {
@@ -680,7 +699,7 @@ function main() {
     const C = candidates.filter(c => c.division === 'C').sort(compareCandidates);
 
     const elites = A.slice(0, Math.max(ELITES_UNCHANGED, 2));
-    promoteRelegateAndReplace(candidates, elites);
+    promoteRelegateAndReplace(candidates, elites, topK, botK);
 
     const toStanding = (c: Candidate): DivisionStanding => {
       const s: DivisionStanding = {
@@ -713,9 +732,9 @@ function main() {
     const standingsB = B.map(toStanding);
     const standingsC = C.map(toStanding);
     const promos: string[] = [
-      'A: bottom 2 -> B; B: top 2 -> A',
-      'B: bottom 2 -> C; C: top 2 -> B',
-      'C: bottom 2 replaced by mutations from elites',
+      `A: bottom ${botK} -> B; B: top ${topK} -> A`,
+      `B: bottom ${botK} -> C; C: top ${topK} -> B`,
+      `C: bottom ${botK} replaced by mutations from elites`,
     ];
 
     report.history.push({
@@ -749,7 +768,7 @@ function main() {
   console.log('Champion:', champion.id, '  points:', champion.seasonStats.points, '  wins:', champion.seasonStats.wins);
   if (LEAGUE_INCLUDE_ARCHETYPES) console.log('  archetypePoints:', champion.seasonStats.archetypePoints ?? 0);
   if (LEAGUE_USE_ROBUST_SELECTION) console.log('  robustScore:', championScore.toFixed(2));
-  console.log('Promotion/relegation applied each season; bottom 2 in C replaced by mutations of elites.');
+  console.log(`Promotion/relegation applied each season; bottom ${botK} in C replaced by mutations of elites.`);
 
   const publicDir = path.join(process.cwd(), 'public');
   const artifactsDir = path.join(process.cwd(), 'artifacts');
@@ -810,4 +829,11 @@ function main() {
   console.log('Updated champion library at', championLibraryPath);
 }
 
-main();
+const isDirectRun =
+  typeof require !== 'undefined' &&
+  typeof module !== 'undefined' &&
+  require.main === module;
+
+if (isDirectRun) {
+  main();
+}
