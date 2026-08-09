@@ -55,11 +55,21 @@ export function remapSimStateForClient(state: SimState, role: 'host' | 'guest'):
     if (arr?.length) scrollRegionClaimed[region] = arr.map(mp);
   }
 
+  const combatMoraleState = new Map(
+    Array.from(state.combatMoraleState.entries()).map(([key, v]) => {
+      const mappedOwner = mp(v.ownerId);
+      const sep = key.lastIndexOf(':');
+      const hexPart = sep >= 0 ? key.slice(0, sep) : key;
+      return [`${hexPart}:${mappedOwner}`, { ...v, ownerId: mappedOwner }] as const;
+    }),
+  );
+
   return {
     ...state,
     players,
     cities: state.cities.map(c => ({ ...c, ownerId: mp(c.ownerId) })),
     units: state.units.map(u => ({ ...u, ownerId: mp(u.ownerId) })),
+    heroes: state.heroes.map(h => ({ ...h, ownerId: mp(h.ownerId) })),
     territory: new Map(
       Array.from(state.territory.entries()).map(([key, t]) => [key, { ...t, playerId: mp(t.playerId) }]),
     ),
@@ -70,6 +80,7 @@ export function remapSimStateForClient(state: SimState, role: 'host' | 'guest'):
     scoutMissions: state.scoutMissions.map(m => ({ ...m })),
     constructions: state.constructions.map(c => ({ ...c, ownerId: mp(c.ownerId) })),
     wallSections: state.wallSections.map(w => ({ ...w, ownerId: mp(w.ownerId) })),
+    scoutTowers: state.scoutTowers.map(t => ({ ...t, ownerId: mp(t.ownerId) })),
     defenseInstallations: state.defenseInstallations.map(d => ({
       ...d,
       ownerId: mp(d.ownerId),
@@ -81,6 +92,7 @@ export function remapSimStateForClient(state: SimState, role: 'host' | 'guest'):
       Object.entries(state.cityCaptureHold).map(([cid, h]) => [cid, { ...h, attackerId: mp(h.attackerId) }]),
     ),
     scrollAttachments: state.scrollAttachments.map(a => ({ ...a, ownerId: mp(a.ownerId) })),
+    combatMoraleState,
   };
 }
 

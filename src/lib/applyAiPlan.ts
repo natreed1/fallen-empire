@@ -15,6 +15,7 @@ import {
   UNIT_L3_COSTS,
   WORKERS_PER_LEVEL,
   BARACKS_UPGRADE_COST,
+  BARACKS_L3_UPGRADE_COST,
   FACTORY_UPGRADE_COST,
   FARM_UPGRADE_COST,
   getUnitStats,
@@ -100,16 +101,34 @@ export function applyAiUpgrades(
     const techs = aiPlayer.researchedTechs ?? STARTING_TECHS;
     const city = ctx.cities.find(c => c.id === up.cityId);
     if (!city || city.ownerId !== ctx.aiPlayerId) continue;
-    const cost =
-      up.type === 'barracks'
-        ? BARACKS_UPGRADE_COST
-        : up.type === 'farm' || up.type === 'banana_farm'
-          ? FARM_UPGRADE_COST
-          : FACTORY_UPGRADE_COST;
-    if (aiPlayer.gold < cost) continue;
     const building = city.buildings.find(b => b.type === up.type && b.q === up.buildingQ && b.r === up.buildingR);
-    if (!building || (building.level ?? 1) >= 2) continue;
-    if (maxBuildingLevelByTech(up.type, techs) < 2) continue;
+    if (!building) continue;
+    const lvl = building.level ?? 1;
+    const techMax = maxBuildingLevelByTech(up.type, techs);
+
+    if (up.type === 'barracks') {
+      if (lvl >= techMax || lvl >= 3) continue;
+      if (lvl === 1) {
+        if (techMax < 2 || aiPlayer.gold < BARACKS_UPGRADE_COST) continue;
+        building.level = 2;
+        ctx.onSpendGold(BARACKS_UPGRADE_COST);
+      } else if (lvl === 2) {
+        if (techMax < 3 || aiPlayer.gold < BARACKS_L3_UPGRADE_COST) continue;
+        building.level = 3;
+        // Mirror human L3 barracks: require archer doctrine choice (default marksman for AI).
+        if (city.archerDoctrineL3 !== 'marksman' && city.archerDoctrineL3 !== 'longbowman') {
+          city.archerDoctrineL3 = 'marksman';
+        }
+        ctx.onSpendGold(BARACKS_L3_UPGRADE_COST);
+      }
+      continue;
+    }
+
+    const cost =
+      up.type === 'farm' || up.type === 'banana_farm' ? FARM_UPGRADE_COST : FACTORY_UPGRADE_COST;
+    if (aiPlayer.gold < cost) continue;
+    if (lvl >= 2) continue;
+    if (techMax < 2) continue;
     building.level = 2;
     ctx.onSpendGold(cost);
   }
