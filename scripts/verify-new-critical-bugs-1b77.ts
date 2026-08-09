@@ -1,11 +1,12 @@
 /**
  * Verifies NEW critical bugs found 2026-08-09:
  * 1) Auto-replenish must not queue L3/defender from barracks L2
- * 2) AI upgrade path can take barracks L2→L3 when tech allows
+ * 2) AI upgrade path can take barracks L2→L3 when tech allows (plan + apply)
  * 3) MP remap covers heroes, scout towers, and combatMorale keys/ownerIds
  */
 import { computeArmyReplenishment } from '../src/lib/armyReplenishment';
 import { applyAiUpgrades } from '../src/lib/applyAiPlan';
+import { planAiTurn } from '../src/lib/ai';
 import { remapSimStateForClient } from '../src/lib/multiplayerRemap';
 import type { SimState } from '../src/core/gameCore';
 import type { City, Player, Unit, UnitStack } from '../src/types/game';
@@ -111,6 +112,38 @@ function assert(cond: boolean, msg: string) {
   assert((city.buildings[0]!.level ?? 1) === 3, 'AI barracks upgrades L2→L3');
   assert(gold === 100 - BARACKS_L3_UPGRADE_COST, 'AI pays L3 barracks cost');
   assert(city.archerDoctrineL3 === 'marksman', 'AI sets archer doctrine on L3 barracks');
+
+  // Planning side: with gunpowder unlocked, L2 barracks must be queued for L3.
+  const planCity: City = {
+    ...city,
+    buildings: [{ type: 'barracks', q: 0, r: 1, level: 2 }],
+    archerDoctrineL3: undefined,
+  };
+  const planPlayer: Player = {
+    id: 'player_ai',
+    name: 'AI',
+    color: '#f00',
+    gold: 100,
+    taxRate: 0.3,
+    foodPriority: 'military',
+    isHuman: false,
+    kingdomId: 'traders',
+    researchedTechs: [...STARTING_TECHS, 'military_tactics_2', 'iron_working', 'gunpowder'],
+  };
+  const planned = planAiTurn(
+    'player_ai',
+    [planCity],
+    [],
+    [planPlayer],
+    new Map(),
+    new Map(),
+  );
+  assert(
+    planned.upgrades.some(
+      (u) => u.type === 'barracks' && u.cityId === 'c1' && u.buildingQ === 0 && u.buildingR === 1,
+    ),
+    'planAiTurn queues barracks L2→L3 when tech allows',
+  );
 }
 
 // ── 3) MP remap heroes / scout towers / morale ──────────────────────
