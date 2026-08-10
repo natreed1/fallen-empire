@@ -2190,7 +2190,7 @@ export function siegeTick(
     const hp = w.hp ?? 0;
     if (hp <= 0) continue;
     for (const u of units) {
-      if (u.hp <= 0 || u.ownerId === w.ownerId) continue;
+      if (u.hp <= 0 || u.aboardShipId || u.ownerId === w.ownerId) continue;
       if (!siegeTypes.includes(u.type as typeof siegeTypes[number])) continue;
       const stats = getUnitStats(u);
       const range = stats.range;
@@ -2215,7 +2215,7 @@ export function siegeDefenseInstallationsTick(
     let hp = defenseInstallationCurrentHp(inst);
     if (hp <= 0) continue;
     for (const u of units) {
-      if (u.hp <= 0 || u.ownerId === inst.ownerId) continue;
+      if (u.hp <= 0 || u.aboardShipId || u.ownerId === inst.ownerId) continue;
       if (!siegeTypes.includes(u.type as (typeof siegeTypes)[number])) continue;
       const stats = getUnitStats(u);
       const range = stats.range;
@@ -2273,7 +2273,7 @@ export function siegeBuildingsTick(cities: City[], units: Unit[]): void {
 
       let totalDmg = 0;
       for (const u of units) {
-        if (u.hp <= 0 || u.ownerId === city.ownerId) continue;
+        if (u.hp <= 0 || u.aboardShipId || u.ownerId === city.ownerId) continue;
         if (!siegeTypes.includes(u.type as (typeof siegeTypes)[number])) continue;
         const stats = getUnitStats(u);
         const range = stats.range;

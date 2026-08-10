@@ -7521,29 +7521,12 @@ export const useGameStore = create<GameState>((set, get) => ({
     const { q, r } = s.selectedHex;
     const toRemove = s.units.filter(u => u.q === q && u.r === r && u.ownerId === HUMAN_ID && u.hp > 0);
     if (toRemove.length === 0) return;
-    const popByCity: Record<string, number> = {};
-    for (const u of toRemove) {
-      if (u.originCityId) popByCity[u.originCityId] = (popByCity[u.originCityId] ?? 0) + 1;
-    }
+    // Population is not deducted on recruit (only on death via originCityId). Do not mint
+    // civilians here — that would let recruit→disband inflate pop and troop caps forever.
     const ids = new Set(toRemove.map(u => u.id));
     const newUnits = s.units.filter(u => !ids.has(u.id));
-    const popAdjusted =
-      Object.keys(popByCity).length === 0 ? s.cities : s.cities.map(c => {
-        const add = popByCity[c.id] ?? 0;
-        return add > 0 ? { ...c, population: c.population + add } : c;
-      });
-    const newCities = syncUniversityBuildingLevelsForCities(popAdjusted, {
-      onLevelUp: ({ city, newLevel }) => {
-        if (city.ownerId === HUMAN_ID) {
-          get().addNotification(
-            `${city.name}: University reached level ${newLevel} — you may change specialization.`,
-            'success',
-          );
-        }
-      },
-    });
-    set({ units: newUnits, cities: newCities, selectedHex: null, stackMoveUnitId: null, uiMode: 'normal' });
-    get().addNotification(`Disbanded ${toRemove.length} unit(s); population returned.`, 'info');
+    set({ units: newUnits, selectedHex: null, stackMoveUnitId: null, uiMode: 'normal' });
+    get().addNotification(`Disbanded ${toRemove.length} unit(s).`, 'info');
   },
 
   startSplitStack: (count, explicitQ?, explicitR?) => {

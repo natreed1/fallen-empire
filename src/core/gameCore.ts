@@ -530,6 +530,27 @@ export type StepSimulationOptions = {
   humanPlansByPlayerId?: Record<string, AiActions>;
 };
 
+/**
+ * Headless terminal phase after capture/upkeep.
+ * Conquest (zero cities for a side) takes precedence over mutual total-starvation abort.
+ */
+export function resolveHeadlessTerminalPhase(input: {
+  citiesAi1: number;
+  citiesAi2: number;
+  allStarving1: boolean;
+  allStarving2: boolean;
+  foodAi1: number;
+  foodAi2: number;
+}): { phase: GamePhase; totalStarvationAbort: boolean } {
+  if (input.citiesAi1 === 0 || input.citiesAi2 === 0) {
+    return { phase: 'victory', totalStarvationAbort: false };
+  }
+  if (input.allStarving1 && input.allStarving2 && input.foodAi1 <= 0 && input.foodAi2 <= 0) {
+    return { phase: 'total_starvation', totalStarvationAbort: true };
+  }
+  return { phase: 'playing', totalStarvationAbort: false };
+}
+
 /** Single step: economy + AI actions + one movement/combat/siege/capture tick. */
 export function stepSimulation(
   state: SimState,
@@ -1254,7 +1275,6 @@ export function stepSimulation(
   }
 
   // ── Victory / total-starvation abort ──
-  let phase: GamePhase = 'playing';
   const finalAi1Cities = citiesToSet.filter(c => c.ownerId === AI_ID);
   const finalAi2Cities = citiesToSet.filter(c => c.ownerId === AI_ID_2);
   const finalAi1Military = aliveUnits.filter(u => u.ownerId === AI_ID && u.type !== 'builder');
@@ -1263,12 +1283,16 @@ export function stepSimulation(
   const finalAllStarving2 = finalAi2Military.length > 0 && finalAi2Military.every(u => u.status === 'starving');
   const finalFoodAi1 = finalAi1Cities.reduce((s, c) => s + c.storage.food, 0);
   const finalFoodAi2 = finalAi2Cities.reduce((s, c) => s + c.storage.food, 0);
-  if (finalAllStarving1 && finalAllStarving2 && finalFoodAi1 <= 0 && finalFoodAi2 <= 0) {
-    phase = 'total_starvation';
-    if (diagnostics) diagnostics.totalStarvationAbort = true;
-  } else if (finalAi1Cities.length === 0 || finalAi2Cities.length === 0) {
-    phase = 'victory';
-  }
+  const terminal = resolveHeadlessTerminalPhase({
+    citiesAi1: finalAi1Cities.length,
+    citiesAi2: finalAi2Cities.length,
+    allStarving1: finalAllStarving1,
+    allStarving2: finalAllStarving2,
+    foodAi1: finalFoodAi1,
+    foodAi2: finalFoodAi2,
+  });
+  const phase = terminal.phase;
+  if (diagnostics && terminal.totalStarvationAbort) diagnostics.totalStarvationAbort = true;
 
   // Invalidate supply cache when city ownership or count changed (capture/new city) so next step recomputes
   const citiesChanged =

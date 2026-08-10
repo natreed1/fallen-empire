@@ -23,7 +23,8 @@
     "seasonal-sim": "npx ts-node -r tsconfig-paths/register --project tsconfig.train.json scripts/seasonal-sim.ts",
     "regression-harness": "npx ts-node -r tsconfig-paths/register --project tsconfig.train.json scripts/regression-harness.ts",
     "validate-ai-params": "npx ts-node -r tsconfig-paths/register --project tsconfig.train.json scripts/validate-ai-params.ts",
-    "train-ai-overnight": "bash scripts/overnight-train.sh"
+    "train-ai-overnight": "bash scripts/overnight-train.sh",
+    "verify-new-critical-bugs-7edc": "npx tsx scripts/verify-new-critical-bugs-7edc.ts"
   },
   "dependencies": {
     "@react-three/drei": "^9.108.0",
