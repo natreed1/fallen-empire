@@ -10,6 +10,8 @@ import {
   UNIT_L3_COSTS,
   getUnitStats,
   isNavalUnitType,
+  isUnitUnlockedByTech,
+  STARTING_TECHS,
   generateId,
 } from '@/types/game';
 
@@ -172,10 +174,12 @@ export function computeArmyReplenishment(input: ReplenishInput): ReplenishResult
 
       const wantL3 = entry.armsLevel === 3 || t === 'defender' || t === 'crusader_knight';
       const wantL2 = entry.armsLevel === 2 || wantL3;
+      const techs = player.researchedTechs ?? STARTING_TECHS;
+      if (!isUnitUnlockedByTech(t, techs)) continue;
       if (!isSiege) {
-        if (t === 'defender' && barracksLvl < 2) continue;
-        if ((wantL2 || wantL3) && t !== 'defender' && barracksLvl < 2) continue;
-        if (t === 'crusader_knight' && barracksLvl < 3) continue;
+        // Match manual recruit / AI: L2 needs barracks L2; L3/defender/crusader need barracks L3.
+        if (wantL3 && barracksLvl < 3) continue;
+        if (wantL2 && !wantL3 && barracksLvl < 2) continue;
       }
 
       const effArms: 1 | 2 | 3 =

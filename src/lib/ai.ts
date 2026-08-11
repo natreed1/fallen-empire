@@ -1,7 +1,7 @@
 import {
   City, Unit, Player, Tile, TerritoryInfo, WallSection,
   BuildingType, UnitType, type RangedVariant, BUILDING_COSTS, UNIT_COSTS, UNIT_L2_COSTS, UNIT_L3_COSTS, getUnitStats,
-  BARACKS_UPGRADE_COST, FACTORY_UPGRADE_COST, FARM_UPGRADE_COST,
+  BARACKS_UPGRADE_COST, BARACKS_L3_UPGRADE_COST, FACTORY_UPGRADE_COST, FARM_UPGRADE_COST,
   hexDistance, hexNeighbors, tileKey, generateId, getHexRing, parseTileKey,
   STARTING_CITY_TEMPLATE, CITY_CENTER_STORAGE,
   BUILDING_IRON_COSTS, SCOUT_MISSION_COST, VILLAGE_INCORPORATE_COST, DEFENDER_IRON_COST,
@@ -452,7 +452,15 @@ export function planAiTurn(
     const hasQuarry = city.buildings.some(b => b.type === 'quarry');
     const hasMine = city.buildings.some(b => b.type === 'mine');
     const factoryToUpgrade = city.buildings.find(b => b.type === 'factory' && (b.level ?? 1) < 2);
-    const barracksToUpgrade = city.buildings.find(b => b.type === 'barracks' && (b.level ?? 1) < 2);
+    const barracksLvlNow = city.buildings.find(b => b.type === 'barracks')?.level ?? 0;
+    const barracksTechMax = maxBuildingLevelByTech('barracks', techs);
+    const barracksToUpgrade = city.buildings.find(b => {
+      if (b.type !== 'barracks') return false;
+      const lvl = b.level ?? 1;
+      return lvl < Math.min(3, barracksTechMax);
+    });
+    const barracksUpgradeCost =
+      barracksLvlNow >= 2 ? BARACKS_L3_UPGRADE_COST : BARACKS_UPGRADE_COST;
     const farmToUpgrade = city.buildings.find(b => b.type === 'farm' && (b.level ?? 1) < 2);
 
     const upgradeOrder = (params.factoryUpgradePriority ?? 0.6) >= 0.5 ? ['factory', 'barracks', 'farm'] : ['barracks', 'factory', 'farm'];
@@ -470,12 +478,12 @@ export function planAiTurn(
       }
       if (
         kind === 'barracks' &&
-        goldBudget >= BARACKS_UPGRADE_COST &&
         barracksToUpgrade &&
-        maxBuildingLevelByTech('barracks', techs) >= 2
+        goldBudget >= barracksUpgradeCost &&
+        barracksTechMax > (barracksToUpgrade.level ?? 1)
       ) {
         actions.upgrades.push({ cityId: city.id, buildingQ: barracksToUpgrade.q, buildingR: barracksToUpgrade.r, type: 'barracks' });
-        goldBudget -= BARACKS_UPGRADE_COST;
+        goldBudget -= barracksUpgradeCost;
         break;
       }
       if (
