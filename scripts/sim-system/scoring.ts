@@ -1,6 +1,6 @@
 /**
  * Robustness-first scoring and anti-degenerate penalties.
- * Composite score = mean - λ·std - tail penalty; penalize draws, no-combat, starvation lock.
+ * Composite score = mean - λ·std - tailPenalty·|negative worst-decile|; penalize draws, no-combat, starvation lock.
  */
 
 import type { GameResult } from './types';
@@ -51,7 +51,15 @@ function std(arr: number[]): number {
   return Math.sqrt(variance);
 }
 
-/** Robustness score: mean - λ·std - tailPenalty·worstDecile. Prefer stable generalists. */
+/**
+ * Magnitude of a negative tail (0 when the worst-decile score is non-negative).
+ * Used as: score -= tailPenaltyWeight * negativeTailMagnitude(worstDecile).
+ */
+export function negativeTailMagnitude(worstDecile: number): number {
+  return Math.max(0, -worstDecile);
+}
+
+/** Robustness score: mean - λ·std - tailPenalty·|negative worst-decile|. Prefer stable generalists. */
 export function robustnessScore(gameScores: number[], config: SimSystemConfig): number {
   if (gameScores.length === 0) return 0;
   const m = mean(gameScores);
@@ -59,5 +67,5 @@ export function robustnessScore(gameScores: number[], config: SimSystemConfig): 
   const sorted = [...gameScores].sort((a, b) => a - b);
   const decileIdx = Math.floor(sorted.length * 0.1);
   const worstDecile = decileIdx < sorted.length ? sorted[decileIdx] : sorted[0] ?? 0;
-  return m - config.robustnessLambda * s - config.robustnessTailPenalty * Math.min(0, worstDecile);
+  return m - config.robustnessLambda * s - config.robustnessTailPenalty * negativeTailMagnitude(worstDecile);
 }

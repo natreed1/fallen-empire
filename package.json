@@ -21,6 +21,7 @@
     "optimize-trends": "npx ts-node -r tsconfig-paths/register --project tsconfig.train.json scripts/optimize-trends.ts",
     "validate-robustness": "npx ts-node -r tsconfig-paths/register --project tsconfig.train.json scripts/validate-robustness.ts",
     "seasonal-sim": "npx ts-node -r tsconfig-paths/register --project tsconfig.train.json scripts/seasonal-sim.ts",
+    "verify-seasonal-sim-critical": "npx ts-node -r tsconfig-paths/register --project tsconfig.train.json scripts/verify-seasonal-sim-critical.ts",
     "regression-harness": "npx ts-node -r tsconfig-paths/register --project tsconfig.train.json scripts/regression-harness.ts",
     "validate-ai-params": "npx ts-node -r tsconfig-paths/register --project tsconfig.train.json scripts/validate-ai-params.ts",
     "train-ai-overnight": "bash scripts/overnight-train.sh"
