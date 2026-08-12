@@ -25,8 +25,6 @@ import {
 import { lineagesAtCap, wouldExceedLineageCap } from './lineage';
 import { chooseMutationBucket, mutateWithBucket } from './mutation';
 
-const WIN_POINTS = 100;
-
 function roundRobinPairs<T>(list: T[]): [T, T][] {
   const pairs: [T, T][] = [];
   for (let i = 0; i < list.length; i++) {
@@ -81,19 +79,7 @@ export function runSeasonGames(
         const r2 = runSimulationWithDiagnostics(c2.params, c1.params, seed + 1, config.maxCycles, opts);
         const res1: GameResult = { ...r1, diagnostics: r1.diagnostics };
         const res2: GameResult = { ...r2, diagnostics: r2.diagnostics };
-        const s1 = scoreGame(res1, 'ai1', config);
-        const s2 = scoreGame(res2, 'ai2', config);
-        c1.gameScores.push(s1);
-        c2.gameScores.push(s2);
-        if (r1.winner === 'ai1') { c1.wins++; c2.losses++; c1.decisiveGames++; }
-        else if (r1.winner === 'ai2') { c2.wins++; c1.losses++; c2.decisiveGames++; }
-        else { c1.draws++; c2.draws++; }
-        if (r1.diagnostics.totalKills === 0) { c1.noCombatGames++; c2.noCombatGames++; }
-        if (r1.diagnostics.totalStarvationAbort) { c1.totalStarvationGames++; c2.totalStarvationGames++; }
-        c1.totalKills += r1.diagnostics.killsByAi1 ?? 0;
-        c2.totalKills += r1.diagnostics.killsByAi2 ?? 0;
-        c2.totalKills += r2.diagnostics.killsByAi1 ?? 0;
-        c1.totalKills += r2.diagnostics.killsByAi2 ?? 0;
+        recordIntraTierPairResults(c1, c2, res1, res2, config);
       }
     }
 
@@ -128,13 +114,66 @@ export function runSeasonGames(
   }
 }
 
-/** Compare two agents by robustness score (desc). */
+/**
+ * Record both side-balanced games of an intra-tier pair.
+ * r1 is c1 (ai1) vs c2 (ai2); r2 is c2 (ai1) vs c1 (ai2).
+ */
+export function recordIntraTierPairResults(
+  c1: SimAgent,
+  c2: SimAgent,
+  r1: GameResult,
+  r2: GameResult,
+  config: SimSystemConfig,
+): void {
+  c1.gameScores.push(scoreGame(r1, 'ai1', config), scoreGame(r2, 'ai2', config));
+  c2.gameScores.push(scoreGame(r1, 'ai2', config), scoreGame(r2, 'ai1', config));
+  applyIntraTierWinner(c1, c2, r1.winner, 'ai1');
+  applyIntraTierWinner(c1, c2, r2.winner, 'ai2');
+  if (r1.diagnostics.totalKills === 0) { c1.noCombatGames++; c2.noCombatGames++; }
+  if (r2.diagnostics.totalKills === 0) { c1.noCombatGames++; c2.noCombatGames++; }
+  if (r1.diagnostics.totalStarvationAbort) { c1.totalStarvationGames++; c2.totalStarvationGames++; }
+  if (r2.diagnostics.totalStarvationAbort) { c1.totalStarvationGames++; c2.totalStarvationGames++; }
+  c1.totalKills += (r1.diagnostics.killsByAi1 ?? 0) + (r2.diagnostics.killsByAi2 ?? 0);
+  c2.totalKills += (r1.diagnostics.killsByAi2 ?? 0) + (r2.diagnostics.killsByAi1 ?? 0);
+}
+
+function applyIntraTierWinner(
+  c1: SimAgent,
+  c2: SimAgent,
+  winner: 'ai1' | 'ai2' | null,
+  c1Side: 'ai1' | 'ai2',
+): void {
+  if (winner == null) {
+    c1.draws++;
+    c2.draws++;
+    return;
+  }
+  if (winner === c1Side) {
+    c1.wins++;
+    c2.losses++;
+    c1.decisiveGames++;
+  } else {
+    c2.wins++;
+    c1.losses++;
+    c2.decisiveGames++;
+  }
+}
+
+/** Compare two agents by robustness. Negative => a ranks better (Array.sort best-first). */
 function compareByRobustness(a: SimAgent, b: SimAgent, config: SimSystemConfig): number {
   const sa = robustnessScore(a.gameScores, config);
   const sb = robustnessScore(b.gameScores, config);
   if (sb !== sa) return sb - sa;
   if (b.wins !== a.wins) return b.wins - a.wins;
   return (b.totalKills - b.noCombatGames) - (a.totalKills - a.noCombatGames);
+}
+
+function sortBestFirst(list: SimAgent[], config: SimSystemConfig): SimAgent[] {
+  return [...list].sort((a, b) => compareByRobustness(a, b, config));
+}
+
+function sortWorstFirst(list: SimAgent[], config: SimSystemConfig): SimAgent[] {
+  return [...list].sort((a, b) => compareByRobustness(b, a, config));
 }
 
 /** Promote from B: best-first by robustness; respect scenario gate + lineage cap. Exclude set for non-overlap. */
@@ -145,9 +184,10 @@ function selectForPromotionToA(
   season: number,
   excludeIds: Set<string>,
 ): SimAgent[] {
-  const B = agents
-    .filter(a => a.tier === 'B' && !a.isAnchor && !excludeIds.has(a.id))
-    .sort((a, b) => compareByRobustness(b, a, config));
+  const B = sortBestFirst(
+    agents.filter(a => a.tier === 'B' && !a.isAnchor && !excludeIds.has(a.id)),
+    config,
+  );
   const atCapA = lineagesAtCap(agents, 'A', config.lineageCapPerTier);
   const promoted: SimAgent[] = [];
   const need = config.promoteCount;
@@ -169,7 +209,7 @@ function selectForPromotionToB(
   config: SimSystemConfig,
   season: number,
 ): SimAgent[] {
-  const C = agents.filter(a => a.tier === 'C' && !a.isAnchor).sort((a, b) => compareByRobustness(b, a, config));
+  const C = sortBestFirst(agents.filter(a => a.tier === 'C' && !a.isAnchor), config);
   const atCapB = lineagesAtCap(agents, 'B', config.lineageCapPerTier);
   const promoted: SimAgent[] = [];
   const need = config.promoteCount;
@@ -184,13 +224,13 @@ function selectForPromotionToB(
 
 /** Relegate from A to B: worst-first by robustness (bottom N). */
 function selectForRelegationToB(agents: SimAgent[], config: SimSystemConfig, count: number): SimAgent[] {
-  const A = agents.filter(a => a.tier === 'A' && !a.isAnchor).sort((a, b) => compareByRobustness(b, a, config));
+  const A = sortWorstFirst(agents.filter(a => a.tier === 'A' && !a.isAnchor), config);
   return A.slice(0, count);
 }
 
 /** Relegate from B to C: worst-first by robustness (bottom N). */
 function selectForRelegationToC(agents: SimAgent[], config: SimSystemConfig, count: number): SimAgent[] {
-  const B = agents.filter(a => a.tier === 'B' && !a.isAnchor).sort((a, b) => compareByRobustness(b, a, config));
+  const B = sortWorstFirst(agents.filter(a => a.tier === 'B' && !a.isAnchor), config);
   return B.slice(0, count);
 }
 
@@ -251,8 +291,8 @@ export function applyPromotionRelegation(
   }
 
   // ─── 3. Stage 2: fill remaining A/B slots with best robustness (probation tag) ───
-  const fillPoolB = agents.filter(a => a.tier === 'B' && !a.isAnchor).sort((a, b) => compareByRobustness(b, a, config));
-  const fillPoolC = agents.filter(a => a.tier === 'C' && !a.isAnchor).sort((a, b) => compareByRobustness(b, a, config));
+  const fillPoolB = sortBestFirst(agents.filter(a => a.tier === 'B' && !a.isAnchor), config);
+  const fillPoolC = sortBestFirst(agents.filter(a => a.tier === 'C' && !a.isAnchor), config);
   let inA = agents.filter(a => a.tier === 'A' && !a.isAnchor).length;
   let inB = agents.filter(a => a.tier === 'B' && !a.isAnchor).length;
   while (inA < targetA && fillPoolB.length > 0) {
@@ -260,6 +300,7 @@ export function applyPromotionRelegation(
     candidate.tier = 'A';
     candidate.probationRemaining = probationN;
     inA++;
+    inB--;
   }
   while (inB < targetB && fillPoolC.length > 0) {
     const candidate = fillPoolC.shift()!;
@@ -275,31 +316,25 @@ export function applyPromotionRelegation(
   let currentC = inTier('C');
 
   while (currentA.length > targetA) {
-    const worst = [...currentA].sort((a, b) => compareByRobustness(b, a, config))[0];
+    const worst = sortWorstFirst(currentA, config)[0];
     worst.tier = 'B';
     worst.probationRemaining = undefined;
     currentA = inTier('A');
   }
   while (currentB.length > targetB) {
-    const worst = [...currentB].sort((a, b) => compareByRobustness(b, a, config))[0];
+    const worst = sortWorstFirst(currentB, config)[0];
     worst.tier = 'C';
     worst.probationRemaining = undefined;
     currentB = inTier('B');
   }
   currentC = inTier('C');
+  // Drop worst extra C agents so |C| == target. (In-place mutation left length unchanged → infinite loop.)
   while (currentC.length > targetC) {
-    const bottom = [...currentC].sort((a, b) => compareByRobustness(b, a, config));
-    const worst = bottom[0];
-    const elites = agents.filter(a => (a.tier === 'A' || a.tier === 'B') && !a.isAnchor).sort((a, b) => compareByRobustness(b, a, config)).slice(0, 5);
-    const parent = elites[0];
-    const parentParams = parent ? parent.params : DEFAULT_AI_PARAMS;
-    const lineageId = parent ? parent.lineageId : `gen_${Date.now()}`;
-    const bucket = chooseMutationBucket(config);
-    worst.params = mutateWithBucket(parentParams, bucket, config);
-    worst.lineageId = lineageId;
-    worst.tier = 'C';
-    worst.probationRemaining = undefined;
-    resetSeasonStats([worst]);
+    const worst = sortWorstFirst(currentC, config)[0];
+    if (!worst) break;
+    const idx = agents.indexOf(worst);
+    if (idx < 0) break;
+    agents.splice(idx, 1);
     currentC = inTier('C');
   }
 }
@@ -311,7 +346,10 @@ export function createNewAgentsForCUnderflow(
   config: SimSystemConfig,
   nextId: () => string,
 ): SimAgent[] {
-  const elites = agents.filter(a => (a.tier === 'A' || a.tier === 'B') && !a.isAnchor).sort((a, b) => compareByRobustness(b, a, config)).slice(0, 5);
+  const elites = sortBestFirst(
+    agents.filter(a => (a.tier === 'A' || a.tier === 'B') && !a.isAnchor),
+    config,
+  ).slice(0, 5);
   const newAgents: SimAgent[] = [];
   for (let i = 0; i < count; i++) {
     const parent = elites[Math.min(i, elites.length - 1)];

@@ -305,7 +305,7 @@ function robustScore(c: Candidate): number {
   const sorted = [...scores].sort((x, y) => x - y);
   const decileIdx = Math.floor(sorted.length * 0.1);
   const worstDecile = decileIdx < sorted.length ? sorted[decileIdx] : sorted[0] ?? 0;
-  return mean - LEAGUE_ROBUST_LAMBDA * std - LEAGUE_TAIL_PENALTY * worstDecile;
+  return mean - LEAGUE_ROBUST_LAMBDA * std - LEAGUE_TAIL_PENALTY * Math.max(0, -worstDecile);
 }
 
 /** Combined points when archetypes included: (1-w)*divisionPoints + w*archetypePoints. */
