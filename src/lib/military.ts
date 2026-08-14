@@ -51,7 +51,7 @@ import {
   getMoraleAttackPenalty, shouldRout,
   getShieldWallDefenseBonus, getShieldWallAttackPenalty, getVolleyFireBonus, getChargeBonus,
 } from './combat';
-import { isUnitInSupplyVicinityOfPlayerCities } from '@/lib/empireEconomy';
+import { isUnitInSupplyVicinityOfPlayerCities, deductPooledStorage } from '@/lib/empireEconomy';
 import { tryReGarrisonIdleUnit, isLandMilitaryUnit, marchHexDistanceAtOrder, applyDeployFlagsForMoveMutable } from '@/lib/garrison';
 import { getCityTerritory } from '@/lib/territory';
 
@@ -1881,13 +1881,7 @@ export function upkeepTick(
 }
 
 function deductFromCities(cities: City[], resource: 'food' | 'guns' | 'gunsL2', amount: number) {
-  let remaining = amount;
-  for (const city of cities) {
-    if (remaining <= 0) break;
-    const deduct = Math.min(city.storage[resource], remaining);
-    city.storage[resource] -= deduct;
-    remaining -= deduct;
-  }
+  deductPooledStorage(cities, resource, amount);
 }
 
 // ═══════════════════════════════════════════════════════════════════

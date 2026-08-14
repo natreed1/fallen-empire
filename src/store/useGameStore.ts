@@ -121,6 +121,7 @@ import { getCityTerritory } from '@/lib/territory';
 import { computeContestedZoneHexKeys, applyContestedZonePayout } from '@/lib/contestedZone';
 import { calculateTerritory, findCityForRefinedWoodSpend, maxMoveOrderDistanceForDestination, isWithinPlayerMoveOrderRange } from '@/lib/territory';
 import { processEconomyTurn, computeEmpireIncomeStatement } from '@/lib/gameLoop';
+import { unitReceivesPassiveHpRegen } from '@/lib/empireEconomy';
 import {
   planAiTurn,
   placeAiStartingCity,
@@ -2840,7 +2841,7 @@ export const useGameStore = create<GameState>((set, get) => ({
           const newTiles = new Map(st.tiles);
 
           for (const site of st.roadConstructions) {
-            const availBP = computeRoadAvailableBp(site, st.territory, st.cities);
+            const availBP = computeRoadAvailableBp(site, st.territory, st.cities, st.roadConstructions);
             if (availBP === 0) {
               remaining.push(site);
               continue;
@@ -3222,10 +3223,8 @@ export const useGameStore = create<GameState>((set, get) => ({
     }));
 
     flushUnits = flushUnits.map(u => {
-      if (u.hp <= 0 || u.hp >= u.maxHp || u.aboardShipId || isNavalUnitType(u.type) || u.type === 'builder') {
-        return u;
-      }
-      if (u.status === 'fighting') return u;
+      const ownerCities = flushCities.filter(c => c.ownerId === u.ownerId);
+      if (!unitReceivesPassiveHpRegen(u, ownerCities)) return u;
       const add = Math.max(1, Math.floor(u.maxHp * UNIT_HP_REGEN_FRACTION_PER_CYCLE));
       return { ...u, hp: Math.min(u.maxHp, u.hp + add) };
     });

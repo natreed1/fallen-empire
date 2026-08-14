@@ -173,13 +173,30 @@ export function computeConstructionAvailableBp(
 
 /** Roads: only university workforce in that territory tile (no city “building power”). */
 export function computeRoadAvailableBp(
-  site: { q: number; r: number; ownerId: string },
+  site: { id?: string; q: number; r: number; ownerId: string },
   territory: Map<string, TerritoryInfo>,
   cities: City[],
+  allRoadSites: { id?: string; q: number; r: number; ownerId: string }[] = [],
 ): number {
   const terr = territory.get(tileKey(site.q, site.r));
   if (!terr || terr.playerId !== site.ownerId) return 0;
   const city = cities.find(c => c.id === terr.cityId);
   const academy = city?.buildings.find(b => b.type === 'academy');
-  return getUniversityBuilderSlots(academy) * BUILDER_POWER;
+  const slots = getUniversityBuilderSlots(academy);
+  if (slots <= 0) return 0;
+
+  // Same as construction sites: workforce stacks on one road hex at a time (queue order).
+  // confirmRoadPath sorts nearest-first so a path builds outward from the start hex.
+  if (allRoadSites.length > 0) {
+    const peers = allRoadSites.filter(s => {
+      if (s.ownerId !== site.ownerId) return false;
+      const t = territory.get(tileKey(s.q, s.r));
+      return !!t && t.cityId === terr.cityId && t.playerId === site.ownerId;
+    });
+    const winner = peers[0];
+    const siteKey = site.id ?? `${site.q},${site.r}`;
+    const winnerKey = winner ? (winner.id ?? `${winner.q},${winner.r}`) : '';
+    if (winner && winnerKey !== siteKey) return 0;
+  }
+  return slots * BUILDER_POWER;
 }
