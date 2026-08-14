@@ -1,6 +1,6 @@
 /**
  * Logistics correctness: empire food routing, cutoff HP loss, sequential road BP.
- * Run: npx ts-node -r tsconfig-paths/register --project tsconfig.train.json scripts/verify-logistics-critical.ts
+ * Run: npm run verify-logistics-critical
  */
 import { processEconomyTurn } from '../src/lib/gameLoop';
 import { upkeepTick } from '../src/lib/military';
