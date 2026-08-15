@@ -175,7 +175,12 @@ import {
   fillUniversitySlotTasks,
   cityUniversityHasSlotTask,
 } from '@/lib/builders';
-import { getNextWallBuildHex, countDefensesTaskSlots } from '@/lib/wallBuilding';
+import {
+  getNextWallBuildHex,
+  cityCanPayWallConstruction,
+  wallStoneChargesForCycle,
+  applyWallStoneCharges,
+} from '@/lib/wallBuilding';
 import { clusterHumanBattleEngagements } from '@/lib/battlePreview';
 import { planHumanBuilderAutomation } from '@/lib/builderAutomation';
 import { processResearchTick, canResearchTech } from '@/lib/researchTick';
@@ -2680,10 +2685,7 @@ export const useGameStore = create<GameState>((set, get) => ({
 
             if (site.type === 'wall_section' && site.cityId) {
               const wallCity = st.cities.find(c => c.id === site.cityId);
-              const wSlots = wallCity ? countDefensesTaskSlots(wallCity) : 0;
-              const wallStoneNeed = wSlots * WALL_BUILDER_STONE_PER_CYCLE_PER_SLOT;
-              const stn = wallCity?.storage.stone ?? 0;
-              if (wSlots <= 0 || stn < wallStoneNeed) {
+              if (!wallCity || !cityCanPayWallConstruction(wallCity)) {
                 availBP = 0;
               }
             }
@@ -3059,6 +3061,8 @@ export const useGameStore = create<GameState>((set, get) => ({
     const s = get();
     if (s.phase !== 'playing') return;
     const newCycle = s.cycle + 1;
+    // Snapshot before economy / AI queue: BP already used this pre-economy stock.
+    const wallStoneCharges = wallStoneChargesForCycle(s.cities, s.constructions);
 
     let pendingRecruitsAcc = s.pendingRecruits.filter(pr => pr.completesAtCycle !== newCycle);
     let pendingIncorporationsAcc = s.pendingIncorporations.filter(p => p.completesAtCycle !== newCycle);
@@ -3643,23 +3647,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       }
     }
 
-    const citiesWallStone = citiesForSet.map(c => {
-      const hasWallSite = constructionsForSet.some(
-        con => con.cityId === c.id && con.type === 'wall_section',
-      );
-      if (!hasWallSite) return c;
-      const slots = countDefensesTaskSlots(c);
-      if (slots <= 0) return c;
-      const cost = slots * WALL_BUILDER_STONE_PER_CYCLE_PER_SLOT;
-      const stone = c.storage.stone ?? 0;
-      if (stone >= cost) {
-        return {
-          ...c,
-          storage: { ...c.storage, stone: stone - cost },
-        };
-      }
-      return c;
-    });
+    const citiesWallStone = applyWallStoneCharges(citiesForSet, wallStoneCharges);
 
     // ── Research & Education Tick ──
     let politiciansMut = s.politicians ? [...s.politicians] : [];
