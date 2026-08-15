@@ -563,7 +563,7 @@ export function stepSimulation(
   }));
   let unitsPrep = [...state.units];
   for (const pr of state.pendingRecruits.filter(p => p.completesAtCycle === newCycle)) {
-    const u = spawnUnitFromPendingLand(pr, citiesPrep);
+    const u = spawnUnitFromPendingLand(pr, citiesPrep, state.operationalArmies);
     if (u) unitsPrep.push(u);
   }
 
@@ -611,6 +611,7 @@ export function stepSimulation(
   const econ = processEconomyTurn(
     citiesPrep, unitsPrep, playersPrep,
     state.tiles, state.territory, newCycle, harvestMultiplier,
+    state.wallSections, state.commanders ?? [],
   );
   let cities = econ.cities;
   let units = econ.units;
@@ -676,7 +677,7 @@ export function stepSimulation(
 
   // ── Upkeep (empire-pooled supply; cache avoids recomputing per-unit supply when position unchanged) ──
   const supplyCache = state.supplyCache ?? new Map<string, SupplyCacheEntry>();
-  const upkeepResult = upkeepTick(units, cities, state.heroes, newCycle, state.tiles, state.territory, supplyCache);
+  const upkeepResult = upkeepTick(units, cities, state.heroes, newCycle, state.tiles, state.territory, supplyCache, state.wallSections);
   units = units.filter(u => u.hp > 0);
 
   const countStatus = (list: Unit[]) => {
@@ -1076,7 +1077,6 @@ export function stepSimulation(
   let citiesToSet = cities;
   let aliveUnits = units.filter(u => u.hp > 0);
   for (const city of cities) {
-    const wallBlocks = enemyIntactWallOnCityHex(wallSectionsAfterAi, city);
     const defendingLand = aliveUnits.filter(
       u => landMilitaryContestsCityCapture(u, city.q, city.r) && u.ownerId === city.ownerId,
     );
@@ -1084,8 +1084,10 @@ export function stepSimulation(
       u => landMilitaryContestsCityCapture(u, city.q, city.r) && u.ownerId !== city.ownerId,
     );
     if (attackingLand.length === 0) continue;
+    const wallBlocks = enemyIntactWallOnCityHex(wallSectionsAfterAi, city, state.tiles, attackingLand[0].ownerId);
+    if (city.population > 0 && wallBlocks) continue;
     const instantTake =
-      city.population === 0 || (defendingLand.length === 0 && !wallBlocks);
+      city.population === 0 || defendingLand.length === 0;
     if (!instantTake) continue;
     const newOwnerId = attackingLand[0].ownerId;
     citiesToSet = citiesToSet.map(c => (c.id === city.id ? { ...c, ownerId: newOwnerId } : c));
@@ -1210,12 +1212,16 @@ export function stepSimulation(
       continue;
     }
     const attackerId = contenders[0];
+    const wallBlocks = enemyIntactWallOnCityHex(wallSectionsMut, city, tilesMut, attackerId);
+    if (city.population > 0 && wallBlocks) {
+      delete captureHoldNext[city.id];
+      continue;
+    }
     const defendingLandMilitary = aliveUnits.filter(
       u => landMilitaryContestsCityCapture(u, city.q, city.r) && u.ownerId === city.ownerId,
     );
-    const wallBlocks = enemyIntactWallOnCityHex(wallSectionsMut, city);
     const instantTake =
-      city.population === 0 || (defendingLandMilitary.length === 0 && !wallBlocks);
+      city.population === 0 || defendingLandMilitary.length === 0;
     if (instantTake) {
       citiesToSet = citiesToSet.map(c => (c.id === city.id ? { ...c, ownerId: attackerId } : c));
       delete captureHoldNext[city.id];

@@ -4,7 +4,7 @@
  * when the unit is within SUPPLY_VICINITY_RADIUS of any friendly city.
  */
 
-import { City, Unit, Tile, TerritoryInfo, hexDistance, SUPPLY_VICINITY_RADIUS } from '@/types/game';
+import { City, Unit, Tile, TerritoryInfo, FoodPriority, hexDistance, SUPPLY_VICINITY_RADIUS, getUnitStats } from '@/types/game';
 
 /** Incorporated neutral villages in this player's territory (all cities). */
 export function countVillagesInPlayerTerritory(
@@ -29,4 +29,27 @@ export function isUnitInSupplyVicinityOfPlayerCities(unit: Unit, playerCities: C
     if (hexDistance(unit.q, unit.r, city.q, city.r) <= SUPPLY_VICINITY_RADIUS) return true;
   }
   return false;
+}
+
+/** Sum of food upkeep for living units of this owner. */
+export function militaryFoodDemand(units: Unit[], ownerId: string): number {
+  let n = 0;
+  for (const u of units) {
+    if (u.hp <= 0 || u.ownerId !== ownerId) continue;
+    n += getUnitStats(u).foodUpkeep;
+  }
+  return n;
+}
+
+/**
+ * How much stored food civilians may eat this cycle.
+ * Feed Army reserves military upkeep so the army is not wiped by civilian consumption.
+ */
+export function foodAvailableForCivilians(
+  totalFood: number,
+  militaryDemand: number,
+  priority: FoodPriority,
+): number {
+  if (priority === 'military') return Math.max(0, totalFood - Math.max(0, militaryDemand));
+  return Math.max(0, totalFood);
 }

@@ -165,6 +165,7 @@ import {
   releaseMarchEchelonHolds,
   unitIdsMatchingTypes,
   TACTICAL_FILTER_LAND_TYPES,
+  cityHasWallBreach,
 } from '@/lib/siege';
 import { tickScrollRelicPickup, returnScrollsForDeadCarriers } from '@/lib/scrolls';
 import {
@@ -176,7 +177,14 @@ import {
   cityUniversityHasSlotTask,
 } from '@/lib/builders';
 import { getNextWallBuildHex, countDefensesTaskSlots } from '@/lib/wallBuilding';
-import { clusterHumanBattleEngagements } from '@/lib/battlePreview';
+import { clusterHumanBattleEngagements, battleClusterContainingHex } from '@/lib/battlePreview';
+import {
+  applyArmyStance,
+  applyRetreatToMatchingUnits,
+  applyStanceToMatchingUnits,
+  attachUnitsToArmy,
+  isFieldArmyLandUnit,
+} from '@/lib/armyCommand';
 import { planHumanBuilderAutomation } from '@/lib/builderAutomation';
 import { processResearchTick, canResearchTech } from '@/lib/researchTick';
 import {
@@ -511,6 +519,14 @@ interface GameState {
   /** Per army: inherit session default march formation, always spread (≥2 military), or always stacked. */
   setArmyMarchSpread: (armyId: string, mode: ArmyMarchSpreadMode) => void;
   assignCommanderToArmy: (commanderId: string, armyId: string) => void;
+  /** One-click combat posture for every land unit in this field army (also stored on the army). */
+  setArmyStance: (armyId: string, stance: ArmyStance) => void;
+  /** Immediate stance for the current Army-panel order scope (all / selected hexes / field army). */
+  applyStanceToTacticalScope: (stance: ArmyStance) => void;
+  setRetreatArmy: (armyId: string) => void;
+  applyRetreatToTacticalScope: () => void;
+  setStanceOnBattleCluster: (stance: ArmyStance) => void;
+  setRetreatOnBattleCluster: () => void;
   toggleTacticalPatrolPaintHex: (q: number, r: number) => void;
   /** Paint mode: add hex to patrol zone without toggling off (for drag-painting). */
   addTacticalPatrolPaintHex: (q: number, r: number) => void;
@@ -2442,13 +2458,16 @@ export const useGameStore = create<GameState>((set, get) => ({
           continue;
         }
         const attackerId = contenders[0];
+        const wallBlocks = enemyIntactWallOnCityHex(wallSectionsMut, city, s.tiles, attackerId);
+        if (city.population > 0 && wallBlocks) {
+          delete captureHoldNext[city.id];
+          continue;
+        }
         const defendingLandMilitary = aliveUnits.filter(
           u => landMilitaryContestsCityCapture(u, city.q, city.r) && u.ownerId === city.ownerId,
         );
-        const wallBlocks = enemyIntactWallOnCityHex(wallSectionsMut, city);
         const instantTake =
-          city.population === 0 ||
-          (defendingLandMilitary.length === 0 && !wallBlocks);
+          city.population === 0 || defendingLandMilitary.length === 0;
         if (instantTake) {
           citiesFinal = citiesFinal.map(c => (c.id === city.id ? { ...c, ownerId: attackerId } : c));
           delete captureHoldNext[city.id];
@@ -3129,7 +3148,7 @@ export const useGameStore = create<GameState>((set, get) => ({
           });
         }
       } else {
-        const u = spawnUnitFromPendingLand(pr, flushCities);
+        const u = spawnUnitFromPendingLand(pr, flushCities, s.operationalArmies);
         if (u) {
           flushUnits = [...flushUnits, u];
           if (pr.playerId === HUMAN_ID) {
@@ -3272,14 +3291,17 @@ export const useGameStore = create<GameState>((set, get) => ({
     const harvestMultiplier = getWeatherHarvestMultiplier(currentWeather);
 
     // Economy for all (with weather multiplier)
-    const econ = processEconomyTurn(flushCities, flushUnits, flushPlayers, flushTiles, flushTerritory, newCycle, harvestMultiplier);
+    const econ = processEconomyTurn(
+      flushCities, flushUnits, flushPlayers, flushTiles, flushTerritory, newCycle, harvestMultiplier,
+      s.wallSections, s.commanders ?? [], s.politicians ?? [],
+    );
     let cities = econ.cities;
     let units = econ.units;
     let players = econ.players;
     let notifs = [...flushNotifs, ...weatherNotifs, ...econ.notifications];
 
     // Military upkeep (food + guns consumption, per cluster); reuse clusters from economy
-    const upkeepResult = upkeepTick(units, cities, flushHeroes, newCycle, flushTiles, flushTerritory);
+    const upkeepResult = upkeepTick(units, cities, flushHeroes, newCycle, flushTiles, flushTerritory, undefined, s.wallSections);
     notifs.push(...upkeepResult.notifications);
 
     let constructionsForSet = s.constructions;
@@ -3506,7 +3528,6 @@ export const useGameStore = create<GameState>((set, get) => ({
     // City capture (discrete cycle): align with RT — land military only; wall / defenders block unless pop 0
     let citiesToSet = cities;
     for (const city of cities) {
-      const wallBlocks = enemyIntactWallOnCityHex(wallSectionsMut, city);
       const defendingLand = aliveUnits.filter(
         u => landMilitaryContestsCityCapture(u, city.q, city.r) && u.ownerId === city.ownerId,
       );
@@ -3514,8 +3535,10 @@ export const useGameStore = create<GameState>((set, get) => ({
         u => landMilitaryContestsCityCapture(u, city.q, city.r) && u.ownerId !== city.ownerId,
       );
       if (attackingLand.length === 0) continue;
+      const wallBlocks = enemyIntactWallOnCityHex(wallSectionsMut, city, tilesMut, attackingLand[0].ownerId);
+      if (city.population > 0 && wallBlocks) continue;
       const instantTake =
-        city.population === 0 || (defendingLand.length === 0 && !wallBlocks);
+        city.population === 0 || defendingLand.length === 0;
       if (!instantTake) continue;
       const newOwnerId = attackingLand[0].ownerId;
       citiesToSet = citiesToSet.map(c => (c.id === city.id ? { ...c, ownerId: newOwnerId } : c));
@@ -5415,7 +5438,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       return;
     }
     set({
-      units: s.units.map(u => (unitIds.has(u.id) ? { ...u, armyId } : u)),
+      units: attachUnitsToArmy(s.units, unitIds, army),
     });
     get().addNotification(`Attached ${unitIds.size} unit(s) to ${army.name}.`, 'success');
   },
@@ -5438,7 +5461,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       return;
     }
     set({
-      units: s.units.map(u => (unitIds.has(u.id) ? { ...u, armyId } : u)),
+      units: attachUnitsToArmy(s.units, unitIds, army),
     });
     get().addNotification(`Attached ${unitIds.size} unit(s) at (${q},${r}) to ${army.name}.`, 'success');
   },
@@ -5511,6 +5534,131 @@ export const useGameStore = create<GameState>((set, get) => ({
       }),
     });
     get().addNotification(`${cmd.name} leads ${army.name}.`, 'success');
+  },
+
+  setArmyStance: (armyId, stance) => {
+    const s = get();
+    const army = s.operationalArmies?.find(o => o.id === armyId && o.ownerId === HUMAN_ID);
+    if (!army) return;
+    const next = applyArmyStance(s.units, s.operationalArmies ?? [], armyId, HUMAN_ID, stance);
+    set({ units: next.units, operationalArmies: next.armies });
+    const label = stance.replace(/_/g, ' ');
+    get().addNotification(`${army.name}: stance ${label}.`, 'info');
+  },
+
+  applyStanceToTacticalScope: (stance) => {
+    const s = get();
+    if (s.pendingTacticalOrders === null) {
+      get().setStance(stance);
+      return;
+    }
+    if (s.tacticalOrderScope === 'army' && s.tacticalOrderScopeArmyId) {
+      get().setArmyStance(s.tacticalOrderScopeArmyId, stance);
+      return;
+    }
+    const keys = new Set(humanStackKeysForTactical(s));
+    if (keys.size === 0) {
+      get().addNotification('No stacks in the current order scope.', 'warning');
+      return;
+    }
+    set({
+      units: applyStanceToMatchingUnits(
+        s.units,
+        u =>
+          u.ownerId === HUMAN_ID &&
+          u.hp > 0 &&
+          u.type !== 'builder' &&
+          !u.aboardShipId &&
+          keys.has(tileKey(u.q, u.r)),
+        stance,
+      ),
+    });
+    get().addNotification(`Stance set to ${stance.replace(/_/g, ' ')} (${keys.size} hex group${keys.size === 1 ? '' : 's'}).`, 'info');
+  },
+
+  setRetreatArmy: (armyId) => {
+    const s = get();
+    const army = s.operationalArmies?.find(o => o.id === armyId && o.ownerId === HUMAN_ID);
+    if (!army) return;
+    const at = Date.now() + RETREAT_DELAY_MS;
+    set({
+      units: applyRetreatToMatchingUnits(
+        s.units,
+        u => u.ownerId === HUMAN_ID && u.armyId === armyId && isFieldArmyLandUnit(u),
+        at,
+      ),
+    });
+    get().addNotification(`${army.name}: withdraw ordered (2s delay).`, 'warning');
+  },
+
+  applyRetreatToTacticalScope: () => {
+    const s = get();
+    if (s.pendingTacticalOrders === null) {
+      get().setRetreat();
+      return;
+    }
+    if (s.tacticalOrderScope === 'army' && s.tacticalOrderScopeArmyId) {
+      get().setRetreatArmy(s.tacticalOrderScopeArmyId);
+      return;
+    }
+    const keys = new Set(humanStackKeysForTactical(s));
+    if (keys.size === 0) {
+      get().addNotification('No stacks in the current order scope.', 'warning');
+      return;
+    }
+    const at = Date.now() + RETREAT_DELAY_MS;
+    set({
+      units: applyRetreatToMatchingUnits(
+        s.units,
+        u =>
+          u.ownerId === HUMAN_ID &&
+          u.hp > 0 &&
+          u.type !== 'builder' &&
+          !u.aboardShipId &&
+          keys.has(tileKey(u.q, u.r)),
+        at,
+      ),
+    });
+    get().addNotification(`Withdraw ordered (2s delay) for ${keys.size} hex group${keys.size === 1 ? '' : 's'}.`, 'warning');
+  },
+
+  setStanceOnBattleCluster: (stance) => {
+    const s = get();
+    const keys = new Set(battleClusterContainingHex(s.units, s.battleModalHexKey));
+    if (keys.size === 0) return;
+    set({
+      units: applyStanceToMatchingUnits(
+        s.units,
+        u =>
+          u.ownerId === HUMAN_ID &&
+          u.hp > 0 &&
+          u.type !== 'builder' &&
+          !u.aboardShipId &&
+          keys.has(tileKey(u.q, u.r)),
+        stance,
+      ),
+    });
+    get().addNotification(`Battle stance: ${stance.replace(/_/g, ' ')}.`, 'info');
+  },
+
+  setRetreatOnBattleCluster: () => {
+    const s = get();
+    const keys = new Set(battleClusterContainingHex(s.units, s.battleModalHexKey));
+    if (keys.size === 0) return;
+    const at = Date.now() + RETREAT_DELAY_MS;
+    set({
+      units: applyRetreatToMatchingUnits(
+        s.units,
+        u =>
+          u.ownerId === HUMAN_ID &&
+          u.hp > 0 &&
+          u.type !== 'builder' &&
+          !u.aboardShipId &&
+          keys.has(tileKey(u.q, u.r)),
+        at,
+      ),
+    });
+    get().addNotification('Withdraw ordered (2s delay).', 'warning');
   },
 
   toggleTacticalPatrolPaintHex: (q, r) => {
@@ -6453,10 +6601,12 @@ export const useGameStore = create<GameState>((set, get) => ({
     const { q, r } = s.selectedHex;
     set({
       units: s.units.map(u =>
-        u.q === q && u.r === r && u.ownerId === HUMAN_ID ? { ...u, stance } : u
+        u.q === q && u.r === r && u.ownerId === HUMAN_ID && u.hp > 0 && u.type !== 'builder'
+          ? { ...u, stance }
+          : u
       ),
     });
-    get().addNotification(`Stance set to ${stance.replace('_', ' ')}`, 'info');
+    get().addNotification(`Stance set to ${stance.replace(/_/g, ' ')}`, 'info');
   },
 
   activateAbility: (unitType) => {
@@ -6998,6 +7148,13 @@ export const useGameStore = create<GameState>((set, get) => ({
     const s = get();
     const city = s.cities.find(c => c.id === cityId);
     if (!city) return;
+    if (!cityHasWallBreach(city, s.tiles, s.wallSections, HUMAN_ID)) {
+      get().addNotification(
+        `Walls still stand at ${city.name}. Keep siege engines on the perimeter until a section falls, then assault.`,
+        'warning',
+      );
+      return;
+    }
     set({
       units: s.units.map(u => {
         if (u.ownerId !== HUMAN_ID || u.hp <= 0 || u.siegingCityId !== cityId) return u;
@@ -7346,7 +7503,15 @@ export const useGameStore = create<GameState>((set, get) => ({
         const groups = order.waveGroups.filter(g => g.length > 0);
         if (groups.length === 0) continue;
         const participate = new Set(groups.flat());
-        const march = getAttackMarchParams(order.attackStyle, city, fromQ, fromR, s.tiles);
+        const march = getAttackMarchParams(
+          order.attackStyle,
+          city,
+          fromQ,
+          fromR,
+          s.tiles,
+          s.wallSections,
+          HUMAN_ID,
+        );
 
         function waveIndexForUnit(uid: string): number {
           for (let i = 0; i < groups.length; i++) {
