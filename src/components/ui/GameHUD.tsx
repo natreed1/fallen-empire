@@ -4029,14 +4029,14 @@ function SiegeProgressPanel() {
           <div className="text-[10px] text-empire-parchment/70 mt-1">
             Your forces outside the walls: <span className="text-empire-parchment">{row.besiegers}</span>
             {row.starving && <span className="text-red-400 ml-2">Enemy city starving (no food in stores)</span>}
-            {!row.starving && <span className="text-empire-parchment/45 ml-2">Encircle and wait for attrition, or assault.</span>}
+            {!row.starving && <span className="text-empire-parchment/45 ml-2">Camp outside intact walls; siege engines break a section, then assault.</span>}
           </div>
           <button
             type="button"
             onClick={() => beginSiegeAssaultOnCity(row.cityId)}
             className="mt-2 w-full px-2 py-1.5 text-[11px] font-bold rounded border border-red-500/60 bg-red-950/40 text-red-200 hover:bg-red-900/50"
           >
-            Begin assault (charge the center)
+            Begin assault (through a wall gap)
           </button>
         </div>
       ))}

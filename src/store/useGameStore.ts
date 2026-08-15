@@ -165,6 +165,7 @@ import {
   releaseMarchEchelonHolds,
   unitIdsMatchingTypes,
   TACTICAL_FILTER_LAND_TYPES,
+  cityHasWallBreach,
 } from '@/lib/siege';
 import { tickScrollRelicPickup, returnScrollsForDeadCarriers } from '@/lib/scrolls';
 import {
@@ -7140,6 +7141,13 @@ export const useGameStore = create<GameState>((set, get) => ({
     const s = get();
     const city = s.cities.find(c => c.id === cityId);
     if (!city) return;
+    if (!cityHasWallBreach(city, s.tiles, s.wallSections, HUMAN_ID)) {
+      get().addNotification(
+        `Walls still stand at ${city.name}. Keep siege engines on the perimeter until a section falls, then assault.`,
+        'warning',
+      );
+      return;
+    }
     set({
       units: s.units.map(u => {
         if (u.ownerId !== HUMAN_ID || u.hp <= 0 || u.siegingCityId !== cityId) return u;
@@ -7488,7 +7496,15 @@ export const useGameStore = create<GameState>((set, get) => ({
         const groups = order.waveGroups.filter(g => g.length > 0);
         if (groups.length === 0) continue;
         const participate = new Set(groups.flat());
-        const march = getAttackMarchParams(order.attackStyle, city, fromQ, fromR, s.tiles);
+        const march = getAttackMarchParams(
+          order.attackStyle,
+          city,
+          fromQ,
+          fromR,
+          s.tiles,
+          s.wallSections,
+          HUMAN_ID,
+        );
 
         function waveIndexForUnit(uid: string): number {
           for (let i = 0; i < groups.length; i++) {

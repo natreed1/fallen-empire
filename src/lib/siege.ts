@@ -4,6 +4,8 @@ import {
   Tile,
   Unit,
   UnitType,
+  WallSection,
+  getHexRing,
   hexDistance,
   hexNeighbors,
   tileKey,
@@ -22,6 +24,64 @@ export const TACTICAL_FILTER_LAND_TYPES: UnitType[] = [
   'defender',
 ];
 
+export function isIntactEnemyWallAt(
+  wallSections: WallSection[],
+  q: number,
+  r: number,
+  moverId: string,
+): boolean {
+  return wallSections.some(
+    w => w.q === q && w.r === r && w.ownerId !== moverId && (w.hp ?? 0) > 0,
+  );
+}
+
+/** Land hex a mover can stand on (not water, not an intact enemy wall). */
+export function isLandApproachHex(
+  tiles: Map<string, Tile>,
+  wallSections: WallSection[],
+  q: number,
+  r: number,
+  moverId: string,
+): boolean {
+  const t = tiles.get(tileKey(q, r));
+  if (!t || t.biome === 'water') return false;
+  return !isIntactEnemyWallAt(wallSections, q, r, moverId);
+}
+
+/** True if at least one land neighbor of the city center is not blocked by an intact enemy wall. */
+export function cityHasWallBreach(
+  city: City,
+  tiles: Map<string, Tile>,
+  wallSections: WallSection[],
+  moverId: string,
+): boolean {
+  return hexNeighbors(city.q, city.r).some(([q, r]) =>
+    isLandApproachHex(tiles, wallSections, q, r, moverId),
+  );
+}
+
+function pickClosestPassable(
+  hexes: { q: number; r: number }[],
+  preferFromQ: number,
+  preferFromR: number,
+  tiles: Map<string, Tile>,
+  wallSections: WallSection[],
+  moverId: string | undefined,
+): { q: number; r: number; d: number } | null {
+  let best: { q: number; r: number; d: number } | null = null;
+  for (const { q, r } of hexes) {
+    if (moverId) {
+      if (!isLandApproachHex(tiles, wallSections, q, r, moverId)) continue;
+    } else {
+      const t = tiles.get(tileKey(q, r));
+      if (!t || t.biome === 'water') continue;
+    }
+    const d = hexDistance(preferFromQ, preferFromR, q, r);
+    if (!best || d < best.d) best = { q, r, d };
+  }
+  return best;
+}
+
 /** March target + flags for the first wave of an attack-city order. */
 export function getAttackMarchParams(
   attackStyle: AttackCityStyle,
@@ -29,6 +89,8 @@ export function getAttackMarchParams(
   preferFromQ: number,
   preferFromR: number,
   tiles: Map<string, Tile>,
+  wallSections: WallSection[] = [],
+  moverId?: string,
 ): {
   targetQ: number;
   targetR: number;
@@ -42,7 +104,7 @@ export function getAttackMarchParams(
   const cq = city.q;
   const cr = city.r;
   if (attackStyle === 'siege') {
-    const ring = pickSiegeRallyHex(city, preferFromQ, preferFromR, tiles);
+    const ring = pickSiegeRallyHex(city, preferFromQ, preferFromR, tiles, wallSections, moverId);
     if (ring) {
       return {
         targetQ: ring.q,
@@ -87,22 +149,51 @@ export function getAttackMarchParams(
   };
 }
 
-/** Land approach hex adjacent to city center (for encirclement / camp). */
+/**
+ * Camp hex for a siege: prefer a passable ring-1 gap, else ring-2 outside the walls
+ * (trebuchet range 3 / ram range 1 still reach ring-1 sections).
+ */
 export function pickSiegeRallyHex(
   city: City,
   preferFromQ: number,
   preferFromR: number,
   tiles: Map<string, Tile>,
+  wallSections: WallSection[] = [],
+  moverId?: string,
 ): { q: number; r: number } | null {
-  const neigh = hexNeighbors(city.q, city.r);
-  let best: { q: number; r: number; d: number } | null = null;
-  for (const [nq, nr] of neigh) {
-    const t = tiles.get(tileKey(nq, nr));
+  const ring1 = hexNeighbors(city.q, city.r).map(([q, r]) => ({ q, r }));
+  const r1 = pickClosestPassable(ring1, preferFromQ, preferFromR, tiles, wallSections, moverId);
+  if (r1) return { q: r1.q, r: r1.r };
+
+  const ring2 = getHexRing(city.q, city.r, 2);
+  const r2 = pickClosestPassable(ring2, preferFromQ, preferFromR, tiles, wallSections, moverId);
+  if (r2) return { q: r2.q, r: r2.r };
+
+  let fallback: { q: number; r: number; d: number } | null = null;
+  for (const { q, r } of [...ring1, ...ring2]) {
+    const t = tiles.get(tileKey(q, r));
     if (!t || t.biome === 'water') continue;
-    const d = hexDistance(preferFromQ, preferFromR, nq, nr);
-    if (!best || d < best.d) best = { q: nq, r: nr, d };
+    const d = hexDistance(preferFromQ, preferFromR, q, r);
+    if (!fallback || d < fallback.d) fallback = { q, r, d };
   }
-  return best ? { q: best.q, r: best.r } : null;
+  return fallback ? { q: fallback.q, r: fallback.r } : null;
+}
+
+/** Where an army should march for a city: enter the center if a wall gap exists, else camp outside. */
+export function pickCityApproachHex(
+  city: City,
+  fromQ: number,
+  fromR: number,
+  tiles: Map<string, Tile>,
+  wallSections: WallSection[],
+  moverId: string,
+): { q: number; r: number; mode: 'enter' | 'camp' } {
+  if (cityHasWallBreach(city, tiles, wallSections, moverId)) {
+    return { q: city.q, r: city.r, mode: 'enter' };
+  }
+  const camp = pickSiegeRallyHex(city, fromQ, fromR, tiles, wallSections, moverId);
+  if (camp) return { q: camp.q, r: camp.r, mode: 'camp' };
+  return { q: city.q, r: city.r, mode: 'enter' };
 }
 
 function sortLandMilitaryById(stackUnits: Unit[]): Unit[] {

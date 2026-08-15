@@ -27,6 +27,7 @@ import {
   clearVillageForCapitalTile,
 } from '@/lib/kingdomSpawn';
 import { countDefensesTaskSlots } from '@/lib/wallBuilding';
+import { pickCityApproachHex } from '@/lib/siege';
 
 // ─── AI Action Types ───────────────────────────────────────────────
 
@@ -758,8 +759,10 @@ export function planAiTurn(
         const d = hexDistance(unit.q, unit.r, ec.q, ec.r);
         if (d < bestDist * ratio) { target = ec; bestDist = d; }
       }
-      if (bestDist > 1) {
-        actions.moveTargets.push({ unitId: unit.id, toQ: target.q, toR: target.r });
+      const approach = pickCityApproachHex(target, unit.q, unit.r, tiles, wallSections, aiPlayerId);
+      const approachDist = hexDistance(unit.q, unit.r, approach.q, approach.r);
+      if (approachDist > 0) {
+        actions.moveTargets.push({ unitId: unit.id, toQ: approach.q, toR: approach.r });
       }
     }
   }
