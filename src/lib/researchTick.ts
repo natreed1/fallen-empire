@@ -114,7 +114,7 @@ export function processResearchTick(
         player.researchedTechs.push(player.activeResearch);
         completedTech = player.activeResearch;
         player.activeResearch = null;
-        player.researchProgress = 0;
+        player.researchProgress = player.researchProgress - techDef.researchCost;
       }
     }
   }

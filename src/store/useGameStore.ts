@@ -2458,13 +2458,16 @@ export const useGameStore = create<GameState>((set, get) => ({
           continue;
         }
         const attackerId = contenders[0];
+        const wallBlocks = enemyIntactWallOnCityHex(wallSectionsMut, city, s.tiles, attackerId);
+        if (city.population > 0 && wallBlocks) {
+          delete captureHoldNext[city.id];
+          continue;
+        }
         const defendingLandMilitary = aliveUnits.filter(
           u => landMilitaryContestsCityCapture(u, city.q, city.r) && u.ownerId === city.ownerId,
         );
-        const wallBlocks = enemyIntactWallOnCityHex(wallSectionsMut, city);
         const instantTake =
-          city.population === 0 ||
-          (defendingLandMilitary.length === 0 && !wallBlocks);
+          city.population === 0 || defendingLandMilitary.length === 0;
         if (instantTake) {
           citiesFinal = citiesFinal.map(c => (c.id === city.id ? { ...c, ownerId: attackerId } : c));
           delete captureHoldNext[city.id];
@@ -3288,7 +3291,10 @@ export const useGameStore = create<GameState>((set, get) => ({
     const harvestMultiplier = getWeatherHarvestMultiplier(currentWeather);
 
     // Economy for all (with weather multiplier)
-    const econ = processEconomyTurn(flushCities, flushUnits, flushPlayers, flushTiles, flushTerritory, newCycle, harvestMultiplier, s.wallSections);
+    const econ = processEconomyTurn(
+      flushCities, flushUnits, flushPlayers, flushTiles, flushTerritory, newCycle, harvestMultiplier,
+      s.wallSections, s.commanders ?? [], s.politicians ?? [],
+    );
     let cities = econ.cities;
     let units = econ.units;
     let players = econ.players;
@@ -3522,7 +3528,6 @@ export const useGameStore = create<GameState>((set, get) => ({
     // City capture (discrete cycle): align with RT — land military only; wall / defenders block unless pop 0
     let citiesToSet = cities;
     for (const city of cities) {
-      const wallBlocks = enemyIntactWallOnCityHex(wallSectionsMut, city);
       const defendingLand = aliveUnits.filter(
         u => landMilitaryContestsCityCapture(u, city.q, city.r) && u.ownerId === city.ownerId,
       );
@@ -3530,8 +3535,10 @@ export const useGameStore = create<GameState>((set, get) => ({
         u => landMilitaryContestsCityCapture(u, city.q, city.r) && u.ownerId !== city.ownerId,
       );
       if (attackingLand.length === 0) continue;
+      const wallBlocks = enemyIntactWallOnCityHex(wallSectionsMut, city, tilesMut, attackingLand[0].ownerId);
+      if (city.population > 0 && wallBlocks) continue;
       const instantTake =
-        city.population === 0 || (defendingLand.length === 0 && !wallBlocks);
+        city.population === 0 || defendingLand.length === 0;
       if (!instantTake) continue;
       const newOwnerId = attackingLand[0].ownerId;
       citiesToSet = citiesToSet.map(c => (c.id === city.id ? { ...c, ownerId: newOwnerId } : c));

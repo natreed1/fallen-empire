@@ -53,7 +53,7 @@ import {
   getShieldWallDefenseBonus, getShieldWallAttackPenalty, getVolleyFireBonus, getChargeBonus,
 } from './combat';
 import { isUnitInSupplyVicinityOfPlayerCities } from '@/lib/empireEconomy';
-import { supplyCitiesForUnit, surroundedCityIds } from '@/lib/siege';
+import { cityHasWallBreach, supplyCitiesForUnit, surroundedCityIds } from '@/lib/siege';
 import { tryReGarrisonIdleUnit, isLandMilitaryUnit, marchHexDistanceAtOrder, applyDeployFlagsForMoveMutable } from '@/lib/garrison';
 import { getCityTerritory } from '@/lib/territory';
 
@@ -519,14 +519,13 @@ export function landMilitaryContestsCityCapture(u: Unit, q: number, r: number): 
   );
 }
 
-export function enemyIntactWallOnCityHex(wallSections: WallSection[], city: City): boolean {
-  return wallSections.some(
-    w =>
-      w.q === city.q &&
-      w.r === city.r &&
-      w.ownerId === city.ownerId &&
-      (w.hp ?? 0) > 0,
-  );
+export function enemyIntactWallOnCityHex(
+  wallSections: WallSection[],
+  city: City,
+  tiles: Map<string, Tile>,
+  attackerId: string,
+): boolean {
+  return !cityHasWallBreach(city, tiles, wallSections, attackerId);
 }
 
 export interface ClosingFireResult {

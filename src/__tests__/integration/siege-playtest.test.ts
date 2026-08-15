@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { combatTick, movementTick, siegeTick, landMilitaryContestsCityCapture } from '@/lib/military';
+import { combatTick, movementTick, siegeTick, landMilitaryContestsCityCapture, enemyIntactWallOnCityHex } from '@/lib/military';
 import {
   cityHasWallBreach,
   getAttackMarchParams,
@@ -76,6 +76,13 @@ describe('siege playtest vs a walled AI city', () => {
   const tiles = plainsMap(8);
   const aiCity = cityAt('ai-keep', AI, 0, 0);
   const freshWalls = () => ring1Walls(aiCity, AI);
+
+  it('intact ring-1 walls block capture even if an attacker stands on the keep', () => {
+    const walls = freshWalls();
+    expect(enemyIntactWallOnCityHex(walls, aiCity, tiles, HUMAN)).toBe(true);
+    const breached = walls.map((w, i) => (i === 0 ? { ...w, hp: 0 } : { ...w }));
+    expect(enemyIntactWallOnCityHex(breached, aiCity, tiles, HUMAN)).toBe(false);
+  });
 
   it('closed ring-1 walls have no breach; camp is outside the wall, not on it', () => {
     const walls = freshWalls();
