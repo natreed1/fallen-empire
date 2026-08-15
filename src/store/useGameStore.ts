@@ -3288,14 +3288,14 @@ export const useGameStore = create<GameState>((set, get) => ({
     const harvestMultiplier = getWeatherHarvestMultiplier(currentWeather);
 
     // Economy for all (with weather multiplier)
-    const econ = processEconomyTurn(flushCities, flushUnits, flushPlayers, flushTiles, flushTerritory, newCycle, harvestMultiplier);
+    const econ = processEconomyTurn(flushCities, flushUnits, flushPlayers, flushTiles, flushTerritory, newCycle, harvestMultiplier, s.wallSections);
     let cities = econ.cities;
     let units = econ.units;
     let players = econ.players;
     let notifs = [...flushNotifs, ...weatherNotifs, ...econ.notifications];
 
     // Military upkeep (food + guns consumption, per cluster); reuse clusters from economy
-    const upkeepResult = upkeepTick(units, cities, flushHeroes, newCycle, flushTiles, flushTerritory);
+    const upkeepResult = upkeepTick(units, cities, flushHeroes, newCycle, flushTiles, flushTerritory, undefined, s.wallSections);
     notifs.push(...upkeepResult.notifications);
 
     let constructionsForSet = s.constructions;

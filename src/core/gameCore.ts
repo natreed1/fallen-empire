@@ -611,6 +611,7 @@ export function stepSimulation(
   const econ = processEconomyTurn(
     citiesPrep, unitsPrep, playersPrep,
     state.tiles, state.territory, newCycle, harvestMultiplier,
+    state.wallSections,
   );
   let cities = econ.cities;
   let units = econ.units;
@@ -676,7 +677,7 @@ export function stepSimulation(
 
   // ── Upkeep (empire-pooled supply; cache avoids recomputing per-unit supply when position unchanged) ──
   const supplyCache = state.supplyCache ?? new Map<string, SupplyCacheEntry>();
-  const upkeepResult = upkeepTick(units, cities, state.heroes, newCycle, state.tiles, state.territory, supplyCache);
+  const upkeepResult = upkeepTick(units, cities, state.heroes, newCycle, state.tiles, state.territory, supplyCache, state.wallSections);
   units = units.filter(u => u.hp > 0);
 
   const countStatus = (list: Unit[]) => {

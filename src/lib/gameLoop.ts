@@ -1,6 +1,6 @@
 import { syncUniversityBuildingLevelsForCities } from '@/lib/universityPopulation';
 import {
-  City, Unit, Player, Tile, GameNotification, TerritoryInfo, CityBuilding, Hero,
+  City, Unit, Player, Tile, GameNotification, TerritoryInfo, CityBuilding, Hero, WallSection,
   Biome, TERRAIN_FOOD_YIELD, BUILDING_PRODUCTION, BUILDING_JOBS, CITY_CENTER_STORAGE,
   MARKET_GOLD_PER_VILLAGE, POPULATION_TAX_GOLD_MULT, POP_BIRTH_RATE, POP_NATURAL_DEATHS, POP_CARRYING_CAPACITY_PER_FOOD, POP_EXPECTED_K_ALPHA, STARVATION_DEATHS,
   POP_RECOVERY_BIRTH_MAX_P, POP_RECOVERY_BIRTH_FOOD_MULT, SOCIAL_BAR_BIRTH_MULT_PER_LEVEL,
@@ -13,6 +13,7 @@ import {
   PLAINS_FARM_FOOD_MULT, SAWMILL_WOOD_PER_REFINED, isFarmBuildingType,
 } from '@/types/game';
 import { countVillagesInPlayerTerritory, isUnitInSupplyVicinityOfPlayerCities } from '@/lib/empireEconomy';
+import { surroundedCityIds } from '@/lib/siege';
 
 /** Per-cycle production rates for a city (for UI display). */
 export function computeCityProductionRate(
@@ -214,11 +215,13 @@ export function processEconomyTurn(
   territory: Map<string, TerritoryInfo>,
   turn: number,
   harvestMultiplier: number = 1.0,
+  wallSections: WallSection[] = [],
 ): TurnResult {
   const newCities = cities.map(c => deepCloneCity(c));
   const newUnits = units.map(u => ({ ...u }));
   const newPlayers = players.map(p => ({ ...p }));
   const notifications: GameNotification[] = [];
+  const isolatedIds = surroundedCityIds(newCities, tiles, newUnits, wallSections);
 
   const notify = (msg: string, type: GameNotification['type']) => {
     notifications.push({ id: generateId('notif'), turn, message: msg, type });
@@ -227,8 +230,8 @@ export function processEconomyTurn(
   autoAssignWorkersPhase(newCities);
   const foodProduced = productionPhase(newCities, tiles, territory, notify, harvestMultiplier);
   playerResourcePhase(newCities, newPlayers, notify);
-  consumptionPhase(newCities, newPlayers, notify);
-  populationGrowthPhase(newCities, foodProduced, notify);
+  consumptionPhase(newCities, newPlayers, notify, isolatedIds);
+  populationGrowthPhase(newCities, foodProduced, notify, isolatedIds);
   migrationPhase(newCities, newPlayers, turn, notify, foodProduced);
   economicsPhase(newCities, newPlayers, tiles, territory, notify);
   moraleDrift(newCities, newPlayers);
@@ -437,27 +440,58 @@ function playerResourcePhase(
 
 // ─── Phase 2: Civilian Consumption ──────────────────────────────────
 
+function consumeCityLocally(
+  city: City,
+  player: Player,
+  notify: (msg: string, type: GameNotification['type']) => void,
+): void {
+  const demand = Math.ceil(city.population * 0.25);
+  if (city.storage.food >= demand) {
+    city.storage.food -= demand;
+    city.morale = Math.min(100, city.morale + 3);
+    return;
+  }
+  const unfed = demand - city.storage.food;
+  city.storage.food = 0;
+  const deaths = Math.ceil(unfed / 2);
+  city.population = Math.max(1, city.population - deaths);
+  city.morale = Math.max(0, city.morale - 15);
+  if (player.isHuman && deaths > 0) {
+    notify(`Starvation in ${city.name}! -${deaths} pop`, 'danger');
+  }
+}
+
 function consumptionPhase(
   cities: City[],
   players: Player[],
   notify: (msg: string, type: GameNotification['type']) => void,
+  isolatedIds: Set<string> = new Set(),
 ) {
   for (const player of players) {
     const playerCities = cities.filter(c => c.ownerId === player.id);
     if (playerCities.length === 0) continue;
 
-    const totalFood = playerCities.reduce((sum, c) => sum + c.storage.food, 0);
-    const totalDemand = Math.ceil(playerCities.reduce((sum, c) => sum + c.population, 0) * 0.25);
+    const isolated = playerCities.filter(c => isolatedIds.has(c.id));
+    const open = playerCities.filter(c => !isolatedIds.has(c.id));
+
+    for (const city of isolated) {
+      consumeCityLocally(city, player, notify);
+    }
+
+    if (open.length === 0) continue;
+
+    const totalFood = open.reduce((sum, c) => sum + c.storage.food, 0);
+    const totalDemand = Math.ceil(open.reduce((sum, c) => sum + c.population, 0) * 0.25);
 
     if (totalFood >= totalDemand) {
-      deductFromPlayerCities(playerCities, 'food', totalDemand);
-      for (const city of playerCities) {
+      deductFromPlayerCities(open, 'food', totalDemand);
+      for (const city of open) {
         city.morale = Math.min(100, city.morale + 3);
       }
     } else {
-      for (const city of playerCities) city.storage.food = 0;
+      for (const city of open) city.storage.food = 0;
       const unfed = totalDemand - totalFood;
-      for (const city of playerCities) {
+      for (const city of open) {
         const cityShare = totalDemand > 0 ? city.population / totalDemand : 0;
         const cityUnfed = Math.ceil(unfed * cityShare);
         const deaths = Math.ceil(cityUnfed / 2);
@@ -498,9 +532,11 @@ function populationGrowthPhase(
   cities: City[],
   foodProduced: Record<string, number>,
   notify: (msg: string, type: GameNotification['type']) => void,
+  isolatedIds: Set<string> = new Set(),
 ) {
   const empireFoodByPlayer = new Map<string, number>();
   for (const c of cities) {
+    if (isolatedIds.has(c.id)) continue;
     empireFoodByPlayer.set(c.ownerId, (empireFoodByPlayer.get(c.ownerId) ?? 0) + c.storage.food);
   }
 
@@ -533,7 +569,9 @@ function populationGrowthPhase(
     const deaths = Math.min(rawDeaths, Math.max(0, P - 1));
 
     const civDemandCity = Math.ceil(P * 0.25);
-    const empireFood = empireFoodByPlayer.get(city.ownerId) ?? 0;
+    const empireFood = isolatedIds.has(city.id)
+      ? city.storage.food
+      : (empireFoodByPlayer.get(city.ownerId) ?? 0);
 
     // Births use expected K; when starving (no grain in storage) births = 0 so pop never grows into starvation.
     // Taper births when food buffer is low (not only when storage hits zero) to prevent early boom-bust collapse.

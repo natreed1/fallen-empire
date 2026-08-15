@@ -33,7 +33,7 @@ import {
   universityTaskMatchesSiteType,
 } from '@/lib/builders';
 import { computeUniversityBuildingLevelFromPopulation, nextUniversityLevelPopulationThreshold } from '@/lib/universityPopulation';
-import { countLandMilitaryByType, TACTICAL_FILTER_LAND_TYPES, unitIdsMatchingTypes } from '@/lib/siege';
+import { countLandMilitaryByType, TACTICAL_FILTER_LAND_TYPES, unitIdsMatchingTypes, isCitySurrounded } from '@/lib/siege';
 import type { SiegeTacticId } from '@/lib/siegeTactics';
 import { SIEGE_TACTIC_META, buildWaveGroupsFromTactic } from '@/lib/siegeTactics';
 import { StanceChips } from '@/components/ui/StanceChips';
@@ -3676,14 +3676,14 @@ function AttackCitySetupModal() {
               <input type="radio" name="ac-style" checked={attackStyle === 'direct'} onChange={() => setAttackStyle('direct')} className="mt-0.5" />
               <span>
                 <span className="text-cyan-300 font-medium">Direct attack</span>
-                <span className="text-empire-parchment/55 block">March on the city center; no extra assault penalty.</span>
+                <span className="text-empire-parchment/55 block">March on the center through a wall gap; no extra assault penalty. Closed walls: camp outside until a section falls.</span>
               </span>
             </label>
             <label className="flex items-start gap-2 text-xs text-empire-parchment/90 cursor-pointer">
               <input type="radio" name="ac-style" checked={attackStyle === 'assault'} onChange={() => setAttackStyle('assault')} className="mt-0.5" />
               <span>
                 <span className="text-red-300 font-medium">Assault</span>
-                <span className="text-empire-parchment/55 block">Straight rush on the center — powerful but you fight at a heavy disadvantage on the walls.</span>
+                <span className="text-empire-parchment/55 block">Rush the center through a gap (heavy wall penalty). Closed walls: camp with the siege until a section falls.</span>
               </span>
             </label>
           </div>
@@ -3992,6 +3992,8 @@ function BuilderActivityPanel() {
 function SiegeProgressPanel() {
   const cities = useGameStore(s => s.cities);
   const units = useGameStore(s => s.units);
+  const tiles = useGameStore(s => s.tiles);
+  const wallSections = useGameStore(s => s.wallSections);
   const gameMode = useGameStore(s => s.gameMode);
   const beginSiegeAssaultOnCity = useGameStore(s => s.beginSiegeAssaultOnCity);
 
@@ -4002,7 +4004,7 @@ function SiegeProgressPanel() {
       if (u.ownerId !== 'player_human' || u.hp <= 0 || !u.siegingCityId) continue;
       byCity.set(u.siegingCityId, (byCity.get(u.siegingCityId) ?? 0) + 1);
     }
-    const out: { cityId: string; name: string; besiegers: number; starving: boolean }[] = [];
+    const out: { cityId: string; name: string; besiegers: number; starving: boolean; surrounded: boolean }[] = [];
     for (const [cityId, besiegers] of byCity) {
       const c = cities.find(x => x.id === cityId);
       if (!c || c.ownerId === 'player_human') continue;
@@ -4011,10 +4013,11 @@ function SiegeProgressPanel() {
         name: c.name,
         besiegers,
         starving: c.storage.food <= 0,
+        surrounded: isCitySurrounded(c, tiles, units, wallSections),
       });
     }
     return out;
-  }, [cities, units, gameMode]);
+  }, [cities, units, tiles, wallSections, gameMode]);
 
   if (rows.length === 0) return null;
 
@@ -4028,8 +4031,13 @@ function SiegeProgressPanel() {
           <div className="text-amber-200 text-xs font-bold tracking-wide">Siege — {row.name}</div>
           <div className="text-[10px] text-empire-parchment/70 mt-1">
             Your forces outside the walls: <span className="text-empire-parchment">{row.besiegers}</span>
+            {row.surrounded && <span className="text-amber-300 ml-2">Surrounded — cut off from empire supply</span>}
             {row.starving && <span className="text-red-400 ml-2">Enemy city starving (no food in stores)</span>}
-            {!row.starving && <span className="text-empire-parchment/45 ml-2">Camp outside intact walls; siege engines break a section, then assault.</span>}
+            {!row.surrounded && !row.starving && (
+              <span className="text-empire-parchment/45 ml-2">
+                Cover every approach (ring-2 outside walls) to starve them; engines break a section, then assault.
+              </span>
+            )}
           </div>
           <button
             type="button"

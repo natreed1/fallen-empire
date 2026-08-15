@@ -53,6 +53,7 @@ import {
   getShieldWallDefenseBonus, getShieldWallAttackPenalty, getVolleyFireBonus, getChargeBonus,
 } from './combat';
 import { isUnitInSupplyVicinityOfPlayerCities } from '@/lib/empireEconomy';
+import { supplyCitiesForUnit, surroundedCityIds } from '@/lib/siege';
 import { tryReGarrisonIdleUnit, isLandMilitaryUnit, marchHexDistanceAtOrder, applyDeployFlagsForMoveMutable } from '@/lib/garrison';
 import { getCityTerritory } from '@/lib/territory';
 
@@ -1750,7 +1751,7 @@ export interface UpkeepResult {
 }
 
 /** Cache entry for unit supply: avoid recomputing when position unchanged. */
-export type SupplyCacheEntry = { inSupply: boolean; q: number; r: number };
+export type SupplyCacheEntry = { inSupply: boolean; q: number; r: number; surroundSig?: string };
 
 export function upkeepTick(
   units: Unit[],
@@ -1760,8 +1761,11 @@ export function upkeepTick(
   tiles: Map<string, Tile>,
   territory: Map<string, TerritoryInfo>,
   supplyCache?: Map<string, SupplyCacheEntry>,
+  wallSections: WallSection[] = [],
 ): UpkeepResult {
   const notifications: GameNotification[] = [];
+  const isolatedIds = surroundedCityIds(cities, tiles, units, wallSections);
+  const surroundSig = [...isolatedIds].sort().join(',');
 
   const byOwner: Record<string, Unit[]> = {};
   for (const u of units) {
@@ -1774,19 +1778,26 @@ export function upkeepTick(
     const playerUnits = byOwner[ownerId];
     const playerCities = cities.filter(c => c.ownerId === ownerId);
     const isHuman = ownerId.includes('human');
+    const openCities = playerCities.filter(c => !isolatedIds.has(c.id));
 
     const suppliedUnits: Unit[] = [];
     const unsuppliedUnits: Unit[] = [];
+    const isolatedGarrison: Unit[] = [];
     for (const u of playerUnits) {
       let inSupply: boolean;
       const cached = supplyCache?.get(u.id);
-      if (cached && cached.q === u.q && cached.r === u.r) {
+      if (cached && cached.q === u.q && cached.r === u.r && cached.surroundSig === surroundSig) {
         inSupply = cached.inSupply;
       } else {
-        inSupply = playerCities.length > 0 && isUnitInSupplyVicinityOfPlayerCities(u, playerCities);
-        if (supplyCache) supplyCache.set(u.id, { inSupply, q: u.q, r: u.r });
+        const sources = supplyCitiesForUnit(u, playerCities, isolatedIds);
+        inSupply = sources.length > 0 && isUnitInSupplyVicinityOfPlayerCities(u, sources);
+        if (supplyCache) supplyCache.set(u.id, { inSupply, q: u.q, r: u.r, surroundSig });
       }
-      if (inSupply) suppliedUnits.push(u);
+      const insideIsolated = playerCities.some(
+        c => isolatedIds.has(c.id) && hexDistance(u.q, u.r, c.q, c.r) <= 1,
+      );
+      if (inSupply && insideIsolated) isolatedGarrison.push(u);
+      else if (inSupply) suppliedUnits.push(u);
       else unsuppliedUnits.push(u);
     }
 
@@ -1803,88 +1814,119 @@ export function upkeepTick(
       });
     }
 
-    if (suppliedUnits.length === 0 || playerCities.length === 0) continue;
+    if (playerCities.length === 0) continue;
+    if (suppliedUnits.length === 0 && isolatedGarrison.length === 0) continue;
 
-    let totalFoodDemand = 0;
-    let totalGunDemand = 0;
-    let totalGunL2Demand = 0;
-    for (const u of suppliedUnits) {
-      const stats = getUnitStats(u);
-      let foodUp = stats.foodUpkeep;
-      const heroAtUnit = heroes.find(
-        h => h.q === u.q && h.r === u.r && h.ownerId === u.ownerId && h.type === 'logistician',
-      );
-      if (heroAtUnit) foodUp = Math.ceil(foodUp * 0.5);
-      totalFoodDemand += foodUp;
-      totalGunDemand += stats.gunUpkeep ?? 0;
-      totalGunL2Demand += (stats as { gunL2Upkeep?: number }).gunL2Upkeep ?? 0;
+    applyPoolUpkeep(openCities, suppliedUnits, heroes, isHuman, cycle, notifications);
+
+    const garrisonByCity = new Map<string, Unit[]>();
+    for (const u of isolatedGarrison) {
+      const home = playerCities.find(c => isolatedIds.has(c.id) && hexDistance(u.q, u.r, c.q, c.r) <= 1);
+      if (!home) continue;
+      const arr = garrisonByCity.get(home.id) ?? [];
+      arr.push(u);
+      garrisonByCity.set(home.id, arr);
     }
-
-    const totalFood = playerCities.reduce((s, c) => s + c.storage.food, 0);
-    const totalGuns = playerCities.reduce((s, c) => s + c.storage.guns, 0);
-    const totalGunsL2 = playerCities.reduce((s, c) => s + c.storage.gunsL2, 0);
-
-    const foodOk = totalFood >= totalFoodDemand;
-    if (foodOk) {
-      deductFromCities(playerCities, 'food', totalFoodDemand);
-      for (const u of suppliedUnits) {
-        if (u.status === 'starving') u.status = 'idle';
-      }
-    } else if (totalFood > 0) {
-      deductFromCities(playerCities, 'food', totalFood);
-      if (isHuman) {
-        notifications.push({
-          id: generateId('n'), turn: cycle,
-          message: 'Army rations low! Build more farms to avoid starvation.',
-          type: 'warning',
-        });
-      }
-      for (const u of suppliedUnits) {
-        if (u.status === 'starving') u.status = 'idle';
-      }
-    } else {
-      if (isHuman) {
-        notifications.push({
-          id: generateId('n'), turn: cycle,
-          message: 'Army is starving! Units losing HP. Build more farms!',
-          type: 'danger',
-        });
-      }
-      for (const u of suppliedUnits) {
-        const hpLoss = Math.floor(u.maxHp * 0.05);
-        u.hp = Math.max(1, u.hp - hpLoss);
-        u.status = 'starving';
-      }
-    }
-
-    const gunsOk = totalGuns >= totalGunDemand;
-    if (gunsOk) deductFromCities(playerCities, 'guns', totalGunDemand);
-    else {
-      deductFromCities(playerCities, 'guns', totalGuns);
-      if (isHuman) {
-        notifications.push({
-          id: generateId('n'), turn: cycle,
-          message: 'Low on arms! Units fight at reduced strength. Build more factories!',
-          type: 'warning',
-        });
-      }
-    }
-
-    const gunsL2Ok = totalGunsL2 >= totalGunL2Demand;
-    if (gunsL2Ok) deductFromCities(playerCities, 'gunsL2', totalGunL2Demand);
-    else {
-      deductFromCities(playerCities, 'gunsL2', totalGunsL2);
-      if (isHuman && totalGunL2Demand > 0) {
-        notifications.push({
-          id: generateId('n'), turn: cycle,
-          message: 'Low on L2 arms! Upgraded units fight at reduced strength.',
-          type: 'warning',
-        });
-      }
+    for (const city of playerCities) {
+      const garrison = garrisonByCity.get(city.id);
+      if (!garrison || garrison.length === 0) continue;
+      applyPoolUpkeep([city], garrison, heroes, isHuman, cycle, notifications);
     }
   }
 
   return { notifications };
+}
+
+function applyPoolUpkeep(
+  poolCities: City[],
+  feedUnits: Unit[],
+  heroes: Hero[],
+  isHuman: boolean,
+  cycle: number,
+  notifications: GameNotification[],
+): void {
+  if (feedUnits.length === 0) return;
+  if (poolCities.length === 0) {
+    for (const u of feedUnits) {
+      u.hp = Math.max(1, u.hp - Math.floor(u.maxHp * 0.05));
+      u.status = 'starving';
+    }
+    return;
+  }
+
+  let totalFoodDemand = 0;
+  let totalGunDemand = 0;
+  let totalGunL2Demand = 0;
+  for (const u of feedUnits) {
+    const stats = getUnitStats(u);
+    let foodUp = stats.foodUpkeep;
+    const heroAtUnit = heroes.find(
+      h => h.q === u.q && h.r === u.r && h.ownerId === u.ownerId && h.type === 'logistician',
+    );
+    if (heroAtUnit) foodUp = Math.ceil(foodUp * 0.5);
+    totalFoodDemand += foodUp;
+    totalGunDemand += stats.gunUpkeep ?? 0;
+    totalGunL2Demand += (stats as { gunL2Upkeep?: number }).gunL2Upkeep ?? 0;
+  }
+
+  const totalFood = poolCities.reduce((s, c) => s + c.storage.food, 0);
+  const totalGuns = poolCities.reduce((s, c) => s + c.storage.guns, 0);
+  const totalGunsL2 = poolCities.reduce((s, c) => s + c.storage.gunsL2, 0);
+
+  if (totalFood >= totalFoodDemand) {
+    deductFromCities(poolCities, 'food', totalFoodDemand);
+    for (const u of feedUnits) {
+      if (u.status === 'starving') u.status = 'idle';
+    }
+  } else if (totalFood > 0) {
+    deductFromCities(poolCities, 'food', totalFood);
+    if (isHuman) {
+      notifications.push({
+        id: generateId('n'), turn: cycle,
+        message: 'Army rations low! Build more farms to avoid starvation.',
+        type: 'warning',
+      });
+    }
+    for (const u of feedUnits) {
+      if (u.status === 'starving') u.status = 'idle';
+    }
+  } else {
+    if (isHuman) {
+      notifications.push({
+        id: generateId('n'), turn: cycle,
+        message: 'Army is starving! Units losing HP. Build more farms!',
+        type: 'danger',
+      });
+    }
+    for (const u of feedUnits) {
+      u.hp = Math.max(1, u.hp - Math.floor(u.maxHp * 0.05));
+      u.status = 'starving';
+    }
+  }
+
+  if (totalGuns >= totalGunDemand) deductFromCities(poolCities, 'guns', totalGunDemand);
+  else {
+    deductFromCities(poolCities, 'guns', totalGuns);
+    if (isHuman) {
+      notifications.push({
+        id: generateId('n'), turn: cycle,
+        message: 'Low on arms! Units fight at reduced strength. Build more factories!',
+        type: 'warning',
+      });
+    }
+  }
+
+  if (totalGunsL2 >= totalGunL2Demand) deductFromCities(poolCities, 'gunsL2', totalGunL2Demand);
+  else {
+    deductFromCities(poolCities, 'gunsL2', totalGunsL2);
+    if (isHuman && totalGunL2Demand > 0) {
+      notifications.push({
+        id: generateId('n'), turn: cycle,
+        message: 'Low on L2 arms! Upgraded units fight at reduced strength.',
+        type: 'warning',
+      });
+    }
+  }
 }
 
 function deductFromCities(cities: City[], resource: 'food' | 'guns' | 'gunsL2', amount: number) {
