@@ -563,7 +563,7 @@ export function stepSimulation(
   }));
   let unitsPrep = [...state.units];
   for (const pr of state.pendingRecruits.filter(p => p.completesAtCycle === newCycle)) {
-    const u = spawnUnitFromPendingLand(pr, citiesPrep);
+    const u = spawnUnitFromPendingLand(pr, citiesPrep, state.operationalArmies);
     if (u) unitsPrep.push(u);
   }
 

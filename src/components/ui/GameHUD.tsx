@@ -36,6 +36,8 @@ import { computeUniversityBuildingLevelFromPopulation, nextUniversityLevelPopula
 import { countLandMilitaryByType, TACTICAL_FILTER_LAND_TYPES, unitIdsMatchingTypes } from '@/lib/siege';
 import type { SiegeTacticId } from '@/lib/siegeTactics';
 import { SIEGE_TACTIC_META, buildWaveGroupsFromTactic } from '@/lib/siegeTactics';
+import { StanceChips } from '@/components/ui/StanceChips';
+import { majorityStance } from '@/lib/armyCommand';
 import { findCityForRefinedWoodSpend } from '@/lib/territory';
 import { countDefensesTaskSlots } from '@/lib/wallBuilding';
 import Image from 'next/image';
@@ -2191,6 +2193,8 @@ function BattleReportModal() {
   const units = useGameStore(s => s.units);
   const players = useGameStore(s => s.players);
   const exitBattleReportToMoveMode = useGameStore(s => s.exitBattleReportToMoveMode);
+  const setStanceOnBattleCluster = useGameStore(s => s.setStanceOnBattleCluster);
+  const setRetreatOnBattleCluster = useGameStore(s => s.setRetreatOnBattleCluster);
   const gameMode = useGameStore(s => s.gameMode);
   const moraleState = useGameStore(s => s.combatMoraleState);
   const killFeed = useGameStore(s => s.combatKillFeed);
@@ -2613,10 +2617,25 @@ function BattleReportModal() {
           </div>
         </div>
 
-        <div className="mt-2 pt-2 border-t border-empire-gold/15 flex flex-wrap gap-1.5 justify-end shrink-0">
+        <div className="mt-2 pt-2 border-t border-empire-gold/15 flex flex-col gap-1.5 shrink-0">
+          {yours.length > 0 && (
+            <div className="flex items-center gap-1.5">
+              <span className="text-[9px] text-empire-parchment/45 uppercase tracking-wide shrink-0">Stance</span>
+              <StanceChips current={majorityStance(yours)} onChange={setStanceOnBattleCluster} />
+            </div>
+          )}
+          <div className="flex flex-wrap gap-1.5 justify-end">
           <button
             type="button"
-            title="Close report and choose where to move your stack"
+            title="Order a delayed withdraw (2s), then units break contact"
+            onClick={() => setRetreatOnBattleCluster()}
+            className="font-cinzel px-2.5 py-1 text-[10px] font-bold rounded border border-rose-700/55 bg-rose-950/40 text-rose-200/95 hover:bg-rose-900/55 hover:border-rose-500/50 transition-colors tracking-wide shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]"
+          >
+            Withdraw
+          </button>
+          <button
+            type="button"
+            title="Close report and choose where to march this stack"
             onClick={() => {
               const lead = yours[0];
               if (lead) exitBattleReportToMoveMode(lead.q, lead.r);
@@ -2624,7 +2643,7 @@ function BattleReportModal() {
             }}
             className="font-cinzel px-2.5 py-1 text-[10px] font-bold rounded border border-amber-700/55 bg-amber-950/40 text-amber-200/95 hover:bg-amber-900/55 hover:border-amber-500/50 transition-colors tracking-wide shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]"
           >
-            Retreat
+            March
           </button>
           <button
             type="button"
@@ -2633,6 +2652,7 @@ function BattleReportModal() {
           >
             Dismiss
           </button>
+          </div>
         </div>
         </div>
       </div>
@@ -4947,6 +4967,27 @@ function TacticalPanel() {
                       </button>
                     </div>
                     <div className="text-[9px] text-empire-parchment/60 leading-snug">{landSummary}</div>
+                    {landInArmy.length > 0 && (
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[8px] text-empire-parchment/45 uppercase tracking-wide shrink-0">Stance</span>
+                        <StanceChips
+                          compact
+                          current={fa.stance}
+                          onChange={st => useGameStore.getState().setArmyStance(fa.id, st)}
+                        />
+                        <button
+                          type="button"
+                          title="Withdraw this army (2s delay, then break contact)"
+                          onClick={e => {
+                            e.stopPropagation();
+                            useGameStore.getState().setRetreatArmy(fa.id);
+                          }}
+                          className="ml-auto shrink-0 text-[8px] px-1.5 py-0.5 rounded border border-rose-500/40 text-rose-200/80 hover:bg-rose-950/40"
+                        >
+                          Withdraw
+                        </button>
+                      </div>
+                    )}
                     <button
                       type="button"
                       onClick={() => selectStacksForArmy(fa.id)}
@@ -5312,6 +5353,8 @@ function TacticalBottomBar() {
   const startTacticalPatrolCenterOnly = useGameStore(s => s.startTacticalPatrolCenterOnly);
   const selectStacksForArmy = useGameStore(s => s.selectStacksForArmy);
   const setTacticalSelectedStackKeys = useGameStore(s => s.setTacticalSelectedStackKeys);
+  const applyStanceToTacticalScope = useGameStore(s => s.applyStanceToTacticalScope);
+  const applyRetreatToTacticalScope = useGameStore(s => s.applyRetreatToTacticalScope);
 
   if (pendingTacticalOrders === null) return null;
 
@@ -5419,6 +5462,28 @@ function TacticalBottomBar() {
         >
           Close panel
         </button>
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-[9px] text-maproom-parchment/55 uppercase tracking-wide shrink-0 font-cinzel">
+          Stance
+        </span>
+        <StanceChips
+          current={
+            tacticalOrderScope === 'army' && tacticalOrderScopeArmyId
+              ? humanArmies.find(a => a.id === tacticalOrderScopeArmyId)?.stance ?? null
+              : null
+          }
+          onChange={applyStanceToTacticalScope}
+        />
+        <button
+          type="button"
+          title="Withdraw the current order scope (2s delay, then break contact)"
+          onClick={() => applyRetreatToTacticalScope()}
+          className="px-2 py-1 text-[10px] rounded border border-rose-500/45 text-rose-200/90 hover:bg-rose-950/40"
+        >
+          Withdraw
+        </button>
+        <span className="text-[9px] text-empire-parchment/40">Applies now to the scope above — no Confirm needed.</span>
       </div>
       <div className="flex flex-wrap items-center gap-3">
         <span className="map-title text-xs sm:text-sm shrink-0">Orders</span>
@@ -7943,6 +8008,8 @@ function ArmyPanel({ units }: { units: import('@/types/game').Unit[] }) {
   const boardAdjacentShip = useGameStore(s => s.boardAdjacentShip);
   const disembarkShip = useGameStore(s => s.disembarkShip);
   const activateAbility = useGameStore(s => s.activateAbility);
+  const setStance = useGameStore(s => s.setStance);
+  const setRetreat = useGameStore(s => s.setRetreat);
   const cities = useGameStore(s => s.cities);
   const selectedHex = useGameStore(s => s.selectedHex);
   const splitStackPending = useGameStore(s => s.splitStackPending);
@@ -8010,6 +8077,21 @@ function ArmyPanel({ units }: { units: import('@/types/game').Unit[] }) {
       <div className="h-1.5 bg-empire-stone/30 rounded-full overflow-hidden">
         <div className="h-full bg-green-500 rounded-full transition-all" style={{ width: `${totalMaxHp ? (totalHp / totalMaxHp) * 100 : 0}%` }} />
       </div>
+
+      {hasLandCombat && (
+        <div className="flex items-center gap-1.5">
+          <span className="text-[9px] text-empire-parchment/45 uppercase tracking-wide shrink-0">Stance</span>
+          <StanceChips current={majorityStance(units)} onChange={setStance} />
+          <button
+            type="button"
+            title="Withdraw this hex (2s delay)"
+            onClick={() => setRetreat()}
+            className="ml-auto shrink-0 px-1.5 py-0.5 text-[10px] rounded border border-rose-500/40 text-rose-200/85 hover:bg-rose-950/40"
+          >
+            Withdraw
+          </button>
+        </div>
+      )}
 
       {/* Siege status — compact */}
       {(defendCityName || retreating || assaulting || siegeCityName) && (

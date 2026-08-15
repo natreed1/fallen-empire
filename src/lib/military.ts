@@ -46,6 +46,7 @@ import {
   getTerrainAttackModifier, getTerrainDefenseModifier, getRiverCrossingPenalty,
   getCounterMultiplier, getFlankingBonus,
   getStanceAttackMult, getStanceDefenseMult,
+  stanceInitiatesCrossHexFire, stancePursuesOnHit,
   type MoraleState, initMorale, getStackMorale, setStackMorale,
   adjustMoraleOnKill, adjustMoraleOnHeroDeath, tickMorale,
   getMoraleAttackPenalty, shouldRout,
@@ -100,6 +101,7 @@ function maybeApplyRetaliation(
   if (!isLandMilitaryUnit(victim) && victim.type !== 'builder') return;
   if (isNavalUnitType(victim.type)) return;
   if (victim.retreatAt) return;
+  if (!stancePursuesOnHit(victim.stance)) return;
   if (hasEnemyLandInSameHex(victim, units)) return;
 
   if (victim.retaliateDefenseId && source.attackerUnitId) {
@@ -132,6 +134,10 @@ function applyPursuitOrders(
     if (!isLandMilitaryUnit(u) || u.type === 'builder' || isNavalUnitType(u.type)) continue;
     if (u.marchEchelonHold || u.attackWaveHold) continue;
     if (u.stance === 'hold_the_line') continue;
+    if (!stancePursuesOnHit(u.stance)) {
+      delete u.retaliateUnitId;
+      delete u.retaliateDefenseId;
+    }
 
     const meleeLock = hasEnemyLandInSameHex(u, units);
 
@@ -486,7 +492,7 @@ function applyDamageResist(
   const terrainDef = tiles ? getTerrainDefenseModifier(tiles.get(tileKey(target.q, target.r))) : 1.0;
   if (terrainDef > 1) d = Math.max(1, Math.floor(d / terrainDef));
   const stanceDef = getStanceDefenseMult(target.stance);
-  if (stanceDef > 1) d = Math.max(1, Math.floor(d / stanceDef));
+  if (stanceDef !== 1) d = Math.max(1, Math.floor(d / stanceDef));
   const shieldWall = getShieldWallDefenseBonus(target);
   if (shieldWall > 0) d = Math.max(1, Math.floor(d * (1 - shieldWall)));
   return d;
@@ -555,6 +561,7 @@ function closingFireOnArmy(
     if (isNavalUnitType(shooter.type)) continue;
     if (!isBowUnitType(shooter.type)) continue;
     if (shooter.retreatAt) continue;
+    if (!stanceInitiatesCrossHexFire(shooter.stance)) continue;
 
     const range = getUnitStats(shooter).range;
     const dist = hexDistance(shooter.q, shooter.r, armyQ, armyR);
@@ -1049,12 +1056,12 @@ export function combatTick(
     for (const u of side1.concat(side2)) processed.add(u.id);
   }
 
-  // Phase B: Ranged & aggressive/hold_the_line across hexes (skirmish units also fire but retreat if approached)
+  // Phase B: Cross-hex fire for stances that initiate (aggressive, skirmish, defensive, hold_the_line)
   for (const hexKey of hexKeys) {
     const hexUnits = byHex[hexKey];
     const [q, r] = hexKey.split(',').map(Number);
     const aggressors = hexUnits.filter((u: Unit) =>
-      (u.stance === 'aggressive' || u.stance === 'skirmish') && !processed.has(u.id) && u.hp > 0 && !u.retreatAt
+      stanceInitiatesCrossHexFire(u.stance) && !processed.has(u.id) && u.hp > 0 && !u.retreatAt
     );
     if (aggressors.length === 0) continue;
 

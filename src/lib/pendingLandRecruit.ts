@@ -6,12 +6,14 @@ import {
   type City,
   type Unit,
   type UnitType,
+  type OperationalArmy,
   generateId,
   getUnitStats,
   isNavalUnitType,
   type RangedVariant,
 } from '@/types/game';
 import { marchHexDistanceAtOrder } from '@/lib/garrison';
+import { stampRecruitFromOperationalArmy } from '@/lib/armyCommand';
 
 export type PendingLandRecruit = {
   id: string;
@@ -28,7 +30,11 @@ export type PendingLandRecruit = {
 };
 
 /** Spawn a unit from a pending land recruit (matches useGameStore behavior). */
-export function spawnUnitFromPendingLand(item: PendingLandRecruit, cities: City[]): Unit | null {
+export function spawnUnitFromPendingLand(
+  item: PendingLandRecruit,
+  cities: City[],
+  operationalArmies?: OperationalArmy[],
+): Unit | null {
   if (item.type === 'builder') return null;
   const city = cities.find(c => c.id === item.cityId);
   if (!city) return null;
@@ -73,5 +79,5 @@ export function spawnUnitFromPendingLand(item: PendingLandRecruit, cities: City[
     u.garrisonCityId = city.id;
     u.defendCityId = city.id;
   }
-  return u;
+  return stampRecruitFromOperationalArmy(u, item.stackId, operationalArmies);
 }

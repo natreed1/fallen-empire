@@ -80,7 +80,7 @@ export function getFlankingBonus(
     const key = tileKey(nq, nr);
     const hexUnits = unitsByHex[key];
     if (!hexUnits) continue;
-    if (hexUnits.some(u => u.ownerId === attackerOwnerId && u.hp > 0 && u.stance === 'aggressive')) {
+    if (hexUnits.some(u => u.ownerId === attackerOwnerId && u.hp > 0 && stanceContributesFlank(u.stance))) {
       friendlyHexes++;
     }
   }
@@ -90,6 +90,21 @@ export function getFlankingBonus(
 }
 
 // ─── Stance Modifiers ─────────────────────────────────────────────
+
+/** Shoot / overwatch at enemies on other hexes (passive never initiates). */
+export function stanceInitiatesCrossHexFire(stance: Unit['stance']): boolean {
+  return stance === 'aggressive' || stance === 'skirmish' || stance === 'defensive' || stance === 'hold_the_line';
+}
+
+/** Adjacent hexes count for flanking only if the stack is actually pressing the line. */
+export function stanceContributesFlank(stance: Unit['stance']): boolean {
+  return stance !== 'passive' && stance !== 'skirmish';
+}
+
+/** Auto-chase the unit that just shot you. Hold/defend/passive/skirmish stay put. */
+export function stancePursuesOnHit(stance: Unit['stance']): boolean {
+  return stance === 'aggressive';
+}
 
 export function getStanceAttackMult(stance: Unit['stance']): number {
   switch (stance) {
