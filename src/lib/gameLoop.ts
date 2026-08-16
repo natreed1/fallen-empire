@@ -12,7 +12,7 @@ import {
   FRONTIER_CYCLES, FRONTIER_MIGRATION_BONUS, MIGRATION_BASE_RATE,
   PLAINS_FARM_FOOD_MULT, SAWMILL_WOOD_PER_REFINED, isFarmBuildingType,
 } from '@/types/game';
-import { countVillagesInPlayerTerritory, isUnitInSupplyVicinityOfPlayerCities } from '@/lib/empireEconomy';
+import { countVillagesInPlayerTerritory, isUnitInSupplyVicinityOfPlayerCities, deductPooledStorage } from '@/lib/empireEconomy';
 
 /** Per-cycle production rates for a city (for UI display). */
 export function computeCityProductionRate(
@@ -472,23 +472,17 @@ function consumptionPhase(
 }
 
 function deductFromPlayerCities(cities: City[], resource: 'food' | 'goods' | 'guns', amount: number) {
-  let remaining = amount;
-  for (const city of cities) {
-    if (remaining <= 0) break;
-    const deduct = Math.min(city.storage[resource], remaining);
-    city.storage[resource] -= deduct;
-    remaining -= deduct;
-  }
+  deductPooledStorage(cities, resource, amount);
 }
 
 // ─── Population Growth (Logistic Model + Expected K) ──────────────
 //
 // Carrying capacity K is "expected" (smoothed over ~2–4 cycles). Births are gated:
-// when storage.food <= 0 (starving) we set births = 0 so population never grows
+// when the empire grain pool is empty we set births = 0 so population never grows
 // while starving; otherwise births = floor(r * P * (1 - P/K)).
 //
-//   births = 0 if storage.food <= 0, else floor(r * P * (1 - P/K))
-//   deaths = natural deaths + starvation deaths (when storage.food <= 0)
+//   births = 0 if empire food <= 0, else floor(r * P * (1 - P/K))
+//   deaths = natural deaths + starvation deaths (when empire food <= 0)
 //   netGrowth = births - deaths
 //
 // Expected K: EMA of actual K (production-based). Initialized from empire total
@@ -526,24 +520,30 @@ function populationGrowthPhase(
     city.expectedCarryingCapacity = K_expected;
     const K = K_expected;
 
-    // Natural deaths + starvation when no food in storage (cannot reduce pop below 1 — avoids fake "−3 pop" loops)
+    // Natural deaths + starvation when the empire grain pool is empty (cannot reduce pop below 1)
+    const civDemandCity = Math.ceil(P * 0.25);
+    const empireFood = empireFoodByPlayer.get(city.ownerId) ?? 0;
+    const playerCitiesForShare = cities.filter(c => c.ownerId === city.ownerId);
+    const empireCivDemand = Math.ceil(playerCitiesForShare.reduce((s, c) => s + c.population, 0) * 0.25);
+    const cityStockEquiv = empireCivDemand > 0
+      ? empireFood * (civDemandCity / empireCivDemand)
+      : empireFood;
+
     const naturalDeaths = POP_NATURAL_DEATHS;
-    const starvationDeaths = city.storage.food <= 0 ? STARVATION_DEATHS : 0;
+    // Food is empire-pooled; greedy leftover in this city's bin is not "no grain".
+    const starvationDeaths = empireFood <= 0 ? STARVATION_DEATHS : 0;
     const rawDeaths = naturalDeaths + starvationDeaths;
     const deaths = Math.min(rawDeaths, Math.max(0, P - 1));
 
-    const civDemandCity = Math.ceil(P * 0.25);
-    const empireFood = empireFoodByPlayer.get(city.ownerId) ?? 0;
-
-    // Births use expected K; when starving (no grain in storage) births = 0 so pop never grows into starvation.
-    // Taper births when food buffer is low (not only when storage hits zero) to prevent early boom-bust collapse.
+    // Births use expected K; when the empire has no grain, births = 0 so pop never grows into starvation.
+    // Taper from this city's share of the empire stock (not the post-drain local bin).
     let births = 0;
-    if (P > 0 && K > 0 && city.storage.food > 0) {
+    if (P > 0 && K > 0 && empireFood > 0) {
       let rawBirths = Math.max(0, Math.floor(POP_BIRTH_RATE * P * (1 - P / K)));
       if (civDemandCity > 0) {
         const bufferThreshold = 3 * civDemandCity;
-        if (city.storage.food < bufferThreshold) {
-          const scale = city.storage.food / bufferThreshold;
+        if (cityStockEquiv < bufferThreshold) {
+          const scale = cityStockEquiv / bufferThreshold;
           rawBirths = Math.floor(rawBirths * scale);
         }
       }

@@ -14,7 +14,7 @@ import {
   Commander, ScrollItem, ScrollAttachment, COMMANDER_STARTING_PICK,
   SpecialRegionKind, ScrollRelicSite,
   DefenseInstallation, UnitStack, OperationalArmy,
-  ensureCityBuildingHp, UNIT_HP_REGEN_FRACTION_PER_CYCLE, isNavalUnitType,
+  ensureCityBuildingHp, UNIT_HP_REGEN_FRACTION_PER_CYCLE,
   STARTING_GOLD, VILLAGE_CITY_TEMPLATE, CITY_CENTER_STORAGE,
   BUILDING_BP_COST, BUILDING_JOBS, getBuildingJobs,
   BP_RATE_BASE,
@@ -31,6 +31,7 @@ import {
 import { generateMap, placeAncientCity, rebuildSpecialTerrainForCapitals, type ScrollRelicClusters } from '../lib/mapGenerator';
 import { calculateTerritory } from '../lib/territory';
 import { processEconomyTurn } from '../lib/gameLoop';
+import { unitReceivesPassiveHpRegen } from '../lib/empireEconomy';
 import { syncUniversityBuildingLevelsForCities } from '../lib/universityPopulation';
 import {
   planAiTurn,
@@ -569,10 +570,8 @@ export function stepSimulation(
 
   // ── Passive HP regen + army rally/replenish ──
   unitsPrep = unitsPrep.map(u => {
-    if (u.hp <= 0 || u.hp >= u.maxHp || u.aboardShipId || isNavalUnitType(u.type) || u.type === 'builder') {
-      return u;
-    }
-    if (u.status === 'fighting') return u;
+    const ownerCities = citiesPrep.filter(c => c.ownerId === u.ownerId);
+    if (!unitReceivesPassiveHpRegen(u, ownerCities)) return u;
     const add = Math.max(1, Math.floor(u.maxHp * UNIT_HP_REGEN_FRACTION_PER_CYCLE));
     return { ...u, hp: Math.min(u.maxHp, u.hp + add) };
   });

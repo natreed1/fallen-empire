@@ -3932,7 +3932,7 @@ function BuilderActivityPanel() {
   }
 
   for (const road of humanRoads) {
-    const avail = computeRoadAvailableBp(road, territory, cities);
+    const avail = computeRoadAvailableBp(road, territory, cities, humanRoads);
     const bps = avail / BP_RATE_BASE;
     const rem = road.bpRequired - road.bpAccumulated;
     const eta = bps > 0 ? Math.ceil(rem / bps) : Infinity;
