@@ -602,7 +602,7 @@ function populationGrowthPhase(
 // Same-player only. Pops migrate from high-unemployment/low-morale cities
 // to cities with open jobs and higher morale. Productivity (food produced) increases pull.
 
-function migrationPhase(
+export function migrationPhase(
   cities: City[],
   players: Player[],
   turn: number,
@@ -652,7 +652,7 @@ function migrationPhase(
 
     if (sources.length === 0 || dests.length === 0) continue;
 
-    // For each (source, dest) pair, compute migration flow
+    // Each source has a single emigration budget (`pushPops`), spent across destinations.
     let totalMigrants = 0;
     for (const source of sources) {
       const sd = cityData.get(source.id)!;
@@ -665,8 +665,12 @@ function migrationPhase(
         (1 + 0.1 * Math.max(0, (player.taxRate - 0.3) * 10))
       );
       const pushPops = Math.min(sourceUnemployed, source.population - 1, Math.ceil(push * MIGRATION_BASE_RATE));
+      // Source-wide budget: do not send `pushPops` independently to every destination
+      // (that multiplied emigration by dest count and could drop pop below employment).
+      let remainingPush = pushPops;
 
       for (const dest of dests) {
+        if (remainingPush <= 0) break;
         if (source.id === dest.id) continue;
         const dd = cityData.get(dest.id)!;
         // Recompute employed from current buildings (we mutate them during migration)
@@ -681,8 +685,9 @@ function migrationPhase(
         const distWeight = 1 / (1 + dist);
         const pullPops = Math.min(openJobs, Math.ceil(pull * distWeight * MIGRATION_BASE_RATE * 2));
 
-        const migrants = Math.min(pushPops, pullPops, source.population - 1, openJobs);
+        const migrants = Math.min(remainingPush, pullPops, source.population - 1, openJobs);
         if (migrants > 0) {
+          remainingPush -= migrants;
           source.population -= migrants;
           dest.population += migrants;
           source.lastMigration = (source.lastMigration ?? 0) - migrants;
