@@ -795,7 +795,7 @@ function cityDefenseAndPatrolTick(
 
     let targetQ: number | undefined;
     let targetR: number | undefined;
-    let ownerId = landFree[0]!.ownerId;
+    let ownerId = (patrolAnchor ?? defAuto ?? landFree[0]!).ownerId;
 
     if (patrolAnchor) {
       const pq = patrolAnchor.patrolCenterQ!;
@@ -865,7 +865,23 @@ function cityDefenseAndPatrolTick(
 
     if (targetQ === undefined || targetR === undefined) continue;
 
-    const lead = landFree[0]!;
+    // Only units that actually hold this order may move. Co-located stagnant
+    // garrison / idle stacks must not be dragged off the city center — capture
+    // only contests the center hex, so pulling hold-the-city units out lets an
+    // attacker instant-flip a populated city.
+    const movers = patrolAnchor
+      ? landFree.filter(
+          u =>
+            u.ownerId === ownerId &&
+            u.patrolCenterQ !== undefined &&
+            u.patrolCenterR !== undefined,
+        )
+      : landFree.filter(
+          u => u.ownerId === ownerId && !!u.defendCityId && u.cityDefenseMode === 'auto_engage',
+        );
+    if (movers.length === 0) continue;
+
+    const lead = movers[0]!;
     const next = stepTowardZOC(
       lead.q,
       lead.r,
@@ -879,7 +895,7 @@ function cityDefenseAndPatrolTick(
     );
     if (next[0] === lead.q && next[1] === lead.r) continue;
 
-    for (const u of landFree) {
+    for (const u of movers) {
       applyDeployFlagsForMoveMutable(u, next[0], next[1], cities);
       u.targetQ = next[0];
       u.targetR = next[1];
@@ -890,10 +906,15 @@ function cityDefenseAndPatrolTick(
 
     const prevQ = lead.q;
     const prevR = lead.r;
-    for (const h of heroes) {
-      if (h.ownerId === ownerId && h.q === prevQ && h.r === prevR) {
-        h.q = next[0];
-        h.r = next[1];
+    const leftHoldBehind = landFree.some(
+      u => u.ownerId === ownerId && u.cityDefenseMode === 'stagnant' && !movers.includes(u),
+    );
+    if (!leftHoldBehind) {
+      for (const h of heroes) {
+        if (h.ownerId === ownerId && h.q === prevQ && h.r === prevR) {
+          h.q = next[0];
+          h.r = next[1];
+        }
       }
     }
     void nowMs;
