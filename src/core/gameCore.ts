@@ -73,6 +73,7 @@ import { rollCommanderIdentity, createCommanderRecord, syncCommandersToAssignmen
 import { tickScrollRelicPickup, returnScrollsForDeadCarriers } from '../lib/scrolls';
 import { spawnUnitFromPendingLand, type PendingLandRecruit } from '../lib/pendingLandRecruit';
 import { applyAiInstantBuilds, applyAiUpgrades, applyAiRecruitsAsPending } from '../lib/applyAiPlan';
+import { hexHasCityBuilding, reclaimHexForNewCityCenter } from '../lib/villageConstruction';
 
 export type { AiParams };
 export { DEFAULT_AI_PARAMS };
@@ -888,6 +889,19 @@ export function stepSimulation(
       if (cities.some(c => c.q === inc.q && c.r === inc.r)) continue;
       const militaryHere = units.filter(u => u.ownerId === aiPlayerId && u.hp > 0 && u.type !== 'builder' && u.q === inc.q && u.r === inc.r);
       if (militaryHere.length === 0) continue;
+      const reclaimed = reclaimHexForNewCityCenter({
+        q: inc.q,
+        r: inc.r,
+        constructions,
+        cities,
+        players,
+      });
+      constructions = reclaimed.constructions;
+      cities = reclaimed.cities;
+      for (const rp of reclaimed.players) {
+        const p = players.find(x => x.id === rp.id);
+        if (p) p.gold = rp.gold;
+      }
       aiPlayer.gold -= VILLAGE_INCORPORATE_COST;
       const newCity: City = {
         id: generateId('city'),
@@ -1041,6 +1055,9 @@ export function stepSimulation(
               maxHp: WALL_SECTION_HP,
             });
           }
+          continue;
+        }
+        if (hexHasCityBuilding(site.q, site.r, updatedCities) || updatedCities.some(c => c.q === site.q && c.r === site.r)) {
           continue;
         }
         const city = updatedCities.find((c) => c.id === site.cityId);

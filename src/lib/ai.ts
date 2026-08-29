@@ -1080,6 +1080,7 @@ function findEmptyTerritoryTile(
     if (info.cityId !== city.id) continue;
     const tile = tiles.get(key);
     if (!tile || tile.biome === 'water') continue;
+    if (tile.hasVillage) continue;
     if (isFarmBuildingType(buildingType)) {
       if (!isValidFarmPlacementBiome(tile.biome)) continue;
     } else if (tile.biome === 'mountain') {

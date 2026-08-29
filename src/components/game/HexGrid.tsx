@@ -3154,6 +3154,7 @@ function DepositHighlightOverlay({ tiles, cities, constructions, depositType }: 
       if (tile.biome === 'water') return;
       if (depositType !== 'gold_mine' && depositType !== 'logging_hut' && tile.biome === 'mountain') return;
       const match = depositType === 'mine' ? tile.hasMineDeposit : depositType === 'quarry' ? tile.hasQuarryDeposit : depositType === 'logging_hut' ? tile.biome === 'forest' : tile.hasGoldMineDeposit;
+      if (tile.hasVillage) return;
       if (!match || hasBuilding(tile.q, tile.r) || hasConstruction(tile.q, tile.r)) return;
       result.push(tile);
     });

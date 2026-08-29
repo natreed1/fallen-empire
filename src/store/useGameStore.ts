@@ -178,6 +178,7 @@ import {
 import { getNextWallBuildHex, countDefensesTaskSlots } from '@/lib/wallBuilding';
 import { clusterHumanBattleEngagements } from '@/lib/battlePreview';
 import { planHumanBuilderAutomation } from '@/lib/builderAutomation';
+import { hexHasCityBuilding, hexIsVillageOrCityCenter, reclaimHexForNewCityCenter } from '@/lib/villageConstruction';
 import { processResearchTick, canResearchTech } from '@/lib/researchTick';
 import {
   assignToCouncilPost as assignToCouncilPostFn,
@@ -1112,6 +1113,7 @@ function incorporateVillagePatch(
     heroes: Hero[];
     commanders: Commander[];
     scoutTowers: ScoutTower[];
+    constructions: ConstructionSite[];
   },
   q: number,
   r: number,
@@ -1123,6 +1125,8 @@ function incorporateVillagePatch(
   tiles: Map<string, Tile>;
   territory: Map<string, TerritoryInfo>;
   visibleHexes: Set<string>;
+  constructions: ConstructionSite[];
+  cancelledSites: ConstructionSite[];
   newCity: City;
 } | null {
   const goldAlreadyPaid = opts?.goldAlreadyPaid ?? false;
@@ -1137,11 +1141,19 @@ function incorporateVillagePatch(
   );
   if (militaryHere.length === 0) return null;
 
-  const newPlayers = goldAlreadyPaid
+  const paidPlayers = goldAlreadyPaid
     ? s.players
     : s.players.map(p =>
         p.id === playerId ? { ...p, gold: p.gold - VILLAGE_INCORPORATE_COST } : p
       );
+  const reclaimed = reclaimHexForNewCityCenter({
+    q,
+    r,
+    constructions: s.constructions,
+    cities: s.cities,
+    players: paidPlayers,
+  });
+  const newPlayers = reclaimed.players;
   const newCity: City = {
     id: generateId('city'),
     name: nextCityName(),
@@ -1155,7 +1167,7 @@ function incorporateVillagePatch(
   appendStartingFarmToCity(newCity, s.tiles, (q * 524287) ^ (r * 65521) ^ newCity.id.charCodeAt(0) ^ 0xf407);
   appendStartingBarracksToCity(newCity, s.tiles, (q * 524287) ^ (r * 65521) ^ newCity.id.charCodeAt(0));
   appendStartingAcademyToCity(newCity, s.tiles, (q * 524287) ^ (r * 65521) ^ newCity.id.charCodeAt(0) ^ 0xaced);
-  const newCities = [...s.cities, newCity];
+  const newCities = [...reclaimed.cities, newCity];
   const newTiles = new Map(s.tiles);
   newTiles.set(tileKey(q, r), { ...tile, hasVillage: false });
   const territory = calculateTerritory(newCities, newTiles);
@@ -1171,7 +1183,16 @@ function incorporateVillagePatch(
     pl?.mapQuadrantsRevealed,
     territory,
   );
-  return { players: newPlayers, cities: newCities, tiles: newTiles, territory, visibleHexes, newCity };
+  return {
+    players: newPlayers,
+    cities: newCities,
+    tiles: newTiles,
+    territory,
+    visibleHexes,
+    constructions: reclaimed.constructions,
+    cancelledSites: reclaimed.cancelledSites,
+    newCity,
+  };
 }
 
 function spawnUnitFromPendingShip(item: PendingShipRecruit, cities: City[]): Unit | null {
@@ -2785,6 +2806,13 @@ export const useGameStore = create<GameState>((set, get) => ({
                   message: `Wall section completed at (${site.q}, ${site.r})!`,
                   type: 'success',
                 });
+              } else if (hexHasCityBuilding(site.q, site.r, updatedCities) || updatedCities.some(c => c.q === site.q && c.r === site.r)) {
+                // Hex is already a city center or occupied (e.g. village was incorporated).
+                completedNotifs.push({
+                  id: generateId('n'), turn: st.cycle,
+                  message: `${site.type} construction cancelled — hex is occupied.`,
+                  type: 'warning',
+                });
               } else {
                 // Building: add to city and auto-assign workers
                 const city = updatedCities.find(c => c.id === site.cityId);
@@ -3071,6 +3099,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     let flushTerritory = s.territory;
     let flushHeroes: Hero[] = [];
     let flushCommanders = s.commanders;
+    let flushConstructions = s.constructions;
     const flushNotifs: GameNotification[] = [];
 
     for (const pr of s.pendingRecruits.filter(p => p.completesAtCycle === newCycle)) {
@@ -3173,6 +3202,7 @@ export const useGameStore = create<GameState>((set, get) => ({
           heroes: flushHeroes,
           commanders: flushCommanders,
           scoutTowers: s.scoutTowers ?? [],
+          constructions: flushConstructions,
         },
         inc.q,
         inc.r,
@@ -3197,6 +3227,15 @@ export const useGameStore = create<GameState>((set, get) => ({
       flushCities = patch.cities;
       flushTiles = patch.tiles;
       flushTerritory = patch.territory;
+      flushConstructions = patch.constructions;
+      if (patch.cancelledSites.length > 0) {
+        flushNotifs.push({
+          id: generateId('n'),
+          turn: newCycle,
+          message: 'Construction on the village hex was cancelled; that hex is now the city center.',
+          type: 'info',
+        });
+      }
       if (inc.playerId === HUMAN_ID) {
         flushVisible = patch.visibleHexes;
         flushExplored = new Set(flushExplored);
@@ -3282,7 +3321,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     const upkeepResult = upkeepTick(units, cities, flushHeroes, newCycle, flushTiles, flushTerritory);
     notifs.push(...upkeepResult.notifications);
 
-    let constructionsForSet = s.constructions;
+    let constructionsForSet = flushConstructions;
     const autoBuild = planHumanBuilderAutomation({
       cities,
       players,
@@ -4156,6 +4195,10 @@ export const useGameStore = create<GameState>((set, get) => ({
 
     const tile = s.tiles.get(tileKey(q, r));
     if (!tile || tile.biome === 'water') return;
+    if (hexIsVillageOrCityCenter(q, r, s.tiles, s.cities)) {
+      get().addNotification('Cannot build on a village — incorporate it first. That hex becomes the city center.', 'warning');
+      return;
+    }
     if (isFarmBuildingType(type) && !isValidFarmPlacementBiome(tile.biome)) {
       get().addNotification(
         tile.biome === 'mountain'
@@ -6040,6 +6083,10 @@ export const useGameStore = create<GameState>((set, get) => ({
     if (!s.selectedHex) return;
     const tile = s.tiles.get(tileKey(q, r));
     if (!tile || tile.biome === 'water') return;
+    if (hexIsVillageOrCityCenter(q, r, s.tiles, s.cities)) {
+      get().addNotification('Cannot build on a village — incorporate it first. That hex becomes the city center.', 'warning');
+      return;
+    }
     if (type !== 'gold_mine' && type !== 'logging_hut' && tile.biome === 'mountain') return;
     const validSite = type === 'mine' ? tile.hasMineDeposit : type === 'quarry' ? tile.hasQuarryDeposit : type === 'logging_hut' ? tile.biome === 'forest' : tile.hasGoldMineDeposit;
     const typeLabel = type === 'mine' ? 'Mine' : type === 'quarry' ? 'Quarry' : type === 'logging_hut' ? 'Logging hut' : 'Gold mine';
