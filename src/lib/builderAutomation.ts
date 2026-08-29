@@ -17,6 +17,7 @@ import {
   getHexRing,
 } from '@/types/game';
 import { getUniversityBuilderSlots, getUniversitySlotTasks, universityTaskMatchesSiteType } from '@/lib/builders';
+import { hexIsVillageOrCityCenter } from '@/lib/villageConstruction';
 
 function occupiedByBuilding(q: number, r: number, cities: City[]): boolean {
   const k = tileKey(q, r);
@@ -59,7 +60,7 @@ function canStartResourceBuild(args: {
   if (city.population < 10) return false;
   const tile = tiles.get(tileKey(q, r));
   if (!tile || tile.biome === 'water' || tile.biome === 'mountain') return false;
-  if (cities.some(c => c.q === q && c.r === r)) return false;
+  if (hexIsVillageOrCityCenter(q, r, tiles, cities)) return false;
   if (constructions.some(cs => cs.q === q && cs.r === r)) return false;
   const hexKey = tileKey(q, r);
   if (occupiedByBuilding(q, r, cities)) return false;
@@ -96,7 +97,7 @@ function canStartRemoteResourceBuild(args: {
   if (city.population < 10) return false;
   const tile = tiles.get(tileKey(q, r));
   if (!tile || tile.biome === 'water' || tile.biome === 'mountain') return false;
-  if (cities.some(c => c.q === q && c.r === r)) return false;
+  if (hexIsVillageOrCityCenter(q, r, tiles, cities)) return false;
   if (constructions.some(cs => cs.q === q && cs.r === r)) return false;
   const hexKey = tileKey(q, r);
   if (occupiedByBuilding(q, r, cities)) return false;
