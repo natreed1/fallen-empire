@@ -119,6 +119,7 @@ import {
 } from '@/lib/kingdomSpawn';
 import { getCityTerritory } from '@/lib/territory';
 import { computeContestedZoneHexKeys, applyContestedZonePayout } from '@/lib/contestedZone';
+import { gameModeIsObserverWatch, observerWatchConquestEnded } from '@/lib/victory';
 import { calculateTerritory, findCityForRefinedWoodSpend, maxMoveOrderDistanceForDestination, isWithinPlayerMoveOrderRange } from '@/lib/territory';
 import { processEconomyTurn, computeEmpireIncomeStatement } from '@/lib/gameLoop';
 import {
@@ -725,6 +726,8 @@ export function gameModeSupportsLocalRtSimControls(mode: GameMode): boolean {
 export function gameModeUsesMatchCycleCap(mode: GameMode): boolean {
   return mode === 'human_vs_ai' || mode === 'multiplayer';
 }
+
+export { gameModeIsObserverWatch, observerWatchConquestEnded } from '@/lib/victory';
 
 /** When set on an order, only these units receive the order on confirm; omitted = whole stack (legacy). */
 type TacticalParticipation = { participatingUnitIds?: string[] };
@@ -2486,13 +2489,12 @@ export const useGameStore = create<GameState>((set, get) => ({
 
       const territoryAfterCapture = citiesFinal !== updatedCities ? calculateTerritory(citiesFinal, s.tiles) : undefined;
       let phaseAfterCapture: GamePhase = s.phase;
-      if (s.gameMode === 'bot_vs_bot' || s.gameMode === 'spectate') {
-        const aiIds = s.players.filter(p => !p.isHuman).map(p => p.id);
-        const alive = aiIds.filter(pid => citiesFinal.some(c => c.ownerId === pid));
-        if (alive.length <= 1) {
+      if (gameModeIsObserverWatch(s.gameMode)) {
+        const conquest = observerWatchConquestEnded(s.players, citiesFinal);
+        if (conquest.ended) {
           phaseAfterCapture = 'victory';
           clearAllTimers();
-          const w = alive[0];
+          const w = conquest.winnerId;
           const wname = w ? s.players.find(p => p.id === w)?.name ?? 'Empire' : 'Empire';
           captureNotifs.push({ id: generateId('n'), turn: s.cycle, message: `${wname} conquers!`, type: 'success' });
         }
@@ -2961,7 +2963,7 @@ export const useGameStore = create<GameState>((set, get) => ({
           });
         } else {
           clearAllTimers();
-          if (st.gameMode === 'bot_vs_bot' || st.gameMode === 'spectate') {
+          if (gameModeIsObserverWatch(st.gameMode)) {
             const aiIds = st.players.filter(p => !p.isHuman).map(p => p.id);
             let bestId = aiIds[0];
             let bestScore = -1;
@@ -3588,13 +3590,12 @@ export const useGameStore = create<GameState>((set, get) => ({
 
     // Victory check
     let phase: GamePhase = 'playing';
-    if (s.gameMode === 'bot_vs_bot' || s.gameMode === 'spectate') {
-      const aiIds = s.players.filter(p => !p.isHuman).map(p => p.id);
-      const alive = aiIds.filter(pid => citiesForSet.some(c => c.ownerId === pid));
-      if (alive.length <= 1) {
+    if (gameModeIsObserverWatch(s.gameMode)) {
+      const conquest = observerWatchConquestEnded(s.players, citiesForSet);
+      if (conquest.ended) {
         phase = 'victory';
         clearAllTimers();
-        const w = alive[0];
+        const w = conquest.winnerId;
         const wname = w ? players.find(p => p.id === w)?.name ?? 'Empire' : 'Empire';
         notifs.push({ id: generateId('n'), turn: newCycle, message: `${wname} wins!`, type: 'success' });
       }
