@@ -116,6 +116,19 @@ export interface EmpireIncomeStatement {
 /** @deprecated Use EmpireIncomeStatement */
 export type ClusterIncomeStatement = EmpireIncomeStatement;
 
+/**
+ * L2 factory cities that can still store a full arms batch this cycle.
+ * Cities at (or within one batch of) the gunsL2 cap must not consume iron.
+ */
+export function l2FactoryCitiesThatCanStoreArms(cities: City[]): City[] {
+  return cities.filter(c => {
+    const hasL2 = c.buildings.some(b => b.type === 'factory' && ((b as CityBuilding).level ?? 1) >= 2);
+    if (!hasL2) return false;
+    const headroom = (c.storageCap.gunsL2 ?? 0) - (c.storage.gunsL2 ?? 0);
+    return headroom >= FACTORY_L2_ARMS_PER_CYCLE;
+  });
+}
+
 export function computeEmpireIncomeStatement(
   cities: City[],
   units: Unit[],
@@ -173,9 +186,7 @@ export function computeEmpireIncomeStatement(
 
   const foodExpense = foodExpenseCiv + foodExpenseMil;
 
-  const l2FactoryCount = empireCities.filter(c =>
-    c.buildings.some(b => b.type === 'factory' && ((b as CityBuilding).level ?? 1) >= 2),
-  ).length;
+  const l2FactoryCount = l2FactoryCitiesThatCanStoreArms(empireCities).length;
   const ironExpense = l2FactoryCount * FACTORY_L2_IRON_PER_CYCLE;
 
   const ironUsed = Math.min(ironIncome, ironExpense);
@@ -403,26 +414,27 @@ function playerResourcePhase(
 
     const totalIron = playerCities.reduce((s, c) => s + (c.storage.iron ?? 0), 0);
 
-    const l2Cities = playerCities.filter(c =>
-      c.buildings.some(b => b.type === 'factory' && ((b as CityBuilding).level ?? 1) >= 2),
-    );
+    const l2Cities = l2FactoryCitiesThatCanStoreArms(playerCities);
     const l2Count = l2Cities.length;
     const ironNeeded = l2Count * FACTORY_L2_IRON_PER_CYCLE;
     const ironUsed = Math.min(totalIron, ironNeeded);
     const gunsL2Produced = Math.floor(ironUsed * (FACTORY_L2_ARMS_PER_CYCLE / FACTORY_L2_IRON_PER_CYCLE));
     const gunsPerCity = l2Count > 0 ? Math.floor(gunsL2Produced / l2Count) : 0;
 
+    let actualStored = 0;
     for (const city of l2Cities) {
-      city.storage.gunsL2 = Math.min(
-        city.storageCap.gunsL2,
-        city.storage.gunsL2 + gunsPerCity,
-      );
+      const before = city.storage.gunsL2 ?? 0;
+      const add = Math.min(gunsPerCity, Math.max(0, city.storageCap.gunsL2 - before));
+      if (add > 0) {
+        city.storage.gunsL2 = before + add;
+        actualStored += add;
+      }
     }
-    if (gunsL2Produced > 0 && player.id === humanId) {
-      notify(`Empire: +${gunsL2Produced} L2 arms (from ${ironUsed} iron)`, 'info');
+    if (actualStored > 0 && player.id === humanId) {
+      notify(`Empire: +${actualStored} L2 arms (from ${ironUsed} iron)`, 'info');
     }
 
-    let toDeduct = ironUsed;
+    let toDeduct = actualStored > 0 ? ironUsed : 0;
     for (const city of playerCities) {
       if (toDeduct <= 0) break;
       const avail = city.storage.iron ?? 0;
