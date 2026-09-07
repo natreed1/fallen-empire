@@ -7527,7 +7527,9 @@ function JobBuildingPanel({ city, building }: { city: import('@/types/game').Cit
         const { refinedPerCycle, rawWoodConsumedPerCycle, staffCappedRefined, cityRawWood } = preview;
         const lvl = building.level ?? 1;
         const maxRefinedIfStocked = (BUILDING_PRODUCTION.sawmill.refinedWood ?? 0) * lvl;
-        const limitedByWood = assigned > 0 && staffCappedRefined > 0
+        const refinedHeadroom = Math.max(0, (city.storageCap.refinedWood ?? 50) - (city.storage.refinedWood ?? 0));
+        const limitedByCap = assigned > 0 && staffCappedRefined > 0 && refinedHeadroom <= 0;
+        const limitedByWood = assigned > 0 && staffCappedRefined > 0 && !limitedByCap
           && Math.floor(cityRawWood / SAWMILL_WOOD_PER_REFINED) < staffCappedRefined;
         return (
           <div className="space-y-1.5">
@@ -7549,6 +7551,9 @@ function JobBuildingPanel({ city, building }: { city: import('@/types/game').Cit
               Requires <span className="text-amber-200/80">{SAWMILL_WOOD_PER_REFINED} raw wood</span> per refined wood produced.
               At full staff: up to +{maxRefinedIfStocked}/cycle if storage has enough raw wood.
               {' '}Stockpile now: <span className="text-emerald-300/90">{cityRawWood}</span> raw wood.
+              {limitedByCap && (
+                <span className="text-amber-400/80"> Idle — refined wood storage is full.</span>
+              )}
               {limitedByWood && (
                 <span className="text-amber-400/80"> Output limited by raw wood.</span>
               )}
