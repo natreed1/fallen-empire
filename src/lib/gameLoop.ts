@@ -14,6 +14,37 @@ import {
 } from '@/types/game';
 import { countVillagesInPlayerTerritory, isUnitInSupplyVicinityOfPlayerCities } from '@/lib/empireEconomy';
 
+/** Refined-wood slots that can still accept sawmill output this cycle. */
+export function sawmillRefinedStorageHeadroom(city: City): number {
+  const cap = city.storageCap.refinedWood ?? CITY_CENTER_STORAGE.refinedWood;
+  const cur = city.storage.refinedWood ?? 0;
+  return Math.max(0, Math.floor(cap - cur));
+}
+
+/**
+ * Sawmill batch size this cycle, capped by staffing, raw wood, and refined-wood
+ * headroom so a full bin does not burn wood for discarded output.
+ */
+export function sawmillCanMakeThisCycle(
+  city: City,
+  building: CityBuilding,
+  remainingRefinedHeadroom: number,
+): number {
+  if (building.type !== 'sawmill') return 0;
+  const prod = BUILDING_PRODUCTION.sawmill;
+  const lvl = building.level ?? 1;
+  const jobs = getBuildingJobs(building);
+  const assigned = building.assignedWorkers ?? 0;
+  const staffRatio = jobs > 0 ? Math.min(1, assigned / jobs) : 0;
+  const maxRef = (prod.refinedWood ?? 0) * lvl * staffRatio;
+  const woodAvail = city.storage.wood ?? 0;
+  return Math.min(
+    maxRef,
+    Math.floor(woodAvail / SAWMILL_WOOD_PER_REFINED),
+    Math.max(0, remainingRefinedHeadroom),
+  );
+}
+
 /** Per-cycle production rates for a city (for UI display). */
 export function computeCityProductionRate(
   city: City,
@@ -31,6 +62,7 @@ export function computeCityProductionRate(
   }
   let buildingFood = 0, buildingGoods = 0, buildingGuns = 0, buildingStone = 0, buildingIron = 0;
   let buildingWood = 0, buildingRefined = 0;
+  let remainingRefinedHeadroom = sawmillRefinedStorageHeadroom(city);
   for (const b of city.buildings) {
     if (b.type === 'city_center' || b.type === 'barracks' || b.type === 'academy' || b.type === 'siege_workshop' || b.type === 'port' || b.type === 'shipyard') continue;
     if (!isCityBuildingOperational(b)) continue;
@@ -56,10 +88,9 @@ export function computeCityProductionRate(
     buildingIron += (prod.iron ?? 0) * lvl * (b.type === 'mine' ? active : active);
     buildingWood += (prod.wood ?? 0) * lvl * (b.type === 'logging_hut' ? active : 0);
     if (b.type === 'sawmill') {
-      const maxRef = (prod.refinedWood ?? 0) * lvl * staffRatio;
-      const woodAvail = city.storage.wood ?? 0;
-      const canMake = Math.min(maxRef, Math.floor(woodAvail / SAWMILL_WOOD_PER_REFINED));
+      const canMake = sawmillCanMakeThisCycle(city, b as CityBuilding, remainingRefinedHeadroom);
       buildingRefined += canMake;
+      remainingRefinedHeadroom = Math.max(0, remainingRefinedHeadroom - canMake);
     }
   }
   return {
@@ -92,7 +123,7 @@ export function computeSawmillBuildingPreview(city: City, building: CityBuilding
   const staffRatio = jobs > 0 ? Math.min(1, assigned / jobs) : 0;
   const staffCappedRefined = (prod.refinedWood ?? 0) * lvl * staffRatio;
   const woodAvail = city.storage.wood ?? 0;
-  const canMake = Math.min(staffCappedRefined, Math.floor(woodAvail / SAWMILL_WOOD_PER_REFINED));
+  const canMake = sawmillCanMakeThisCycle(city, building, sawmillRefinedStorageHeadroom(city));
   const moraleMod = city.morale / 100;
   return {
     refinedPerCycle: Math.floor(canMake * moraleMod),
@@ -312,6 +343,7 @@ function productionPhase(
     let buildingWood = 0;
     let sawmillRefined = 0;
     let sawmillWoodUsed = 0;
+    let remainingRefinedHeadroom = sawmillRefinedStorageHeadroom(city);
     for (const b of city.buildings) {
       if (b.type === 'city_center' || b.type === 'barracks' || b.type === 'academy' || b.type === 'siege_workshop' || b.type === 'port' || b.type === 'shipyard') continue;
       if (!isCityBuildingOperational(b)) continue;
@@ -338,11 +370,10 @@ function productionPhase(
         buildingWood += (prod.wood ?? 0) * lvl * active;
       }
       if (b.type === 'sawmill') {
-        const maxRef = (prod.refinedWood ?? 0) * lvl * staffRatio;
-        const woodAvail = city.storage.wood ?? 0;
-        const canMake = Math.min(maxRef, Math.floor(woodAvail / SAWMILL_WOOD_PER_REFINED));
+        const canMake = sawmillCanMakeThisCycle(city, b as CityBuilding, remainingRefinedHeadroom);
         sawmillRefined += canMake;
         sawmillWoodUsed += canMake * SAWMILL_WOOD_PER_REFINED;
+        remainingRefinedHeadroom = Math.max(0, remainingRefinedHeadroom - canMake);
       }
     }
 
