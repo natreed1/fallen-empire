@@ -389,6 +389,19 @@ function productionPhase(
   return foodProduced;
 }
 
+/**
+ * Share pooled L2 arms across factory cities, giving leftover units to the first
+ * cities so floor(produced / cityCount) cannot drop a paid batch to zero.
+ * 7 cities + 6 arms → [1,1,1,1,1,1,0]; 4 cities + 6 arms → [2,2,1,1].
+ */
+export function l2FactoryArmsShares(gunsL2Produced: number, l2Count: number): number[] {
+  if (l2Count <= 0) return [];
+  if (gunsL2Produced <= 0) return Array.from({ length: l2Count }, () => 0);
+  const base = Math.floor(gunsL2Produced / l2Count);
+  const extra = gunsL2Produced % l2Count;
+  return Array.from({ length: l2Count }, (_, i) => base + (i < extra ? 1 : 0));
+}
+
 // ─── Phase 1b: Empire resource allocation ───
 // Iron is pooled per player; L2 factories consume from the pool and produce gunsL2.
 function playerResourcePhase(
@@ -410,12 +423,13 @@ function playerResourcePhase(
     const ironNeeded = l2Count * FACTORY_L2_IRON_PER_CYCLE;
     const ironUsed = Math.min(totalIron, ironNeeded);
     const gunsL2Produced = Math.floor(ironUsed * (FACTORY_L2_ARMS_PER_CYCLE / FACTORY_L2_IRON_PER_CYCLE));
-    const gunsPerCity = l2Count > 0 ? Math.floor(gunsL2Produced / l2Count) : 0;
+    const shares = l2FactoryArmsShares(gunsL2Produced, l2Count);
 
-    for (const city of l2Cities) {
+    for (let i = 0; i < l2Cities.length; i++) {
+      const city = l2Cities[i];
       city.storage.gunsL2 = Math.min(
         city.storageCap.gunsL2,
-        city.storage.gunsL2 + gunsPerCity,
+        city.storage.gunsL2 + shares[i],
       );
     }
     if (gunsL2Produced > 0 && player.id === humanId) {
