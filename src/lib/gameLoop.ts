@@ -14,6 +14,27 @@ import {
 } from '@/types/game';
 import { countVillagesInPlayerTerritory, isUnitInSupplyVicinityOfPlayerCities } from '@/lib/empireEconomy';
 
+/**
+ * Sawmill batches become stored refined wood.
+ * Round like guns so one fully staffed L1 mill still yields a batch at starting morale (75).
+ * Spend raw wood only for refined wood that fits in storage — fractional batches and a full
+ * bin must not delete the stockpile, and mills sharing one pile cannot mint extra refined wood.
+ */
+export function resolveSawmillOutput(args: {
+  batches: number;
+  moraleMod: number;
+  woodOnHand: number;
+  refinedOnHand: number;
+  refinedCap: number;
+}): { refinedGain: number; woodSpent: number } {
+  const wholeBatches = Math.max(0, Math.floor(args.batches));
+  const room = Math.max(0, Math.floor(args.refinedCap - args.refinedOnHand));
+  const byMorale = Math.max(0, Math.round(wholeBatches * args.moraleMod));
+  const byWood = Math.max(0, Math.floor(args.woodOnHand / SAWMILL_WOOD_PER_REFINED));
+  const refinedGain = Math.min(wholeBatches, byMorale, byWood, room);
+  return { refinedGain, woodSpent: refinedGain * SAWMILL_WOOD_PER_REFINED };
+}
+
 /** Per-cycle production rates for a city (for UI display). */
 export function computeCityProductionRate(
   city: City,
@@ -62,6 +83,15 @@ export function computeCityProductionRate(
       buildingRefined += canMake;
     }
   }
+  const woodOnHand = city.storage.wood ?? 0;
+  const refinedCap = city.storageCap.refinedWood ?? CITY_CENTER_STORAGE.refinedWood;
+  const sawmill = resolveSawmillOutput({
+    batches: buildingRefined,
+    moraleMod,
+    woodOnHand,
+    refinedOnHand: city.storage.refinedWood ?? 0,
+    refinedCap,
+  });
   return {
     food: Math.floor((terrainFood + buildingFood) * moraleMod * harvestMultiplier),
     goods: Math.floor(buildingGoods * moraleMod),
@@ -69,7 +99,7 @@ export function computeCityProductionRate(
     stone: Math.floor(buildingStone * moraleMod),
     iron: Math.floor(buildingIron * moraleMod),
     wood: Math.floor(buildingWood * moraleMod),
-    refinedWood: Math.floor(buildingRefined * moraleMod),
+    refinedWood: sawmill.refinedGain,
   };
 }
 
@@ -94,9 +124,16 @@ export function computeSawmillBuildingPreview(city: City, building: CityBuilding
   const woodAvail = city.storage.wood ?? 0;
   const canMake = Math.min(staffCappedRefined, Math.floor(woodAvail / SAWMILL_WOOD_PER_REFINED));
   const moraleMod = city.morale / 100;
+  const resolved = resolveSawmillOutput({
+    batches: canMake,
+    moraleMod,
+    woodOnHand: woodAvail,
+    refinedOnHand: city.storage.refinedWood ?? 0,
+    refinedCap: city.storageCap.refinedWood ?? CITY_CENTER_STORAGE.refinedWood,
+  });
   return {
-    refinedPerCycle: Math.floor(canMake * moraleMod),
-    rawWoodConsumedPerCycle: canMake * SAWMILL_WOOD_PER_REFINED,
+    refinedPerCycle: resolved.refinedGain,
+    rawWoodConsumedPerCycle: resolved.woodSpent,
     staffCappedRefined,
     cityRawWood: woodAvail,
   };
@@ -311,7 +348,6 @@ function productionPhase(
     let buildingIron = 0;
     let buildingWood = 0;
     let sawmillRefined = 0;
-    let sawmillWoodUsed = 0;
     for (const b of city.buildings) {
       if (b.type === 'city_center' || b.type === 'barracks' || b.type === 'academy' || b.type === 'siege_workshop' || b.type === 'port' || b.type === 'shipyard') continue;
       if (!isCityBuildingOperational(b)) continue;
@@ -342,7 +378,6 @@ function productionPhase(
         const woodAvail = city.storage.wood ?? 0;
         const canMake = Math.min(maxRef, Math.floor(woodAvail / SAWMILL_WOOD_PER_REFINED));
         sawmillRefined += canMake;
-        sawmillWoodUsed += canMake * SAWMILL_WOOD_PER_REFINED;
       }
     }
 
@@ -365,12 +400,19 @@ function productionPhase(
     city.storage.stone = Math.min(city.storageCap.stone, city.storage.stone + totalStone);
 
     const woodGain = Math.floor(buildingWood * moraleMod);
-    city.storage.wood = Math.min(city.storageCap.wood ?? 50, (city.storage.wood ?? 0) + woodGain);
-    if (sawmillWoodUsed > 0) {
-      city.storage.wood = Math.max(0, (city.storage.wood ?? 0) - sawmillWoodUsed);
-    }
-    const refinedGain = Math.floor(sawmillRefined * moraleMod);
-    city.storage.refinedWood = Math.min(city.storageCap.refinedWood ?? 50, (city.storage.refinedWood ?? 0) + refinedGain);
+    const woodCap = city.storageCap.wood ?? CITY_CENTER_STORAGE.wood;
+    const woodAfterLogging = Math.min(woodCap, (city.storage.wood ?? 0) + woodGain);
+    const refinedCap = city.storageCap.refinedWood ?? CITY_CENTER_STORAGE.refinedWood;
+    const sawmill = resolveSawmillOutput({
+      batches: sawmillRefined,
+      moraleMod,
+      woodOnHand: woodAfterLogging,
+      refinedOnHand: city.storage.refinedWood ?? 0,
+      refinedCap,
+    });
+    const refinedGain = sawmill.refinedGain;
+    city.storage.wood = woodAfterLogging - sawmill.woodSpent;
+    city.storage.refinedWood = (city.storage.refinedWood ?? 0) + refinedGain;
 
     const extras: string[] = [];
     if (totalStone > 0) extras.push(`+${totalStone} stone`);
