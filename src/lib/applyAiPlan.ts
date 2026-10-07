@@ -13,6 +13,7 @@ import {
   UNIT_COSTS,
   UNIT_L2_COSTS,
   UNIT_L3_COSTS,
+  WORKERS_PER_LEVEL,
   BARACKS_UPGRADE_COST,
   FACTORY_UPGRADE_COST,
   FARM_UPGRADE_COST,
@@ -72,8 +73,11 @@ export function applyAiInstantBuilds(
     if (build.type === 'university') {
       (b as { level?: number }).level = computeUniversityBuildingLevelFromPopulation(city.population);
     }
-    // Quarry, mine, and gold mine are staffed next cycle by autoAssignWorkersPhase,
-    // same as farms and factories. Population stays the civilian pool.
+    if (build.type === 'quarry' || build.type === 'mine' || build.type === 'gold_mine') {
+      const toAssign = Math.min(WORKERS_PER_LEVEL, Math.max(0, city.population - 1));
+      (b as { assignedWorkers?: number }).assignedWorkers = toAssign;
+      city.population -= toAssign;
+    }
     city.buildings.push(b);
     ctx.onSpendGold(BUILDING_COSTS[build.type]);
     if (ironCost > 0) city.storage.iron = (city.storage.iron ?? 0) - ironCost;
