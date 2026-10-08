@@ -791,11 +791,32 @@ function cityDefenseAndPatrolTick(
     if (landFree.length === 0) continue;
 
     const patrolAnchor = landFree.find(u => u.patrolCenterQ !== undefined && u.patrolCenterR !== undefined);
-    const defAuto = landFree.find(u => u.defendCityId && u.cityDefenseMode === 'auto_engage');
+    const defAuto = patrolAnchor
+      ? undefined
+      : landFree.find(u => u.defendCityId && u.cityDefenseMode === 'auto_engage');
+    // Sharing a hex is not an order. Only the units that carry patrol / auto-engage
+    // may step; otherwise a wander clears garrison and defend flags on everyone else
+    // via applyDeployFlagsForMoveMutable.
+    const ordered: Unit[] = patrolAnchor
+      ? landFree.filter(
+          u =>
+            u.ownerId === patrolAnchor.ownerId &&
+            u.patrolCenterQ !== undefined &&
+            u.patrolCenterR !== undefined,
+        )
+      : defAuto
+        ? landFree.filter(
+            u =>
+              u.ownerId === defAuto.ownerId &&
+              u.defendCityId === defAuto.defendCityId &&
+              u.cityDefenseMode === 'auto_engage',
+          )
+        : [];
+    if (ordered.length === 0) continue;
 
     let targetQ: number | undefined;
     let targetR: number | undefined;
-    let ownerId = landFree[0]!.ownerId;
+    const ownerId = ordered[0]!.ownerId;
 
     if (patrolAnchor) {
       const pq = patrolAnchor.patrolCenterQ!;
@@ -865,7 +886,7 @@ function cityDefenseAndPatrolTick(
 
     if (targetQ === undefined || targetR === undefined) continue;
 
-    const lead = landFree[0]!;
+    const lead = ordered[0]!;
     const next = stepTowardZOC(
       lead.q,
       lead.r,
@@ -879,7 +900,7 @@ function cityDefenseAndPatrolTick(
     );
     if (next[0] === lead.q && next[1] === lead.r) continue;
 
-    for (const u of landFree) {
+    for (const u of ordered) {
       applyDeployFlagsForMoveMutable(u, next[0], next[1], cities);
       u.targetQ = next[0];
       u.targetR = next[1];
