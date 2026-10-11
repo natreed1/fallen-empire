@@ -6408,6 +6408,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     }
 
     const marchDf = resolveMarchFormationDfForMarching(marching, s.defaultMarchFormation, s.operationalArmies);
+    const marchIds = new Set(marching.map(u => u.id));
     const echelon = applyEchelonForLandMove(
       s.units,
       fromQ,
@@ -6426,7 +6427,9 @@ export const useGameStore = create<GameState>((set, get) => ({
     } else {
       newUnits = s.units.map(u => {
         if (u.q !== fromQ || u.r !== fromR || u.ownerId !== HUMAN_ID || u.hp <= 0 || u.aboardShipId) return u;
-        if (pids && !pids.includes(u.id)) return u;
+        // `marching` is already the participating set, including a single focused ship.
+        // Filtering only on `pids` re-includes every other ship (and any land unit) on the hex.
+        if (!marchIds.has(u.id)) return u;
         const deployed = withoutPatrolFields(withDeployFlags(u, toQ, toR, s.cities));
         const next: Unit = {
           ...deployed,
