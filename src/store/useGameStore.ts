@@ -198,6 +198,7 @@ import { assignSpatialFormationTargets } from '@/lib/formationPlacement';
 import { deserializeSimState, type SerializedSimState } from '@/lib/simStateSerialization';
 import { remapSimStateForClient } from '@/lib/multiplayerRemap';
 import { sendMultiplayerPlan } from '@/lib/multiplayerBridge';
+import { planMultiplayerTacticalOrders } from '@/lib/tacticalMultiplayerOrders';
 import {
   computeUniversityBuildingLevelFromPopulation,
   syncUniversityBuildingLevelsForCities,
@@ -7219,6 +7220,66 @@ export const useGameStore = create<GameState>((set, get) => ({
     const s = get();
     if (s.pendingTacticalOrders === null) return;
     const orders = s.pendingTacticalOrders;
+    if (s.gameMode === 'multiplayer') {
+      const plan = planMultiplayerTacticalOrders(
+        orders,
+        stackKey => {
+          const [fromQ, fromR] = stackKey.split(',').map(Number);
+          if (!Number.isFinite(fromQ) || !Number.isFinite(fromR)) return [];
+          return s.units.filter(
+            u => u.q === fromQ && u.r === fromR && u.ownerId === HUMAN_ID && u.hp > 0,
+          );
+        },
+        (stackKey, toQ, toR, marching) => {
+          const [fromQ, fromR] = stackKey.split(',').map(Number);
+          const tile = s.tiles.get(tileKey(toQ, toR));
+          if (!tile) return false;
+          const dist = hexDistance(fromQ, fromR, toQ, toR);
+          if (dist === 0 || !isWithinPlayerMoveOrderRange(fromQ, fromR, toQ, toR, s.territory, HUMAN_ID)) {
+            return false;
+          }
+          const marchUnits = marching.flatMap(m => {
+            const u = s.units.find(x => x.id === m.id);
+            return u ? [u] : [];
+          });
+          if (tile.biome === 'water') {
+            return canLandStackEmbarkFriendlyScoutAt(s.tiles, s.units, toQ, toR, marchUnits, HUMAN_ID);
+          }
+          if (marchUnits.some(u => isNavalUnitType(u.type))) return false;
+          return true;
+        },
+      );
+      if (plan.moveTargets.length > 0) {
+        sendMultiplayerPlan({ moveTargets: plan.moveTargets });
+      }
+      set({
+        pendingTacticalOrders: null,
+        tacticalSelectedStackKeys: [],
+        tacticalOrderScope: 'all',
+        tacticalOrderScopeArmyId: null,
+        tacticalStackUnitTypeFocus: {},
+        assigningTacticalForSelectedStacks: null,
+        assigningTacticalForStack: null,
+        assigningTacticalOrderType: null,
+        tacticalAttackCityDraft: null,
+        unitBoxSelectRect: null,
+      });
+      if (plan.moveTargets.length > 0) {
+        get().addNotification(`Order sent (${plan.moveTargets.length} unit${plan.moveTargets.length === 1 ? '' : 's'})`, 'info');
+      }
+      if (plan.unsyncedKinds.length > 0) {
+        get().addNotification(
+          'Patrol, defend, and attack orders are not sent in multiplayer. Use Move or a direct march.',
+          'warning',
+        );
+      } else if (plan.moveTargets.length === 0) {
+        get().addNotification(
+          'No orders applied — check range, terrain, or that your stacks are still on those hexes.',
+          'warning',
+        );
+      }
+      return;
+    }
     let units = s.units;
     const notifs: string[] = [];
     for (const stackKey of Object.keys(orders)) {
