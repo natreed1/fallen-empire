@@ -198,6 +198,7 @@ import { assignSpatialFormationTargets } from '@/lib/formationPlacement';
 import { deserializeSimState, type SerializedSimState } from '@/lib/simStateSerialization';
 import { remapSimStateForClient } from '@/lib/multiplayerRemap';
 import { sendMultiplayerPlan } from '@/lib/multiplayerBridge';
+import { buildingRaidMoveTargets } from '@/lib/multiplayerBuildingRaid';
 import {
   computeUniversityBuildingLevelFromPopulation,
   syncUniversityBuildingLevelsForCities,
@@ -6197,6 +6198,29 @@ export const useGameStore = create<GameState>((set, get) => ({
       marching = marching.filter(u => isLandMilitaryUnit(u));
       if (marching.length === 0) {
         get().addNotification('Need combat units to raid an enemy building.', 'warning');
+        return;
+      }
+      if (s.gameMode === 'multiplayer') {
+        const moveTargets = buildingRaidMoveTargets(
+          marching.map(u => u.id),
+          toQ,
+          toR,
+        );
+        if (moveTargets.length > 0) {
+          sendMultiplayerPlan({ moveTargets });
+        }
+        set({
+          selectedHex: null,
+          stackMoveUnitId: null,
+          uiMode: 'normal',
+          pendingMove: null,
+        });
+        get().addNotification(
+          moveTargets.length > 0
+            ? `Raid order sent (${moveTargets.length} unit${moveTargets.length === 1 ? '' : 's'})`
+            : 'No units available to raid that building.',
+          moveTargets.length > 0 ? 'info' : 'warning',
+        );
         return;
       }
       const marchIds = new Set(marching.map(u => u.id));
