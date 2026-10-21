@@ -120,6 +120,7 @@ import {
 import { getCityTerritory } from '@/lib/territory';
 import { computeContestedZoneHexKeys, applyContestedZonePayout } from '@/lib/contestedZone';
 import { calculateTerritory, findCityForRefinedWoodSpend, maxMoveOrderDistanceForDestination, isWithinPlayerMoveOrderRange } from '@/lib/territory';
+import { anyNonHumanEmpireHasCity } from '@/lib/matchVictory';
 import { processEconomyTurn, computeEmpireIncomeStatement } from '@/lib/gameLoop';
 import {
   planAiTurn,
@@ -7716,11 +7717,12 @@ export const useGameStore = create<GameState>((set, get) => ({
     const newCities = s.cities.map(c => c.id !== cityId ? c : { ...c, ownerId: HUMAN_ID });
     const territory = calculateTerritory(newCities, s.tiles);
 
-    // Check victory
-    const aiCities = newCities.filter(c => c.ownerId === AI_ID);
+    // Every rival empire must be gone. Checking only player_ai ends a 2–5 opponent match
+    // as soon as the first AI loses its last city.
+    const rivalsRemain = anyNonHumanEmpireHasCity(newCities, s.players);
     let phase: GamePhase = s.phase;
     const newNotifs = [...s.notifications];
-    if (aiCities.length === 0) {
+    if (!rivalsRemain) {
       phase = 'victory'; clearAllTimers();
       newNotifs.push({ id: generateId('n'), turn: s.cycle, message: 'Victory! You conquered the rival empire!', type: 'success' });
     } else {
