@@ -129,6 +129,13 @@ import {
   placeManyAiCapitalsApart,
 } from '@/lib/ai';
 import { spawnUnitFromPendingLand, type PendingLandRecruit } from '@/lib/pendingLandRecruit';
+import {
+  canReserveAnotherTroop,
+  fieldTrebuchetCompletionAction,
+  makeFieldTrebuchetUnit,
+  refundRefinedWoodToNearestCity,
+  reservedTroopSlots,
+} from '@/lib/troopCap';
 import { applyAiInstantBuilds, applyAiUpgrades, applyAiRecruitsAsPending } from '@/lib/applyAiPlan';
 import { getAiParams } from '@/lib/aiParams';
 import {
@@ -2667,7 +2674,9 @@ export const useGameStore = create<GameState>((set, get) => ({
         if (st.constructions.length > 0) {
           const remaining: ConstructionSite[] = [];
           const completedNotifs: GameNotification[] = [];
-          const updatedCities = st.cities.map(c => ({ ...c, buildings: [...c.buildings] }));
+          let updatedCities = st.cities.map(c => ({ ...c, buildings: [...c.buildings] }));
+          let playersAfterField = st.players;
+          const fieldTrebuchetsSpawnedByOwner: Record<string, number> = {};
           const newUnitsFromField: Unit[] = [];
           const newScoutTowers: ScoutTower[] = [];
           let defenseOut = [...st.defenseInstallations];
@@ -2704,29 +2713,47 @@ export const useGameStore = create<GameState>((set, get) => ({
 
             if (newAccum >= site.bpRequired) {
               if (site.type === 'trebuchet') {
-                // Field-built trebuchet: spawn unit at (q, r)
+                // Field engine is a troop slot. It is not drafted from a city, so it
+                // must not set originCityId (death would delete that city's population).
                 const stats = UNIT_BASE_STATS.trebuchet;
-                const ownerCities = st.cities.filter(c => c.ownerId === site.ownerId);
-                let originCityId = '';
-                if (ownerCities.length > 0) {
-                  const nearest = ownerCities.reduce((best, c) =>
-                    hexDistance(c.q, c.r, site.q, site.r) < hexDistance(best.q, best.r, site.q, site.r) ? c : best
+                const living =
+                  st.units.filter(u => u.ownerId === site.ownerId && u.hp > 0).length +
+                  (fieldTrebuchetsSpawnedByOwner[site.ownerId] ?? 0);
+                const totalPop = updatedCities
+                  .filter(c => c.ownerId === site.ownerId)
+                  .reduce((sum, c) => sum + c.population, 0);
+                if (fieldTrebuchetCompletionAction(living, totalPop) === 'refund') {
+                  playersAfterField = playersAfterField.map(p =>
+                    p.id === site.ownerId ? { ...p, gold: p.gold + TREBUCHET_FIELD_GOLD_COST } : p,
                   );
-                  originCityId = nearest.id;
+                  updatedCities = refundRefinedWoodToNearestCity(
+                    updatedCities,
+                    site.ownerId,
+                    site.q,
+                    site.r,
+                    TREBUCHET_REFINED_WOOD_COST,
+                  );
+                  completedNotifs.push({
+                    id: generateId('n'), turn: st.cycle,
+                    message: `Trebuchet at (${site.q}, ${site.r}) cancelled: troop limit reached. Gold and refined wood refunded.`,
+                    type: 'warning',
+                  });
+                } else {
+                  newUnitsFromField.push(makeFieldTrebuchetUnit({
+                    id: generateId('unit'),
+                    q: site.q,
+                    r: site.r,
+                    ownerId: site.ownerId,
+                    maxHp: stats.maxHp,
+                  }));
+                  fieldTrebuchetsSpawnedByOwner[site.ownerId] =
+                    (fieldTrebuchetsSpawnedByOwner[site.ownerId] ?? 0) + 1;
+                  completedNotifs.push({
+                    id: generateId('n'), turn: st.cycle,
+                    message: `Trebuchet completed at (${site.q}, ${site.r})!`,
+                    type: 'success',
+                  });
                 }
-                newUnitsFromField.push({
-                  id: generateId('unit'), type: 'trebuchet', q: site.q, r: site.r, ownerId: site.ownerId,
-                  hp: stats.maxHp, maxHp: stats.maxHp,
-                  xp: 0, level: 0,
-                  status: 'idle' as const, stance: 'aggressive' as const,
-                  nextMoveAt: 0,
-                  originCityId,
-                });
-                completedNotifs.push({
-                  id: generateId('n'), turn: st.cycle,
-                  message: `Trebuchet completed at (${site.q}, ${site.r})!`,
-                  type: 'success',
-                });
               } else if (site.type === 'scout_tower') {
                 newScoutTowers.push({
                   id: generateId('scout_tower'),
@@ -2818,6 +2845,7 @@ export const useGameStore = create<GameState>((set, get) => ({
           set({
             constructions: remaining,
             cities: updatedCities,
+            players: playersAfterField,
             units: newUnitsFromField.length > 0 ? [...st.units, ...newUnitsFromField] : st.units,
             scoutTowers: newScoutTowers.length > 0 ? [...st.scoutTowers, ...newScoutTowers] : st.scoutTowers,
             defenseInstallations: defenseOut,
@@ -4272,6 +4300,16 @@ export const useGameStore = create<GameState>((set, get) => ({
       get().addNotification(`Need ${TREBUCHET_REFINED_WOOD_COST} refined wood (sawmill) to build trebuchet!`, 'warning');
       return;
     }
+    const totalPop = s.cities.filter(c => c.ownerId === player.id).reduce((sum, c) => sum + c.population, 0);
+    const livingTroops = s.units.filter(u => u.ownerId === player.id && u.hp > 0).length;
+    const pendingLand = s.pendingRecruits.filter(
+      pr => 'effectiveArmsLevel' in pr && pr.playerId === player.id,
+    ).length;
+    const fieldTrebuchets = s.constructions.filter(cs => cs.type === 'trebuchet' && cs.ownerId === player.id).length;
+    if (!canReserveAnotherTroop(reservedTroopSlots(livingTroops, pendingLand, fieldTrebuchets), totalPop)) {
+      get().addNotification('Troop limit: need more population to build a trebuchet (1 troop per population).', 'warning');
+      return;
+    }
     const site: ConstructionSite = {
       id: generateId('con'),
       type: 'trebuchet',
@@ -5089,7 +5127,8 @@ export const useGameStore = create<GameState>((set, get) => ({
     const pendingLand = s.pendingRecruits.filter(
       pr => 'effectiveArmsLevel' in pr && pr.playerId === player.id,
     ).length;
-    if (livingTroops + pendingLand >= totalPop) {
+    const fieldTrebuchets = s.constructions.filter(cs => cs.type === 'trebuchet' && cs.ownerId === player.id).length;
+    if (!canReserveAnotherTroop(reservedTroopSlots(livingTroops, pendingLand, fieldTrebuchets), totalPop)) {
       get().addNotification('Troop limit: need more population to recruit (1 troop per population).', 'warning'); return;
     }
 
