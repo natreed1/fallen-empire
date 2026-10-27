@@ -144,6 +144,7 @@ import {
   autoEmbarkLandUnitsOntoScoutShipsAtHex,
   landMilitaryContestsCityCapture,
   enemyIntactWallOnCityHex,
+  instantCaptureOwnerId,
   type DefenseVolleyFx,
   type RangedShotFx,
 } from '@/lib/military';
@@ -3503,7 +3504,7 @@ export const useGameStore = create<GameState>((set, get) => ({
 
     let aliveUnits = units.filter(u => u.hp > 0);
 
-    // City capture (discrete cycle): align with RT — land military only; wall / defenders block unless pop 0
+    // City capture (discrete cycle): same instant-take rule as the real-time hold.
     let citiesToSet = cities;
     for (const city of cities) {
       const wallBlocks = enemyIntactWallOnCityHex(wallSectionsMut, city);
@@ -3513,11 +3514,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       const attackingLand = aliveUnits.filter(
         u => landMilitaryContestsCityCapture(u, city.q, city.r) && u.ownerId !== city.ownerId,
       );
-      if (attackingLand.length === 0) continue;
-      const instantTake =
-        city.population === 0 || (defendingLand.length === 0 && !wallBlocks);
-      if (!instantTake) continue;
-      const newOwnerId = attackingLand[0].ownerId;
+      const newOwnerId = instantCaptureOwnerId(attackingLand, defendingLand, city.population, wallBlocks);
+      if (!newOwnerId) continue;
       citiesToSet = citiesToSet.map(c => (c.id === city.id ? { ...c, ownerId: newOwnerId } : c));
       notifs.push({ id: generateId('n'), turn: newCycle, message: `${city.name} captured!`, type: 'danger' });
     }
