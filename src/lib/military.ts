@@ -522,6 +522,29 @@ export function enemyIntactWallOnCityHex(wallSections: WallSection[], city: City
   );
 }
 
+/**
+ * Owner who may take a city immediately, matching the real-time hold.
+ * Requires a single enemy empire and no friendly land military on the hex.
+ * Population 0 bypasses an intact wall; it does not bypass a garrison or a second attacker.
+ * Returns null when the hex stays contested (the hold timer handles a sole attacker behind a wall).
+ */
+export function instantCaptureOwnerId(
+  attackingLand: { ownerId: string }[],
+  defendingLand: { ownerId: string }[],
+  population: number,
+  wallBlocks: boolean,
+): string | null {
+  if (defendingLand.length > 0) return null;
+  let owner: string | null = null;
+  for (const u of attackingLand) {
+    if (owner === null) owner = u.ownerId;
+    else if (u.ownerId !== owner) return null;
+  }
+  if (owner === null) return null;
+  if (population > 0 && wallBlocks) return null;
+  return owner;
+}
+
 export interface ClosingFireResult {
   killedUnitIds: string[];
   notifications: GameNotification[];

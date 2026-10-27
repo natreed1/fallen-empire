@@ -61,6 +61,7 @@ import {
   type SupplyCacheEntry,
   landMilitaryContestsCityCapture,
   enemyIntactWallOnCityHex,
+  instantCaptureOwnerId,
 } from '../lib/military';
 import { updateArmyRallyFromUnits, computeArmyReplenishment } from '../lib/armyReplenishment';
 import type { MoraleState } from '../lib/combat';
@@ -1083,11 +1084,8 @@ export function stepSimulation(
     const attackingLand = aliveUnits.filter(
       u => landMilitaryContestsCityCapture(u, city.q, city.r) && u.ownerId !== city.ownerId,
     );
-    if (attackingLand.length === 0) continue;
-    const instantTake =
-      city.population === 0 || (defendingLand.length === 0 && !wallBlocks);
-    if (!instantTake) continue;
-    const newOwnerId = attackingLand[0].ownerId;
+    const newOwnerId = instantCaptureOwnerId(attackingLand, defendingLand, city.population, wallBlocks);
+    if (!newOwnerId) continue;
     citiesToSet = citiesToSet.map(c => (c.id === city.id ? { ...c, ownerId: newOwnerId } : c));
   }
   // Territory computed once at end of step (after capture hold) to avoid duplicate work
