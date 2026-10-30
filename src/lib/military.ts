@@ -1017,36 +1017,46 @@ export function combatTick(
       if (u.incorporateVillageAt) delete u.incorporateVillageAt;
     }
 
-    let side1 = hexUnits.filter((u: Unit) => u.ownerId === owners[0] && u.hp > 0);
-    let side2 = hexUnits.filter((u: Unit) => u.ownerId === owners[1] && u.hp > 0);
+    const side1 = hexUnits.filter((u: Unit) => u.ownerId === owners[0] && u.hp > 0);
+    const side2 = hexUnits.filter((u: Unit) => u.ownerId === owners[1] && u.hp > 0);
     const s1Nav = side1.some(u => isNavalUnitType(u.type));
     const s2Nav = side2.some(u => isNavalUnitType(u.type));
+    // Domain gate stays based on the first two owners so a mixed land/naval pair still skips the hex.
     if (s1Nav !== s2Nav || (s1Nav && !tileIsWater(tiles, side1[0].q, side1[0].r))) continue;
-    if (s1Nav) {
-      side1 = side1.filter(u => isNavalUnitType(u.type));
-      side2 = side2.filter(u => isNavalUnitType(u.type));
-    } else {
-      side1 = side1.filter(u => !isNavalUnitType(u.type));
-      side2 = side2.filter(u => !isNavalUnitType(u.type));
+    const navalFight = s1Nav;
+
+    // Every empire on the hex fights. Play allows up to five opponents, so three or more
+    // stacks meet on city and border tiles. Each unit still strikes once per tick.
+    const fighting = owners.flatMap((ownerId) => {
+      const sideUnits = hexUnits.filter((u: Unit) =>
+        u.ownerId === ownerId && u.hp > 0 && (navalFight ? isNavalUnitType(u.type) : !isNavalUnitType(u.type)),
+      );
+      return sideUnits.length > 0 ? [{ ownerId, units: sideUnits }] : [];
+    });
+    if (fighting.length < 2) continue;
+
+    for (const side of fighting) {
+      const enemyCount = fighting.reduce(
+        (n, other) => n + (other.ownerId === side.ownerId ? 0 : other.units.length),
+        0,
+      );
+      const hasCmd = commanders.some(c => commanderAppliesToUnit(c, side.units[0], cities, units));
+      const isHome = territory ? territory.get(hexKey)?.playerId === side.ownerId : false;
+      tickMorale(moraleState, hexKey, side.ownerId, side.units.length, enemyCount, hasCmd, isHome);
     }
-    if (side1.length === 0 || side2.length === 0) continue;
-
-    const hero1 = heroes.find(h => h.q === side1[0]?.q && h.r === side1[0]?.r && h.ownerId === owners[0]);
-    const hero2 = heroes.find(h => h.q === side2[0]?.q && h.r === side2[0]?.r && h.ownerId === owners[1]);
-
-    const hasCmd1 = commanders.some(c => commanderAppliesToUnit(c, side1[0], cities, units));
-    const hasCmd2 = commanders.some(c => commanderAppliesToUnit(c, side2[0], cities, units));
-    const isHome1 = territory ? !!(territory.get(hexKey)?.playerId === owners[0]) : false;
-    const isHome2 = territory ? !!(territory.get(hexKey)?.playerId === owners[1]) : false;
-    tickMorale(moraleState, hexKey, owners[0], side1.length, side2.length, hasCmd1, isHome1);
-    tickMorale(moraleState, hexKey, owners[1], side2.length, side1.length, hasCmd2, isHome2);
 
     combatHexKeys.push(hexKey);
     resolveMeleeRound(
-      side1, side2, hero1, hero2, killed, killedHeroIds, notifications, cycle, cities, now, units, scrollAttachments,
+      fighting.map(side => ({
+        units: side.units,
+        hero: heroes.find(h => h.q === side.units[0].q && h.r === side.units[0].r && h.ownerId === side.ownerId),
+      })),
+      killed, killedHeroIds, notifications, cycle, cities, now, units, scrollAttachments,
       commanders, tiles, moraleState, killFeed, byHex, defenseInstallations,
     );
-    for (const u of side1.concat(side2)) processed.add(u.id);
+    for (const side of fighting) {
+      for (const u of side.units) processed.add(u.id);
+    }
   }
 
   // Phase B: Ranged & aggressive/hold_the_line across hexes (skirmish units also fire but retreat if approached)
@@ -1617,8 +1627,7 @@ function pickScreenedTarget(enemies: Unit[]): Unit | undefined {
 }
 
 function resolveMeleeRound(
-  side1: Unit[], side2: Unit[],
-  hero1: Hero | undefined, hero2: Hero | undefined,
+  sides: { units: Unit[]; hero: Hero | undefined }[],
   killed: string[], killedHeroIds: string[], notifications: GameNotification[], cycle: number,
   cities: City[] = [],
   nowMs: number = Date.now(),
@@ -1631,7 +1640,8 @@ function resolveMeleeRound(
   byHex?: Record<string, Unit[]>,
   defenseInstallations?: DefenseInstallation[],
 ) {
-  const hexKey = side1[0] ? tileKey(side1[0].q, side1[0].r) : '';
+  const lead = sides[0]?.units ?? [];
+  const hexKey = lead[0] ? tileKey(lead[0].q, lead[0].r) : '';
   const atkTile = tiles.get(hexKey);
 
   const meleeAttack = (
@@ -1695,41 +1705,32 @@ function resolveMeleeRound(
     }
   };
 
-  for (const atk of side1) meleeAttack(atk, side1, side2, hero1, hero2, 11);
-  for (const atk of side2) meleeAttack(atk, side2, side1, hero2, hero1, 21);
-
-  if (hero1 && heroHp(hero1) > 0) {
-    const target = pickScreenedTarget(side2);
-    if (target) {
-      let dmg = applyTowerDefense(HERO_ATTACK, target.q, target.r, cities);
-      const afterResist = applyDamageResist(dmg, target, cities, allUnits, scrollAttachments, tiles);
-      let scaled = scaleLandCombatDamageToUnit(
-        Math.max(1, Math.floor(afterResist * commanderDefenseDamageFactorForUnit(target, commanders, cities, allUnits))),
-      );
-      const ro = combatRoll01(cycle, nowMs, hero1.id, target.id, 41);
-      scaled = applyHitOutcomeDamage(scaled, hitOutcomeFromRoll(ro));
-      target.hp -= scaled;
-      if (target.hp <= 0) {
-        killed.push(target.id);
-        if (moraleState && hero1.ownerId) adjustMoraleOnKill(moraleState, hexKey, hero1.ownerId, target.ownerId);
-      }
+  // Each side strikes the next side once. Two sides still hit each other (salts 11/21, heroes 41/42).
+  // Pooling every other empire into one target list would let the earliest front line soak every blow.
+  for (let i = 0; i < sides.length; i++) {
+    const enemy = sides[(i + 1) % sides.length];
+    for (const atk of sides[i].units) {
+      meleeAttack(atk, sides[i].units, enemy.units, sides[i].hero, enemy.hero, 11 + i * 10);
     }
   }
-  if (hero2 && heroHp(hero2) > 0) {
-    const target = pickScreenedTarget(side1);
-    if (target) {
-      let dmg = applyTowerDefense(HERO_ATTACK, target.q, target.r, cities);
-      const afterResist = applyDamageResist(dmg, target, cities, allUnits, scrollAttachments, tiles);
-      let scaled = scaleLandCombatDamageToUnit(
-        Math.max(1, Math.floor(afterResist * commanderDefenseDamageFactorForUnit(target, commanders, cities, allUnits))),
-      );
-      const ro = combatRoll01(cycle, nowMs, hero2.id, target.id, 42);
-      scaled = applyHitOutcomeDamage(scaled, hitOutcomeFromRoll(ro));
-      target.hp -= scaled;
-      if (target.hp <= 0) {
-        killed.push(target.id);
-        if (moraleState && hero2.ownerId) adjustMoraleOnKill(moraleState, hexKey, hero2.ownerId, target.ownerId);
-      }
+
+  for (let i = 0; i < sides.length; i++) {
+    const hero = sides[i].hero;
+    if (!hero || heroHp(hero) <= 0) continue;
+    const enemy = sides[(i + 1) % sides.length];
+    const target = pickScreenedTarget(enemy.units);
+    if (!target) continue;
+    let dmg = applyTowerDefense(HERO_ATTACK, target.q, target.r, cities);
+    const afterResist = applyDamageResist(dmg, target, cities, allUnits, scrollAttachments, tiles);
+    let scaled = scaleLandCombatDamageToUnit(
+      Math.max(1, Math.floor(afterResist * commanderDefenseDamageFactorForUnit(target, commanders, cities, allUnits))),
+    );
+    const ro = combatRoll01(cycle, nowMs, hero.id, target.id, 41 + i);
+    scaled = applyHitOutcomeDamage(scaled, hitOutcomeFromRoll(ro));
+    target.hp -= scaled;
+    if (target.hp <= 0) {
+      killed.push(target.id);
+      if (moraleState && hero.ownerId) adjustMoraleOnKill(moraleState, hexKey, hero.ownerId, target.ownerId);
     }
   }
 }
