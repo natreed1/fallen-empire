@@ -2,11 +2,7 @@
 
 import { Suspense, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-
-function safeRedirectPath(from: string | null): string {
-  if (!from || !from.startsWith('/') || from.startsWith('//')) return '/';
-  return from;
-}
+import { safeRedirectPath } from '@/lib/safeRedirect';
 
 function LoginForm() {
   const router = useRouter();
